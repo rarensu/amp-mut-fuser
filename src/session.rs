@@ -16,7 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::{io, ops::DerefMut};
 
 use crate::ll::fuse_abi as abi;
-use crate::request::Request;
+use crate::request::Request2;
 use crate::Filesystem;
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
@@ -153,7 +153,7 @@ impl<FS: Filesystem> Session<FS> {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
             match self.ch.receive(buf) {
-                Ok(size) => match Request::new(self.ch.sender(), &buf[..size]) {
+                Ok(size) => match Request2::new(self.ch.sender(), &buf[..size]) {
                     // Dispatch request
                     Some(req) => req.dispatch(self),
                     // Quit loop on illegal request

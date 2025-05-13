@@ -29,8 +29,8 @@ nix::ioctl_write_ptr!(
 
 /// A reference to a previously opened fd intended to be used for passthrough
 ///
-/// You can create these via `ReplyOpen::open_backing()` and send them via
-/// `ReplyOpen::opened_passthrough()`.
+/// You can create these via `ReplyOpen2::open_backing2()` and send them via
+/// `ReplyOpen2::opened_passthrough2()`.
 ///
 /// When working with backing IDs you need to ensure that they live "long enough".  A good practice
 /// is to create them in the Filesystem::open() impl, store them in the struct of your Filesystem

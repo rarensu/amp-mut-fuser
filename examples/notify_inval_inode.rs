@@ -22,8 +22,8 @@ use libc::{EACCES, EINVAL, EISDIR, ENOBUFS, ENOENT, ENOTDIR};
 use clap::Parser;
 
 use fuser::{
-    consts, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory,
-    ReplyEntry, ReplyOpen, Request, FUSE_ROOT_ID,
+    consts, FileAttr, FileType, Filesystem, MountOption, ReplyAttr2, ReplyData2, ReplyDirectory2,
+    ReplyEntry2, ReplyOpen2, Request2, FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
@@ -67,17 +67,17 @@ impl<'a> ClockFS<'a> {
 }
 
 impl<'a> Filesystem for ClockFS<'a> {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup2(&mut self, _req: &Request2, parent: u64, name: &OsStr, reply: ReplyEntry2) {
         if parent != FUSE_ROOT_ID || name != AsRef::<OsStr>::as_ref(&Self::FILE_NAME) {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
             return;
         }
 
         self.lookup_cnt.fetch_add(1, SeqCst);
-        reply.entry(&Duration::MAX, &self.stat(ClockFS::FILE_INO).unwrap(), 0);
+        reply.entry2(&Duration::MAX, &self.stat(ClockFS::FILE_INO).unwrap(), 0);
     }
 
-    fn forget(&mut self, _req: &Request, ino: u64, nlookup: u64) {
+    fn forget2(&mut self, _req: &Request2, ino: u64, nlookup: u64) {
         if ino == ClockFS::FILE_INO {
             let prev = self.lookup_cnt.fetch_sub(nlookup, SeqCst);
             assert!(prev >= nlookup);
@@ -86,82 +86,82 @@ impl<'a> Filesystem for ClockFS<'a> {
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr2(&mut self, _req: &Request2, ino: u64, _fh: Option<u64>, reply: ReplyAttr2) {
         match self.stat(ino) {
-            Some(a) => reply.attr(&Duration::MAX, &a),
-            None => reply.error(ENOENT),
+            Some(a) => reply.attr2(&Duration::MAX, &a),
+            None => reply.error2(ENOENT),
         }
     }
 
-    fn readdir(
+    fn readdir2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        mut reply: ReplyDirectory2,
     ) {
         if ino != FUSE_ROOT_ID {
-            reply.error(ENOTDIR);
+            reply.error2(ENOTDIR);
             return;
         }
 
         if offset == 0
-            && reply.add(
+            && reply.add2(
                 ClockFS::FILE_INO,
                 offset + 1,
                 FileType::RegularFile,
                 Self::FILE_NAME,
             )
         {
-            reply.error(ENOBUFS);
+            reply.error2(ENOBUFS);
         } else {
-            reply.ok();
+            reply.ok2();
         }
     }
 
-    fn open(&mut self, _req: &Request, ino: u64, flags: i32, reply: ReplyOpen) {
+    fn open2(&mut self, _req: &Request2, ino: u64, flags: i32, reply: ReplyOpen2) {
         if ino == FUSE_ROOT_ID {
-            reply.error(EISDIR);
+            reply.error2(EISDIR);
         } else if flags & libc::O_ACCMODE != libc::O_RDONLY {
-            reply.error(EACCES);
+            reply.error2(EACCES);
         } else if ino != Self::FILE_INO {
             eprintln!("Got open for nonexistent inode {}", ino);
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
         } else {
-            reply.opened(ino, consts::FOPEN_KEEP_CACHE);
+            reply.opened2(ino, consts::FOPEN_KEEP_CACHE);
         }
     }
 
-    fn read(
+    fn read2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         ino: u64,
         _fh: u64,
         offset: i64,
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-        reply: ReplyData,
+        reply: ReplyData2,
     ) {
         assert!(ino == Self::FILE_INO);
         if offset < 0 {
-            reply.error(EINVAL);
+            reply.error2(EINVAL);
             return;
         }
         let file = self.file_contents.lock().unwrap();
         let filedata = file.as_bytes();
         let dlen = filedata.len().try_into().unwrap();
         let Ok(start) = offset.min(dlen).try_into() else {
-            reply.error(EINVAL);
+            reply.error2(EINVAL);
             return;
         };
         let Ok(end) = (offset + size as i64).min(dlen).try_into() else {
-            reply.error(EINVAL);
+            reply.error2(EINVAL);
             return;
         };
         eprintln!("read returning {} bytes at offset {}", end - start, offset);
-        reply.data(&filedata[start..end]);
+        reply.data2(&filedata[start..end]);
     }
 }
 

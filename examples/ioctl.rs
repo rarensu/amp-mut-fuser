@@ -4,8 +4,8 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
-    Request,
+    FileAttr, FileType, Filesystem, MountOption, ReplyAttr2, ReplyData2, ReplyDirectory2, ReplyEntry2,
+    Request2,
 };
 use libc::{EINVAL, ENOENT};
 use log::debug;
@@ -70,50 +70,50 @@ impl FiocFS {
 }
 
 impl Filesystem for FiocFS {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup2(&mut self, _req: &Request2, parent: u64, name: &OsStr, reply: ReplyEntry2) {
         if parent == 1 && name.to_str() == Some("fioc") {
-            reply.entry(&TTL, &self.fioc_file_attr, 0);
+            reply.entry2(&TTL, &self.fioc_file_attr, 0);
         } else {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr2(&mut self, _req: &Request2, ino: u64, _fh: Option<u64>, reply: ReplyAttr2) {
         match ino {
-            1 => reply.attr(&TTL, &self.root_attr),
-            2 => reply.attr(&TTL, &self.fioc_file_attr),
-            _ => reply.error(ENOENT),
+            1 => reply.attr2(&TTL, &self.root_attr),
+            2 => reply.attr2(&TTL, &self.fioc_file_attr),
+            _ => reply.error2(ENOENT),
         }
     }
 
-    fn read(
+    fn read2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         ino: u64,
         _fh: u64,
         offset: i64,
         _size: u32,
         _flags: i32,
         _lock: Option<u64>,
-        reply: ReplyData,
+        reply: ReplyData2,
     ) {
         if ino == 2 {
-            reply.data(&self.content[offset as usize..])
+            reply.data2(&self.content[offset as usize..])
         } else {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
         }
     }
 
-    fn readdir(
+    fn readdir2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        mut reply: ReplyDirectory2,
     ) {
         if ino != 1 {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
             return;
         }
 
@@ -125,26 +125,26 @@ impl Filesystem for FiocFS {
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
             // i + 1 means the index of the next entry
-            if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
+            if reply.add2(entry.0, (i + 1) as i64, entry.1, entry.2) {
                 break;
             }
         }
-        reply.ok();
+        reply.ok2();
     }
 
-    fn ioctl(
+    fn ioctl2(
         &mut self,
-        _req: &Request<'_>,
+        _req: &Request2<'_>,
         ino: u64,
         _fh: u64,
         _flags: u32,
         cmd: u32,
         in_data: &[u8],
         _out_size: u32,
-        reply: fuser::ReplyIoctl,
+        reply: fuser::ReplyIoctl2,
     ) {
         if ino != 2 {
-            reply.error(EINVAL);
+            reply.error2(EINVAL);
             return;
         }
 
@@ -154,16 +154,16 @@ impl Filesystem for FiocFS {
         match cmd.into() {
             FIOC_GET_SIZE => {
                 let size_bytes = self.content.len().to_ne_bytes();
-                reply.ioctl(0, &size_bytes);
+                reply.ioctl2(0, &size_bytes);
             }
             FIOC_SET_SIZE => {
                 let new_size = usize::from_ne_bytes(in_data.try_into().unwrap());
                 self.content = vec![0_u8; new_size];
-                reply.ioctl(0, &[]);
+                reply.ioctl2(0, &[]);
             }
             _ => {
                 debug!("unknown ioctl: {}", cmd);
-                reply.error(EINVAL);
+                reply.error2(EINVAL);
             }
         }
     }

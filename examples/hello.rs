@@ -1,7 +1,6 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
-    Request,
+    FileAttr, FileType, Filesystem, MountOption, ReplyAttr2, ReplyData2, ReplyDirectory2, ReplyEntry2, Request2,
 };
 use libc::ENOENT;
 use std::ffi::OsStr;
@@ -50,50 +49,50 @@ const HELLO_TXT_ATTR: FileAttr = FileAttr {
 struct HelloFS;
 
 impl Filesystem for HelloFS {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup2(&mut self, _req: &Request2, parent: u64, name: &OsStr, reply: ReplyEntry2) {
         if parent == 1 && name.to_str() == Some("hello.txt") {
-            reply.entry(&TTL, &HELLO_TXT_ATTR, 0);
+            reply.entry2(&TTL, &HELLO_TXT_ATTR, 0);
         } else {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr2(&mut self, _req: &Request2, ino: u64, _fh: Option<u64>, reply: ReplyAttr2) {
         match ino {
-            1 => reply.attr(&TTL, &HELLO_DIR_ATTR),
-            2 => reply.attr(&TTL, &HELLO_TXT_ATTR),
-            _ => reply.error(ENOENT),
+            1 => reply.attr2(&TTL, &HELLO_DIR_ATTR),
+            2 => reply.attr2(&TTL, &HELLO_TXT_ATTR),
+            _ => reply.error2(ENOENT),
         }
     }
 
-    fn read(
+    fn read2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         ino: u64,
         _fh: u64,
         offset: i64,
         _size: u32,
         _flags: i32,
         _lock: Option<u64>,
-        reply: ReplyData,
+        reply: ReplyData2,
     ) {
         if ino == 2 {
-            reply.data(&HELLO_TXT_CONTENT.as_bytes()[offset as usize..]);
+            reply.data2(&HELLO_TXT_CONTENT.as_bytes()[offset as usize..]);
         } else {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
         }
     }
 
-    fn readdir(
+    fn readdir2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        mut reply: ReplyDirectory2,
     ) {
         if ino != 1 {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
             return;
         }
 
@@ -105,11 +104,11 @@ impl Filesystem for HelloFS {
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
             // i + 1 means the index of the next entry
-            if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
+            if reply.add2(entry.0, (i + 1) as i64, entry.1, entry.2) {
                 break;
             }
         }
-        reply.ok();
+        reply.ok2();
     }
 }
 

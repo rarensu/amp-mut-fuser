@@ -22,7 +22,7 @@ use libc::{ENOBUFS, ENOENT, ENOTDIR};
 use clap::Parser;
 
 use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyDirectory, ReplyEntry, Request,
+    FileAttr, FileType, Filesystem, MountOption, ReplyAttr2, ReplyDirectory2, ReplyEntry2, Request2,
     FUSE_ROOT_ID,
 };
 
@@ -68,17 +68,17 @@ impl<'a> ClockFS<'a> {
 }
 
 impl<'a> Filesystem for ClockFS<'a> {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup2(&mut self, _req: &Request2, parent: u64, name: &OsStr, reply: ReplyEntry2) {
         if parent != FUSE_ROOT_ID || name != AsRef::<OsStr>::as_ref(&self.get_filename()) {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
             return;
         }
 
         self.lookup_cnt.fetch_add(1, SeqCst);
-        reply.entry(&self.timeout, &ClockFS::stat(ClockFS::FILE_INO).unwrap(), 0);
+        reply.entry2(&self.timeout, &ClockFS::stat(ClockFS::FILE_INO).unwrap(), 0);
     }
 
-    fn forget(&mut self, _req: &Request, ino: u64, nlookup: u64) {
+    fn forget2(&mut self, _req: &Request2, ino: u64, nlookup: u64) {
         if ino == ClockFS::FILE_INO {
             let prev = self.lookup_cnt.fetch_sub(nlookup, SeqCst);
             assert!(prev >= nlookup);
@@ -87,37 +87,37 @@ impl<'a> Filesystem for ClockFS<'a> {
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr2(&mut self, _req: &Request2, ino: u64, _fh: Option<u64>, reply: ReplyAttr2) {
         match ClockFS::stat(ino) {
-            Some(a) => reply.attr(&self.timeout, &a),
-            None => reply.error(ENOENT),
+            Some(a) => reply.attr2(&self.timeout, &a),
+            None => reply.error2(ENOENT),
         }
     }
 
-    fn readdir(
+    fn readdir2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        mut reply: ReplyDirectory2,
     ) {
         if ino != FUSE_ROOT_ID {
-            reply.error(ENOTDIR);
+            reply.error2(ENOTDIR);
             return;
         }
 
         if offset == 0
-            && reply.add(
+            && reply.add2(
                 ClockFS::FILE_INO,
                 offset + 1,
                 FileType::RegularFile,
                 &self.get_filename(),
             )
         {
-            reply.error(ENOBUFS);
+            reply.error2(ENOBUFS);
         } else {
-            reply.ok();
+            reply.ok2();
         }
     }
 }

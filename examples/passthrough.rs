@@ -4,8 +4,8 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    consts, BackingId, FileAttr, FileType, Filesystem, KernelConfig, MountOption, ReplyAttr,
-    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, Request,
+    consts, BackingId, FileAttr, FileType, Filesystem, KernelConfig, MountOption, ReplyAttr2,
+    ReplyDirectory2, ReplyEmpty2, ReplyEntry2, ReplyOpen2, Request2,
 };
 use libc::ENOENT;
 use std::collections::HashMap;
@@ -137,9 +137,9 @@ impl PassthroughFs {
 }
 
 impl Filesystem for PassthroughFs {
-    fn init(
+    fn init2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         config: &mut KernelConfig,
     ) -> std::result::Result<(), c_int> {
         config.add_capabilities(consts::FUSE_PASSTHROUGH).unwrap();
@@ -147,25 +147,25 @@ impl Filesystem for PassthroughFs {
         Ok(())
     }
 
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup2(&mut self, _req: &Request2, parent: u64, name: &OsStr, reply: ReplyEntry2) {
         if parent == 1 && name.to_str() == Some("passthrough") {
-            reply.entry(&TTL, &self.passthrough_file_attr, 0);
+            reply.entry2(&TTL, &self.passthrough_file_attr, 0);
         } else {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr2(&mut self, _req: &Request2, ino: u64, _fh: Option<u64>, reply: ReplyAttr2) {
         match ino {
-            1 => reply.attr(&TTL, &self.root_attr),
-            2 => reply.attr(&TTL, &self.passthrough_file_attr),
-            _ => reply.error(ENOENT),
+            1 => reply.attr2(&TTL, &self.root_attr),
+            2 => reply.attr2(&TTL, &self.passthrough_file_attr),
+            _ => reply.error2(ENOENT),
         }
     }
 
-    fn open(&mut self, _req: &Request, ino: u64, _flags: i32, reply: ReplyOpen) {
+    fn open2(&mut self, _req: &Request2, ino: u64, _flags: i32, reply: ReplyOpen2) {
         if ino != 2 {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
             return;
         }
 
@@ -173,38 +173,38 @@ impl Filesystem for PassthroughFs {
             .backing_cache
             .get_or(ino, || {
                 let file = File::open("/etc/os-release")?;
-                reply.open_backing(file)
+                reply.open_backing2(file)
             })
             .unwrap();
 
         eprintln!("  -> opened_passthrough({fh:?}, 0, {id:?});\n");
-        reply.opened_passthrough(fh, 0, &id);
+        reply.opened_passthrough2(fh, 0, &id);
     }
 
-    fn release(
+    fn release2(
         &mut self,
-        _req: &Request<'_>,
+        _req: &Request2<'_>,
         _ino: u64,
         fh: u64,
         _flags: i32,
         _lock_owner: Option<u64>,
         _flush: bool,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty2,
     ) {
         self.backing_cache.put(fh);
-        reply.ok();
+        reply.ok2();
     }
 
-    fn readdir(
+    fn readdir2(
         &mut self,
-        _req: &Request,
+        _req: &Request2,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        mut reply: ReplyDirectory2,
     ) {
         if ino != 1 {
-            reply.error(ENOENT);
+            reply.error2(ENOENT);
             return;
         }
 
@@ -216,11 +216,11 @@ impl Filesystem for PassthroughFs {
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
             // i + 1 means the index of the next entry
-            if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
+            if reply.add2(entry.0, (i + 1) as i64, entry.1, entry.2) {
                 break;
             }
         }
-        reply.ok();
+        reply.ok2();
     }
 }
 
