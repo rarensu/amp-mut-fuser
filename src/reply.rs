@@ -47,34 +47,24 @@ impl fmt::Debug for Box<dyn ReplySender> {
     }
 }
 
-/// Generic reply trait
-pub trait Reply {
-    /// Create a new reply for the given request
-    fn new<S: ReplySender>(unique: u64, sender: S) -> Self;
-}
-
-///
-/// Raw reply
-///
+/// TODO document
 #[derive(Debug)]
-pub(crate) struct ReplyRaw {
+pub(crate) struct ReplyHandler {
     /// Unique id of the request to reply to
     unique: ll::RequestId,
     /// Closure to call for sending the reply
     sender: Option<Box<dyn ReplySender>>,
 }
 
-impl Reply for ReplyRaw {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyRaw {
+impl ReplyHandler {
+    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyHandler {
         let sender = Box::new(sender);
-        ReplyRaw {
+        ReplyHandler {
             unique: ll::RequestId(unique),
             sender: Some(sender),
         }
     }
-}
 
-impl ReplyRaw {
     /// Reply to a request with the given error code and data. Must be called
     /// only once (the `ok` and `error` methods ensure this by consuming `self`)
     fn send_ll_mut(&mut self, response: &ll::Response<'_>) {
@@ -96,7 +86,7 @@ impl ReplyRaw {
     }
 }
 
-impl Drop for ReplyRaw {
+impl Drop for ReplyHandler {
     fn drop(&mut self) {
         if self.sender.is_some() {
             warn!(
@@ -111,73 +101,35 @@ impl Drop for ReplyRaw {
 ///
 /// Empty reply
 ///
-#[derive(Debug)]
-pub struct ReplyEmpty {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyEmpty {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyEmpty {
-        ReplyEmpty {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
 
 impl ReplyEmpty {
     /// Reply to a request with nothing
     pub fn ok(self) {
         self.reply.send_ll(&ll::Response::new_empty());
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
 }
 
 ///
 /// Data reply
 ///
-#[derive(Debug)]
-pub struct ReplyData {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyData {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyData {
-        ReplyData {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
 
 impl ReplyData {
     /// Reply to a request with the given data
     pub fn data(self, data: &[u8]) {
         self.reply.send_ll(&ll::Response::new_slice(data));
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
 }
 
 ///
 /// Entry reply
 ///
-#[derive(Debug)]
-pub struct ReplyEntry {
-    reply: ReplyRaw,
-}
 
-impl Reply for ReplyEntry {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyEntry {
-        ReplyEntry {
-            reply: Reply::new(unique, sender),
-        }
-    }
+#[derive(Debug)]
+pub struct Entry {
+    /// Describes a file
+    pub attr: FileAttr,
+    pub ttl: Duration,
+    pub generation: u64
 }
 
 impl ReplyEntry {
@@ -191,97 +143,62 @@ impl ReplyEntry {
             *ttl,
         ));
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
 }
 
 ///
 /// Attribute Reply
 ///
-#[derive(Debug)]
-pub struct ReplyAttr {
-    reply: ReplyRaw,
-}
 
-impl Reply for ReplyAttr {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyAttr {
-        ReplyAttr {
-            reply: Reply::new(unique, sender),
-        }
-    }
+#[derive(Debug)]
+pub struct Attr {
+    /// Describes a file
+    pub attr: FileAttr,
+    pub ttl: Duration
 }
 
 impl ReplyAttr {
     /// Reply to a request with the given attribute
-    pub fn attr(self, ttl: &Duration, attr: &FileAttr) {
+    pub fn attr(self, attr: Attr) {
         self.reply
-            .send_ll(&ll::Response::new_attr(ttl, &attr.into()));
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
+            .send_ll(&ll::Response::new_attr(attr.ttl, &attr.attr.into()));
     }
 }
 
 ///
 /// XTimes Reply
 ///
-#[cfg(target_os = "macos")]
 #[derive(Debug)]
-pub struct ReplyXTimes {
-    reply: ReplyRaw,
-}
-
-#[cfg(target_os = "macos")]
-impl Reply for ReplyXTimes {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyXTimes {
-        ReplyXTimes {
-            reply: Reply::new(unique, sender),
-        }
-    }
+pub struct XTimes {
+    bkuptime: SystemTime,
+    crtime: SystemTime
 }
 
 #[cfg(target_os = "macos")]
 impl ReplyXTimes {
     /// Reply to a request with the given xtimes
-    pub fn xtimes(self, bkuptime: SystemTime, crtime: SystemTime) {
+    pub fn xtimes(self, xtimes: XTimes) {
         self.reply
-            .send_ll(&ll::Response::new_xtimes(bkuptime, crtime))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
+            .send_ll(&ll::Response::new_xtimes(xtimes.bkuptime, xtimes.crtime))
     }
 }
 
 ///
 /// Open Reply
 ///
-#[derive(Debug)]
-pub struct ReplyOpen {
-    reply: ReplyRaw,
+#[derive(Debug)] //TODO #[derive(Copy)]
+pub struct Open {
+    fh: u64, 
+    flags: u32
 }
 
-impl Reply for ReplyOpen {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyOpen {
-        ReplyOpen {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
 
 impl ReplyOpen {
     /// Reply to a request with the given open result
-    pub fn opened(self, fh: u64, flags: u32) {
+    pub fn opened(self, open: Open) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
         self.reply
-            .send_ll(&ll::Response::new_open(ll::FileHandle(fh), flags, 0))
+            .send_ll(&ll::Response::new_open(ll::FileHandle(open.fh), open.flags, 0))
     }
 
     /// Registers a fd for passthrough, returning a `BackingId`.  Once you have the backing ID,
@@ -303,55 +220,32 @@ impl ReplyOpen {
             backing_id.backing_id,
         ))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
 }
 
 ///
 /// Write Reply
 ///
-#[derive(Debug)]
-pub struct ReplyWrite {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyWrite {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyWrite {
-        ReplyWrite {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
 
 impl ReplyWrite {
     /// Reply to a request with the given open result
     pub fn written(self, size: u32) {
         self.reply.send_ll(&ll::Response::new_write(size))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
 }
 
 ///
 /// Statfs Reply
 ///
-#[derive(Debug)]
-pub struct ReplyStatfs {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyStatfs {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyStatfs {
-        ReplyStatfs {
-            reply: Reply::new(unique, sender),
-        }
-    }
+#[derive(Copy)]
+struct Statfs {
+    blocks: u64,
+    bfree: u64,
+    bavail: u64,
+    files: u64,
+    ffree: u64,
+    bsize: u32,
+    namelen: u32,
+    frsize: u32
 }
 
 impl ReplyStatfs {
@@ -359,169 +253,87 @@ impl ReplyStatfs {
     #[allow(clippy::too_many_arguments)]
     pub fn statfs(
         self,
-        blocks: u64,
-        bfree: u64,
-        bavail: u64,
-        files: u64,
-        ffree: u64,
-        bsize: u32,
-        namelen: u32,
-        frsize: u32,
+        statfs: Statfs
     ) {
         self.reply.send_ll(&ll::Response::new_statfs(
-            blocks, bfree, bavail, files, ffree, bsize, namelen, frsize,
+            statfs.blocks, statfs.bfree, statfs.bavail, statfs.files, statfs.ffree, statfs.bsize, statfs.namelen, statfs.frsize,
         ))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
     }
 }
 
 ///
 /// Create reply
 ///
-#[derive(Debug)]
-pub struct ReplyCreate {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyCreate {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyCreate {
-        ReplyCreate {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
 
 impl ReplyCreate {
     /// Reply to a request with the given entry
-    pub fn created(self, ttl: &Duration, attr: &FileAttr, generation: u64, fh: u64, flags: u32) {
+    pub fn created(self, entry: Entry, open: Open) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
         self.reply.send_ll(&ll::Response::new_create(
-            ttl,
-            &attr.into(),
-            ll::Generation(generation),
-            ll::FileHandle(fh),
-            flags,
+            entry.ttl,
+            &entry.attr.into(),
+            ll::Generation(entry.generation),
+            ll::FileHandle(open.fh),
+            open.flags,
             0,
         ))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
     }
 }
 
 ///
 /// Lock Reply
 ///
-#[derive(Debug)]
-pub struct ReplyLock {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyLock {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyLock {
-        ReplyLock {
-            reply: Reply::new(unique, sender),
-        }
-    }
+#[derive(Copy)]
+struct Lock {
+    start: u64,
+    end: u64,
+    typ: i32,
+    pid: u32
 }
 
 impl ReplyLock {
     /// Reply to a request with the given open result
-    pub fn locked(self, start: u64, end: u64, typ: i32, pid: u32) {
+    pub fn locked(self, lock: Lock) {
         self.reply.send_ll(&ll::Response::new_lock(&ll::Lock {
-            range: (start, end),
-            typ,
-            pid,
+            range: (lock.start, lock.end),
+            lock.typ,
+            lock.pid,
         }))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
     }
 }
 
 ///
 /// Bmap Reply
 ///
-#[derive(Debug)]
-pub struct ReplyBmap {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyBmap {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyBmap {
-        ReplyBmap {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
 
 impl ReplyBmap {
     /// Reply to a request with the given open result
     pub fn bmap(self, block: u64) {
         self.reply.send_ll(&ll::Response::new_bmap(block))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
 }
 
 ///
 /// Ioctl Reply
 ///
-#[derive(Debug)]
-pub struct ReplyIoctl {
-    reply: ReplyRaw,
-}
 
-impl Reply for ReplyIoctl {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyIoctl {
-        ReplyIoctl {
-            reply: Reply::new(unique, sender),
-        }
-    }
+struct Ioctl {
+    result: i32,
+    data: Vec<u8>
 }
 
 impl ReplyIoctl {
     /// Reply to a request with the given open result
-    pub fn ioctl(self, result: i32, data: &[u8]) {
+    pub fn ioctl(self, ioctl: Ioctl) {
         self.reply
-            .send_ll(&ll::Response::new_ioctl(result, &[IoSlice::new(data)]));
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
+            .send_ll(&ll::Response::new_ioctl(ioctl.result, &[IoSlice::new(ioctl.data)]));
     }
 }
 
 ///
 /// Poll Reply
 ///
-#[derive(Debug)]
-#[cfg(feature = "abi-7-11")]
-pub struct ReplyPoll {
-    reply: ReplyRaw,
-}
-
-#[cfg(feature = "abi-7-11")]
-impl Reply for ReplyPoll {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyPoll {
-        ReplyPoll {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
 
 #[cfg(feature = "abi-7-11")]
 impl ReplyPoll {
@@ -529,123 +341,74 @@ impl ReplyPoll {
     pub fn poll(self, revents: u32) {
         self.reply.send_ll(&ll::Response::new_poll(revents))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
 }
 
 ///
 /// Directory reply
 ///
-#[derive(Debug)]
-pub struct ReplyDirectory {
-    reply: ReplyRaw,
-    data: DirEntList,
+
+struct DirEntry {
+    ino: u64,
+    offset: i64,
+    kind: FileType, 
+    name: OsStr
 }
 
-impl ReplyDirectory {
-    /// Creates a new ReplyDirectory with a specified buffer size.
-    pub fn new<S: ReplySender>(unique: u64, sender: S, size: usize) -> ReplyDirectory {
-        ReplyDirectory {
-            reply: Reply::new(unique, sender),
-            data: DirEntList::new(size),
-        }
-    }
+#[derive(Debug)]
 
-    /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
-    /// A transparent offset value can be provided for each entry. The kernel uses these
-    /// value to request the next entries in further readdir calls
-    #[must_use]
-    pub fn add<T: AsRef<OsStr>>(&mut self, ino: u64, offset: i64, kind: FileType, name: T) -> bool {
-        let name = name.as_ref();
-        self.data.push(&DirEntry::new(
-            INodeNo(ino),
-            DirEntOffset(offset),
-            kind,
-            name,
-        ))
-    }
+impl ReplyDirectory {
 
     /// Reply to a request with the filled directory buffer
-    pub fn ok(self) {
-        self.reply.send_ll(&self.data.into());
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
+    pub fn dir(self, entries: Vec<DirEntry> ) {
+        let size = entries.len()
+        let buf = DirEntList::new(size),
+        for item in entries.into_iter() {
+            buf.push(&DirEntry::new(
+                INodeNo(item.ino),
+                DirEntOffset(item.offset),
+                item.kind,
+                item.name
+            ));
+        }
+        self.reply.send_ll(buf.into());
     }
 }
 
 ///
 /// DirectoryPlus reply
 ///
-#[derive(Debug)]
-pub struct ReplyDirectoryPlus {
-    reply: ReplyRaw,
-    buf: DirEntPlusList,
-}
 
 impl ReplyDirectoryPlus {
     /// Creates a new ReplyDirectory with a specified buffer size.
-    pub fn new<S: ReplySender>(unique: u64, sender: S, size: usize) -> ReplyDirectoryPlus {
-        ReplyDirectoryPlus {
-            reply: Reply::new(unique, sender),
-            buf: DirEntPlusList::new(size),
-        }
-    }
-
-    /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
-    /// A transparent offset value can be provided for each entry. The kernel uses these
-    /// value to request the next entries in further readdir calls
-    pub fn add<T: AsRef<OsStr>>(
+    pub fn dirplus(
         &mut self,
-        ino: u64,
-        offset: i64,
-        name: T,
-        ttl: &Duration,
-        attr: &FileAttr,
-        generation: u64,
+        entries: Vec<(DirEntry, Entry)>
     ) -> bool {
-        let name = name.as_ref();
-        self.buf.push(&DirEntryPlus::new(
-            INodeNo(ino),
-            Generation(generation),
-            DirEntOffset(offset),
-            name,
-            *ttl,
-            attr.into(),
-            *ttl,
-        ))
-    }
-
+        let size: usize=entries.len()
+        let buf: DirEntListPlus::new(size)
+        for (item, plus) in entries.into_iter() {
+        buf.push(&DirEntryPlus::new(
+            INodeNo(item.ino),
+            Generation(item.generation),
+            DirEntOffset(item.offset),
+            item.name,
+            plus.ttl,
+            plus.attr.into(),
+            plus.ttl,
+        ));
+        }
     /// Reply to a request with the filled directory buffer
-    pub fn ok(self) {
-        self.reply.send_ll(&self.buf.into());
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
+        self.send_ll(buf.into());
     }
 }
 
 ///
 /// Xattr reply
 ///
-#[derive(Debug)]
-pub struct ReplyXattr {
-    reply: ReplyRaw,
-}
 
-impl Reply for ReplyXattr {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyXattr {
-        ReplyXattr {
-            reply: Reply::new(unique, sender),
-        }
-    }
+enum Xattr{
+    Size(u32),
+    Data(Vec<u8>)
 }
 
 impl ReplyXattr {
@@ -655,41 +418,26 @@ impl ReplyXattr {
     }
 
     /// Reply to a request with the data in the xattr.
-    pub fn data(self, data: &[u8]) {
+    pub fn data(self, data: Vec<u8>) {
         self.reply.send_ll(&ll::Response::new_slice(data))
     }
 
-    /// Reply to a request with the given error code.
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
+    pub fn xattr(self, reply: Xattr){
+        match reply{
+            Size(s)=>self.size(s),
+            Data(d)=>self.data(d)
+        };
     }
 }
 
 ///
 /// Lseek Reply
 ///
-#[derive(Debug)]
-pub struct ReplyLseek {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyLseek {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyLseek {
-        ReplyLseek {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
 
 impl ReplyLseek {
     /// Reply to a request with seeked offset
     pub fn offset(self, offset: i64) {
         self.reply.send_ll(&ll::Response::new_lseek(offset))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
     }
 }
 
