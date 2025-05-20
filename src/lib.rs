@@ -657,7 +657,7 @@ pub trait Filesystem {
         ino: u64,
         fh: u64,
         offset: i64,
-    ) -> Result<Directory, Errno> {
+    ) -> Result<Vec<DirEntry>, Errno> {
         debug!(
             "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {})",
             ino, fh, offset
@@ -676,7 +676,7 @@ pub trait Filesystem {
         ino: u64,
         fh: u64,
         offset: i64,
-    ) -> Result<DirectoryPlus, Errno> {
+    ) -> Result<Vec<(DirEntry, Entry), Errno> {
         debug!(
             "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {})",
             ino, fh, offset
@@ -951,7 +951,7 @@ pub trait Filesystem {
         fh: u64,
         offset: i64,
         whence: i32,
-    ) -> Result<Lseek, Errno> {
+    ) -> Result<i64, Errno> {
         debug!(
             "[Not Implemented] lseek(ino: {:#x?}, fh: {}, offset: {}, whence: {})",
             ino, fh, offset, whence

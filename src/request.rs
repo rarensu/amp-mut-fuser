@@ -221,12 +221,20 @@ impl<'a> Request<'a> {
             }
 
             ll::Operation::Lookup(x) => {
+                let response =
                 se.filesystem.lookup(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name().as_ref(),
-                    self.reply(),
+                    x.name()
                 );
+                match response {
+                    Ok(entry) => {
+                        self.replyhandler.entry(entry)
+                    },
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Forget(x) => {
                 se.filesystem
@@ -234,19 +242,31 @@ impl<'a> Request<'a> {
             }
             ll::Operation::GetAttr(_attr) => {
                 #[cfg(feature = "abi-7-9")]
+                let response =
                 se.filesystem.getattr(
                     self.meta,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(|fh| fh.into()),
                     self.reply(),
                 );
+                match response {
+                    Ok(attr)=> {
+
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
 
                 // Pre-abi-7-9 does not support providing a file handle.
                 #[cfg(not(feature = "abi-7-9"))]
+let response =
                 se.filesystem
                     .getattr(self.meta, self.request.nodeid().into(), None, self.reply());
             }
             ll::Operation::SetAttr(x) => {
+                let response =
+            
                 se.filesystem.setattr(
                     self.meta,
                     self.request.nodeid().into(),
@@ -264,12 +284,31 @@ impl<'a> Request<'a> {
                     x.flags(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+
+                    }
+                    Err(err)=>{
+                    self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::ReadLink(_) => {
+                let response =
                 se.filesystem
                     .readlink(self.meta, self.request.nodeid().into(), self.reply());
+match response {
+Ok()=> {
+self.replyhandler
+}
+Err(err)=>{
+self.replyhandler.error(error)
+}
+}
             }
             ll::Operation::MkNod(x) => {
+                let response =
+
                 se.filesystem.mknod(
                     self.meta,
                     self.request.nodeid().into(),
@@ -279,8 +318,17 @@ impl<'a> Request<'a> {
                     x.rdev(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::MkDir(x) => {
+                let response =
                 se.filesystem.mkdir(
                     self.meta,
                     self.request.nodeid().into(),
@@ -289,24 +337,51 @@ impl<'a> Request<'a> {
                     x.umask(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                    self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Unlink(x) => {
+                let response =
                 se.filesystem.unlink(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name().as_ref(),
                     self.reply(),
                 );
+                match response {
+                    Ok(attr)=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                    self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::RmDir(x) => {
+                let response =
                 se.filesystem.rmdir(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name().as_ref(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                    self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::SymLink(x) => {
+                let response =
                 se.filesystem.symlink(
                     self.meta,
                     self.request.nodeid().into(),
@@ -314,8 +389,17 @@ impl<'a> Request<'a> {
                     Path::new(x.target()),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Rename(x) => {
+                let response =
                 se.filesystem.rename(
                     self.meta,
                     self.request.nodeid().into(),
@@ -325,8 +409,17 @@ impl<'a> Request<'a> {
                     0,
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Link(x) => {
+                let response =
                 se.filesystem.link(
                     self.meta,
                     x.inode_no().into(),
@@ -334,12 +427,30 @@ impl<'a> Request<'a> {
                     x.dest().name.as_ref(),
                     self.reply(),
                 );
+                match response {
+                    Ok(attr)=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Open(x) => {
+                let response =
                 se.filesystem
                     .open(self.meta, self.request.nodeid().into(), x.flags(), self.reply());
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Read(x) => {
+                let response =
                 se.filesystem.read(
                     self.meta,
                     self.request.nodeid().into(),
@@ -350,8 +461,17 @@ impl<'a> Request<'a> {
                     x.lock_owner().map(|l| l.into()),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Write(x) => {
+                let response =
                 se.filesystem.write(
                     self.meta,
                     self.request.nodeid().into(),
@@ -363,8 +483,17 @@ impl<'a> Request<'a> {
                     x.lock_owner().map(|l| l.into()),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Flush(x) => {
+                let response =
                 se.filesystem.flush(
                     self.meta,
                     self.request.nodeid().into(),
@@ -372,8 +501,17 @@ impl<'a> Request<'a> {
                     x.lock_owner().into(),
                     self.reply(),
                 );
+                match response {
+                    Ok(attr)=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Release(x) => {
+                let response =
                 se.filesystem.release(
                     self.meta,
                     self.request.nodeid().into(),
@@ -383,8 +521,17 @@ impl<'a> Request<'a> {
                     x.flush(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::FSync(x) => {
+                let response =
                 se.filesystem.fsync(
                     self.meta,
                     self.request.nodeid().into(),
@@ -392,12 +539,30 @@ impl<'a> Request<'a> {
                     x.fdatasync(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::OpenDir(x) => {
+                let response =
                 se.filesystem
                     .opendir(self.meta, self.request.nodeid().into(), x.flags(), self.reply());
+                match response {
+                    Ok(attr)=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::ReadDir(x) => {
+                let response =
                 se.filesystem.readdir(
                     self.meta,
                     self.request.nodeid().into(),
@@ -409,8 +574,17 @@ impl<'a> Request<'a> {
                         x.size() as usize,
                     ),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::ReleaseDir(x) => {
+                let response =
                 se.filesystem.releasedir(
                     self.meta,
                     self.request.nodeid().into(),
@@ -418,8 +592,17 @@ impl<'a> Request<'a> {
                     x.flags(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::FSyncDir(x) => {
+                let response =
                 se.filesystem.fsyncdir(
                     self.meta,
                     self.request.nodeid().into(),
@@ -427,12 +610,30 @@ impl<'a> Request<'a> {
                     x.fdatasync(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::StatFs(_) => {
+                let response =
                 se.filesystem
                     .statfs(self.meta, self.request.nodeid().into(), self.reply());
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::SetXAttr(x) => {
+                let response =
                 se.filesystem.setxattr(
                     self.meta,
                     self.request.nodeid().into(),
@@ -442,8 +643,17 @@ impl<'a> Request<'a> {
                     x.position(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::GetXAttr(x) => {
+                let response =
                 se.filesystem.getxattr(
                     self.meta,
                     self.request.nodeid().into(),
@@ -451,24 +661,60 @@ impl<'a> Request<'a> {
                     x.size_u32(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::ListXAttr(x) => {
+                let response =
                 se.filesystem
                     .listxattr(self.meta, self.request.nodeid().into(), x.size(), self.reply());
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::RemoveXAttr(x) => {
+                let response =
                 se.filesystem.removexattr(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Access(x) => {
+                let response =
                 se.filesystem
                     .access(self.meta, self.request.nodeid().into(), x.mask(), self.reply());
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::Create(x) => {
+                let response =
                 se.filesystem.create(
                     self.meta,
                     self.request.nodeid().into(),
@@ -478,8 +724,17 @@ impl<'a> Request<'a> {
                     x.flags(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::GetLk(x) => {
+                let response =
                 se.filesystem.getlk(
                     self.meta,
                     self.request.nodeid().into(),
@@ -491,8 +746,17 @@ impl<'a> Request<'a> {
                     x.lock().pid,
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::SetLk(x) => {
+                let response =
                 se.filesystem.setlk(
                     self.meta,
                     self.request.nodeid().into(),
@@ -505,8 +769,17 @@ impl<'a> Request<'a> {
                     false,
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::SetLkW(x) => {
+                let response =
                 se.filesystem.setlk(
                     self.meta,
                     self.request.nodeid().into(),
@@ -519,8 +792,17 @@ impl<'a> Request<'a> {
                     true,
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             ll::Operation::BMap(x) => {
+                let response =
                 se.filesystem.bmap(
                     self.meta,
                     self.request.nodeid().into(),
@@ -528,6 +810,14 @@ impl<'a> Request<'a> {
                     x.block(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
 
             #[cfg(feature = "abi-7-11")]
@@ -535,6 +825,7 @@ impl<'a> Request<'a> {
                 if x.unrestricted() {
                     return Err(Errno::ENOSYS);
                 } else {
+                    let response =
                     se.filesystem.ioctl(
                         self.meta,
                         self.request.nodeid().into(),
@@ -545,12 +836,21 @@ impl<'a> Request<'a> {
                         x.out_size(),
                         self.reply(),
                     );
+                    match response {
+                        Ok(attr)=> {
+                            self.replyhandler.
+                        }
+                        Err(err)=>{
+                            self.replyhandler.error(error)
+                        }
+                    }
                 }
             }
             #[cfg(feature = "abi-7-11")]
             ll::Operation::Poll(x) => {
                 let ph = PollHandle::new(se.ch.sender(), x.kernel_handle());
 
+                let response =
                 se.filesystem.poll(
                     self.meta,
                     self.request.nodeid().into(),
@@ -560,6 +860,14 @@ impl<'a> Request<'a> {
                     x.flags(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             #[cfg(feature = "abi-7-15")]
             ll::Operation::NotifyReply(_) => {
@@ -572,6 +880,7 @@ impl<'a> Request<'a> {
             }
             #[cfg(feature = "abi-7-19")]
             ll::Operation::FAllocate(x) => {
+                let response =
                 se.filesystem.fallocate(
                     self.meta,
                     self.request.nodeid().into(),
@@ -581,9 +890,18 @@ impl<'a> Request<'a> {
                     x.mode(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             #[cfg(feature = "abi-7-21")]
             ll::Operation::ReadDirPlus(x) => {
+                let response =
                 se.filesystem.readdirplus(
                     self.meta,
                     self.request.nodeid().into(),
@@ -595,9 +913,18 @@ impl<'a> Request<'a> {
                         x.size() as usize,
                     ),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             #[cfg(feature = "abi-7-23")]
             ll::Operation::Rename2(x) => {
+                let response =
                 se.filesystem.rename(
                     self.meta,
                     x.from().dir.into(),
@@ -607,9 +934,18 @@ impl<'a> Request<'a> {
                     x.flags(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             #[cfg(feature = "abi-7-24")]
             ll::Operation::Lseek(x) => {
+                let response =
                 se.filesystem.lseek(
                     self.meta,
                     self.request.nodeid().into(),
@@ -618,10 +954,19 @@ impl<'a> Request<'a> {
                     x.whence(),
                     self.reply(),
                 );
+                match response {
+                    Ok(attr)=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             #[cfg(feature = "abi-7-28")]
             ll::Operation::CopyFileRange(x) => {
                 let (i, o) = (x.src(), x.dest());
+                let response =
                 se.filesystem.copy_file_range(
                     self.meta,
                     i.inode.into(),
@@ -634,18 +979,46 @@ impl<'a> Request<'a> {
                     x.flags().try_into().unwrap(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             #[cfg(target_os = "macos")]
             ll::Operation::SetVolName(x) => {
+                let response =
                 se.filesystem.setvolname(self.meta, x.name(), self.reply());
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
             #[cfg(target_os = "macos")]
             ll::Operation::GetXTimes(x) => {
+                let response =
                 se.filesystem
                     .getxtimes(self.meta, x.nodeid().into(), self.reply());
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+
+                }
             }
             #[cfg(target_os = "macos")]
             ll::Operation::Exchange(x) => {
+                let response =
                 se.filesystem.exchange(
                     self.meta,
                     x.from().dir.into(),
@@ -655,6 +1028,14 @@ impl<'a> Request<'a> {
                     x.options(),
                     self.reply(),
                 );
+                match response {
+                    Ok()=> {
+                        self.replyhandler.
+                    }
+                    Err(err)=>{
+                        self.replyhandler.error(error)
+                    }
+                }
             }
 
             #[cfg(feature = "abi-7-12")]

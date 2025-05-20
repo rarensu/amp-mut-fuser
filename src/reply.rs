@@ -385,7 +385,7 @@ impl ReplyDirectoryPlus {
         entries: Vec<(DirEntry, Entry)>
     ) -> bool {
         let size: usize=entries.len()
-        let buf: DirEntListPlus::new(size)
+        let buf = DirEntListPlus::new(size)
         for (item, plus) in entries.into_iter() {
         buf.push(&DirEntryPlus::new(
             INodeNo(item.ino),
@@ -413,12 +413,12 @@ enum Xattr{
 
 impl ReplyXattr {
     /// Reply to a request with the size of the xattr.
-    pub fn size(self, size: u32) {
+    pub fn xattr_size(self, size: u32) {
         self.reply.send_ll(&ll::Response::new_xattr_size(size))
     }
 
     /// Reply to a request with the data in the xattr.
-    pub fn data(self, data: Vec<u8>) {
+    pub fn xattr_data(self, data: Vec<u8>) {
         self.reply.send_ll(&ll::Response::new_slice(data))
     }
 
