@@ -134,13 +134,13 @@ pub struct Entry {
 
 impl ReplyEntry {
     /// Reply to a request with the given entry
-    pub fn entry(self, ttl: &Duration, attr: &FileAttr, generation: u64) {
+    pub fn entry(self, entry: Entry) {
         self.reply.send_ll(&ll::Response::new_entry(
-            ll::INodeNo(attr.ino),
-            ll::Generation(generation),
-            &attr.into(),
-            *ttl,
-            *ttl,
+            ll::INodeNo(entry.attr.ino),
+            ll::Generation(entry.generation),
+            entry.attr,
+            entry.ttl,
+            entry.ttl,
         ));
     }
 }
