@@ -688,8 +688,8 @@ impl<'a> Request<'a> {
                     x.flags()
                 );
                 match response {
-                    Ok(create)=> {
-                        self.replyhandler.create(create)
+                    Ok((entry, open))=> {
+                        self.replyhandler.created(entry, open)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
