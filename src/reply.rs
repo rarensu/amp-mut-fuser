@@ -8,11 +8,9 @@
 
 use crate::ll::{
     self,
-    reply::{DirEntPlusList, DirEntryPlus},
+    reply::{DirEntList, DirEntOffset, DirEntPlusList, DirEntryPlus},
+    reply::DirEntry as ll_DirEntry,
     Generation,
-};
-use crate::ll::{
-    reply::{DirEntList, DirEntOffset, DirEntry},
     INodeNo,
 };
 #[cfg(feature = "abi-7-40")]
@@ -20,7 +18,7 @@ use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
 use libc::c_int;
 use log::{error, warn};
 use std::convert::AsRef;
-use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fmt;
 use std::io::IoSlice;
 #[cfg(feature = "abi-7-40")]
@@ -102,10 +100,10 @@ impl Drop for ReplyHandler {
 /// Empty reply
 ///
 
-impl ReplyEmpty {
+impl ReplyHandler {
     /// Reply to a request with nothing
     pub fn ok(self) {
-        self.reply.send_ll(&ll::Response::new_empty());
+        self.send_ll(&ll::Response::new_empty());
     }
 }
 
@@ -113,10 +111,10 @@ impl ReplyEmpty {
 /// Data reply
 ///
 
-impl ReplyData {
+impl ReplyHandler {
     /// Reply to a request with the given data
     pub fn data(self, data: &[u8]) {
-        self.reply.send_ll(&ll::Response::new_slice(data));
+        self.send_ll(&ll::Response::new_slice(data));
     }
 }
 
@@ -132,10 +130,10 @@ pub struct Entry {
     pub generation: u64
 }
 
-impl ReplyEntry {
+impl ReplyHandler {
     /// Reply to a request with the given entry
     pub fn entry(self, entry: Entry) {
-        self.reply.send_ll(&ll::Response::new_entry(
+        self.send_ll(&ll::Response::new_entry(
             ll::INodeNo(entry.attr.ino),
             ll::Generation(entry.generation),
             entry.attr,
@@ -156,17 +154,19 @@ pub struct Attr {
     pub ttl: Duration
 }
 
-impl ReplyAttr {
+impl ReplyHandler {
     /// Reply to a request with the given attribute
     pub fn attr(self, attr: Attr) {
-        self.reply
-            .send_ll(&ll::Response::new_attr(attr.ttl, &attr.attr.into()));
+        self.
+            .send_ll(&ll::Response::new_attr(&attr.ttl, &attr.attr.into()));
     }
 }
 
 ///
 /// XTimes Reply
 ///
+
+#[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub struct XTimes {
     bkuptime: SystemTime,
@@ -174,10 +174,10 @@ pub struct XTimes {
 }
 
 #[cfg(target_os = "macos")]
-impl ReplyXTimes {
+impl ReplyHandler {
     /// Reply to a request with the given xtimes
     pub fn xtimes(self, xtimes: XTimes) {
-        self.reply
+        self.
             .send_ll(&ll::Response::new_xtimes(xtimes.bkuptime, xtimes.crtime))
     }
 }
@@ -192,12 +192,12 @@ pub struct Open {
 }
 
 
-impl ReplyOpen {
+impl ReplyHandler {
     /// Reply to a request with the given open result
     pub fn opened(self, open: Open) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
-        self.reply
+        self.
             .send_ll(&ll::Response::new_open(ll::FileHandle(open.fh), open.flags, 0))
     }
 
@@ -207,14 +207,14 @@ impl ReplyOpen {
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
     pub fn open_backing(&self, fd: impl std::os::fd::AsFd) -> std::io::Result<BackingId> {
-        self.reply.sender.as_ref().unwrap().open_backing(fd.as_fd())
+        self.sender.as_ref().unwrap().open_backing(fd.as_fd())
     }
 
     /// Reply to a request with an opened backing id.  Call ReplyOpen::open_backing() to get one of
     /// these.
     #[cfg(feature = "abi-7-40")]
     pub fn opened_passthrough(self, fh: u64, flags: u32, backing_id: &BackingId) {
-        self.reply.send_ll(&ll::Response::new_open(
+        self.send_ll(&ll::Response::new_open(
             ll::FileHandle(fh),
             flags | FOPEN_PASSTHROUGH,
             backing_id.backing_id,
@@ -226,18 +226,18 @@ impl ReplyOpen {
 /// Write Reply
 ///
 
-impl ReplyWrite {
+impl ReplyHandler {
     /// Reply to a request with the given open result
     pub fn written(self, size: u32) {
-        self.reply.send_ll(&ll::Response::new_write(size))
+        self.send_ll(&ll::Response::new_write(size))
     }
 }
 
 ///
 /// Statfs Reply
 ///
-#[derive(Copy)]
-struct Statfs {
+#[derive(Copy, Clone, Debug)]
+pub struct Statfs {
     blocks: u64,
     bfree: u64,
     bavail: u64,
@@ -248,14 +248,14 @@ struct Statfs {
     frsize: u32
 }
 
-impl ReplyStatfs {
+impl ReplyHandler {
     /// Reply to a request with the given open result
     #[allow(clippy::too_many_arguments)]
     pub fn statfs(
         self,
         statfs: Statfs
     ) {
-        self.reply.send_ll(&ll::Response::new_statfs(
+        self.send_ll(&ll::Response::new_statfs(
             statfs.blocks, statfs.bfree, statfs.bavail, statfs.files, statfs.ffree, statfs.bsize, statfs.namelen, statfs.frsize,
         ))
     }
@@ -265,13 +265,13 @@ impl ReplyStatfs {
 /// Create reply
 ///
 
-impl ReplyCreate {
+impl ReplyHandler {
     /// Reply to a request with the given entry
     pub fn created(self, entry: Entry, open: Open) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
-        self.reply.send_ll(&ll::Response::new_create(
-            entry.ttl,
+        self.send_ll(&ll::Response::new_create(
+            &entry.ttl,
             &entry.attr.into(),
             ll::Generation(entry.generation),
             ll::FileHandle(open.fh),
@@ -284,21 +284,21 @@ impl ReplyCreate {
 ///
 /// Lock Reply
 ///
-#[derive(Copy)]
-struct Lock {
+#[derive(Copy, Clone, Debug)]
+pub struct Lock {
     start: u64,
     end: u64,
     typ: i32,
     pid: u32
 }
 
-impl ReplyLock {
+impl ReplyHandler {
     /// Reply to a request with the given open result
     pub fn locked(self, lock: Lock) {
-        self.reply.send_ll(&ll::Response::new_lock(&ll::Lock {
+        self.send_ll(&ll::Response::new_lock(&ll::Lock{
             range: (lock.start, lock.end),
-            lock.typ,
-            lock.pid,
+            typ: lock.typ,
+            pid: lock.pid,
         }))
     }
 }
@@ -307,10 +307,10 @@ impl ReplyLock {
 /// Bmap Reply
 ///
 
-impl ReplyBmap {
+impl ReplyHandler {
     /// Reply to a request with the given open result
     pub fn bmap(self, block: u64) {
-        self.reply.send_ll(&ll::Response::new_bmap(block))
+        self.send_ll(&ll::Response::new_bmap(block))
     }
 }
 
@@ -318,16 +318,16 @@ impl ReplyBmap {
 /// Ioctl Reply
 ///
 
-struct Ioctl {
+pub struct Ioctl {
     result: i32,
     data: Vec<u8>
 }
 
-impl ReplyIoctl {
+impl ReplyHandler {
     /// Reply to a request with the given open result
     pub fn ioctl(self, ioctl: Ioctl) {
-        self.reply
-            .send_ll(&ll::Response::new_ioctl(ioctl.result, &[IoSlice::new(ioctl.data)]));
+        self.
+            .send_ll(&ll::Response::new_ioctl(ioctl.result, &[IoSlice::new(ioctl.data.as_ref())]));
     }
 }
 
@@ -336,10 +336,10 @@ impl ReplyIoctl {
 ///
 
 #[cfg(feature = "abi-7-11")]
-impl ReplyPoll {
+impl ReplyHandler {
     /// Reply to a request with the given poll result
     pub fn poll(self, revents: u32) {
-        self.reply.send_ll(&ll::Response::new_poll(revents))
+        self.send_ll(&ll::Response::new_poll(revents))
     }
 }
 
@@ -347,30 +347,30 @@ impl ReplyPoll {
 /// Directory reply
 ///
 
-struct DirEntry {
+#[derive(Debug)]
+pub struct DirEntry {
     ino: u64,
     offset: i64,
     kind: FileType, 
-    name: OsStr
+    name: OsString
 }
 
-#[derive(Debug)]
 
-impl ReplyDirectory {
+impl ReplyHandler {
 
     /// Reply to a request with the filled directory buffer
     pub fn dir(self, entries: Vec<DirEntry> ) {
-        let size = entries.len()
-        let buf = DirEntList::new(size),
+        let size = entries.len();
+        let buf = DirEntList::new(size);
         for item in entries.into_iter() {
-            buf.push(&DirEntry::new(
+            buf.push(&ll_DirEntry::new(
                 INodeNo(item.ino),
                 DirEntOffset(item.offset),
                 item.kind,
                 item.name
             ));
         }
-        self.reply.send_ll(buf.into());
+        self.send_ll(buf.into());
     }
 }
 
@@ -378,14 +378,14 @@ impl ReplyDirectory {
 /// DirectoryPlus reply
 ///
 
-impl ReplyDirectoryPlus {
+impl ReplyHandler {
     /// Creates a new ReplyDirectory with a specified buffer size.
     pub fn dirplus(
         &mut self,
         entries: Vec<(DirEntry, Entry)>
     ) -> bool {
-        let size: usize=entries.len()
-        let buf = DirEntListPlus::new(size)
+        let size: usize=entries.len();
+        let buf = DirEntPlusList::new(size);
         for (item, plus) in entries.into_iter() {
         buf.push(&DirEntryPlus::new(
             INodeNo(item.ino),
@@ -397,7 +397,7 @@ impl ReplyDirectoryPlus {
             plus.ttl,
         ));
         }
-    /// Reply to a request with the filled directory buffer
+    // Reply to a request with the filled directory buffer
         self.send_ll(buf.into());
     }
 }
@@ -406,20 +406,20 @@ impl ReplyDirectoryPlus {
 /// Xattr reply
 ///
 
-enum Xattr{
+pub enum Xattr{
     Size(u32),
     Data(Vec<u8>)
 }
 
-impl ReplyXattr {
+impl ReplyHandler {
     /// Reply to a request with the size of the xattr.
     pub fn xattr_size(self, size: u32) {
-        self.reply.send_ll(&ll::Response::new_xattr_size(size))
+        self.send_ll(&ll::Response::new_xattr_size(size))
     }
 
     /// Reply to a request with the data in the xattr.
     pub fn xattr_data(self, data: Vec<u8>) {
-        self.reply.send_ll(&ll::Response::new_slice(data))
+        self.send_ll(&ll::Response::new_slice(data))
     }
 
     pub fn xattr(self, reply: Xattr){
@@ -434,10 +434,10 @@ impl ReplyXattr {
 /// Lseek Reply
 ///
 
-impl ReplyLseek {
+impl ReplyHandler {
     /// Reply to a request with seeked offset
     pub fn offset(self, offset: i64) {
-        self.reply.send_ll(&ll::Response::new_lseek(offset))
+        self.send_ll(&ll::Response::new_lseek(offset))
     }
 }
 
@@ -763,7 +763,7 @@ mod test {
         if cfg!(feature = "abi-7-9") {
             let insert_at = expected.len() - 16;
             expected.splice(
-                insert_at..insert_at,
+                insert_at.insert_at,
                 vec![0xdd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             );
         }

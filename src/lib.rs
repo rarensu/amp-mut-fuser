@@ -31,17 +31,11 @@ pub use mnt::mount_options::MountOption;
 pub use notify::{Notifier, PollHandle};
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
-#[cfg(feature = "abi-7-11")]
-pub use reply::ReplyPoll;
 #[cfg(target_os = "macos")]
-pub use reply::ReplyXTimes;
-pub use reply::ReplyXattr;
-pub use reply::{Reply, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen};
-pub use reply::{
-    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyDirectoryPlus, ReplyIoctl, ReplyLock, ReplyLseek,
-    ReplyStatfs, ReplyWrite,
-};
-pub use request::Request;
+pub use reply::XTimes;
+pub use reply::{Entry, Attr, DirEntry, Open, Statfs, Xattr};
+pub use ll::Errno;
+pub use request::RequestMeta;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
@@ -338,7 +332,7 @@ pub trait Filesystem {
     fn destroy(&mut self) {}
 
     /// Look up a directory entry by name and get its attributes.
-    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsStr) -> Result<Entry, Errno> {
+    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         debug!(
             "[Not Implemented] lookup(parent: {:#x?}, name {:?})",
             parent, name
@@ -676,7 +670,7 @@ pub trait Filesystem {
         ino: u64,
         fh: u64,
         offset: i64,
-    ) -> Result<Vec<(DirEntry, Entry), Errno> {
+    ) -> Result<Vec<(DirEntry, Entry)>, Errno>{
         debug!(
             "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {})",
             ino, fh, offset
