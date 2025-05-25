@@ -6,14 +6,14 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use libc::{c_int, ENOSYS, EPERM};
+use libc::c_int;//{, ENOSYS, EPERM};
 use log::{debug, warn};
 use mnt::mount_options::parse_options_from_args;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr,OsString};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
 use std::time::SystemTime;
@@ -359,7 +359,7 @@ pub trait Filesystem {
     }
 
     /// Get file attributes.
-    fn getattr(&mut self, _req: RequestMeta, ino: u64, fh: Option<u64>) -> Result<FileAttr, Errno> {
+    fn getattr(&mut self, _req: RequestMeta, ino: u64, fh: Option<u64>) -> Result<Attr, Errno> {
         debug!(
             "[Not Implemented] getattr(ino: {:#x?}, fh: {:#x?})",
             ino, fh
@@ -384,7 +384,7 @@ pub trait Filesystem {
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
         flags: Option<u32>
-    ) -> Result<FileAttr, Errno> {
+    ) -> Result<Attr, Errno> {
         debug!(
             "[Not Implemented] setattr(ino: {:#x?}, mode: {:?}, uid: {:?}, \
             gid: {:?}, size: {:?}, fh: {:?}, flags: {:?})",
@@ -458,13 +458,13 @@ pub trait Filesystem {
         _req: RequestMeta,
         parent: u64,
         link_name: OsString,
-        target: Path,
+        target: PathBuf,
     ) -> Result<Entry, Errno> {
         debug!(
             "[Not Implemented] symlink(parent: {:#x?}, link_name: {:?}, target: {:?})",
             parent, link_name, target,
         );
-        Err(EPERM)
+        Err(Errno::EPERM) // why isn't this ENOSYS?
     }
 
     /// Rename a file.
@@ -497,7 +497,7 @@ pub trait Filesystem {
             "[Not Implemented] link(ino: {:#x?}, newparent: {:#x?}, newname: {:?})",
             ino, newparent, newname
         );
-        Err(EPERM)
+        Err(Errno::EPERM) // why isn't this ENOSYS?
     }
 
     /// Open a file.

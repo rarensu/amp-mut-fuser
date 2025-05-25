@@ -10,7 +10,7 @@ use log::{debug, error, warn};
 use std::convert::TryFrom;
 #[cfg(feature = "abi-7-28")]
 use std::convert::TryInto;
-use std::path::Path;
+// use std::path::PathBuf;
 
 use crate::channel::ChannelSender;
 use crate::ll::Request as _;
@@ -76,27 +76,16 @@ impl<'a> Request<'a> {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch<FS: Filesystem>(&self, se: &mut Session<FS>) {
+    pub(crate) fn dispatch<FS: Filesystem>(self, se: &mut Session<FS>) {
         debug!("{}", self.request);
-        let unique = self.request.unique();
-
-        let res = match self.dispatch_req(se) {
-            Ok(Some(resp)) => resp,
-            Ok(None) => return,
-            Err(errno) => self.request.reply_err(errno),
-        }
-        .with_iovec(unique, |iov| self.ch.send(iov));
-
-        if let Err(err) = res {
-            warn!("Request {:?}: Failed to send reply: {}", unique, err)
-        }
-    }
-
-    fn dispatch_req<FS: Filesystem>(
-        &self,
-        se: &mut Session<FS>,
-    ) -> Result<Option<Response<'_>>, Errno> {
-        let op = self.request.operation().map_err(|_| Errno::ENOSYS)?;
+        let res = self.request.operation().map_err(|_| Errno::ENOSYS);
+        let op = match res {
+            Ok(op) => op,
+            Err(err) => {
+                self.replyhandler.error(err);
+                return;
+            }
+        };
         // Implement allow_root & access check for auto_unmount
         if (se.allowed == SessionACL::RootAndOwner
             && self.request.uid() != se.session_owner
@@ -120,7 +109,7 @@ impl<'a> Request<'a> {
                     | ll::Operation::Release(_)
                     | ll::Operation::ReleaseDir(_) => {}
                     _ => {
-                        return Err(Errno::EACCES);
+                        self.replyhandler.error(Errno::EACCES);
                     }
                 }
             }
@@ -140,8 +129,9 @@ impl<'a> Request<'a> {
                     | ll::Operation::Release(_)
                     | ll::Operation::ReleaseDir(_) => {}
                     _ => {
-                        return Err(Errno::EACCES);
-                    }
+                        self.replyhandler.error(Errno::EACCES);
+                        return;
+                   }
                 }
             }
             #[cfg(not(feature = "abi-7-16"))]
@@ -159,7 +149,9 @@ impl<'a> Request<'a> {
                     | ll::Operation::Release(_)
                     | ll::Operation::ReleaseDir(_) => {}
                     _ => {
-                        return Err(Errno::EACCES);
+                        // todo: self.replyhandler.error()
+                        self.replyhandler.error(Errno::EACCES);
+                        return;
                     }
                 }
             }
@@ -171,7 +163,8 @@ impl<'a> Request<'a> {
                 let v = x.version();
                 if v < ll::Version(7, 6) {
                     error!("Unsupported FUSE ABI version {}", v);
-                    return Err(Errno::EPROTO);
+                    self.replyhandler.error(Errno::EPROTO);
+                    return;
                 }
                 // Remember ABI version supported by kernel
                 se.proto_major = v.major();
@@ -180,11 +173,20 @@ impl<'a> Request<'a> {
                 let config = KernelConfig::new(x.capabilities(), x.max_readahead());
                 // Call filesystem init method and give it a chance to 
                 // propose a different config or return an error
-                let config = se.filesystem
+                let response = se.filesystem
                     .init(self.meta, config)
-                    .map_err(Errno::from_i32)?;
+                    .map_err(Errno::from_i32);
+                let config = match response {
+                    Ok(config) => {
+                        config
+                    }
+                    Err(errno) => {
+                        self.replyhandler.error(errno);
+                        return;
+                    }
+                };
 
-                // Reply with our desired version and settings. If the kernel supports a
+                // Reply with our desiredI version and settings. If the kernel supports a
                 // larger major version, it'll re-send a matching init message. If it
                 // supports only lower major versions, we replied with an error above.
                 debug!(
@@ -196,28 +198,39 @@ impl<'a> Request<'a> {
                     config.max_write
                 );
                 se.initialized = true;
-                return Ok(Some(x.reply(&config)));
+                x.reply(&config).with_iovec(
+                    self.request.unique(), 
+                    |iov| self.ch.send(iov)
+                );
             }
             // Any operation is invalid before initialization
             _ if !se.initialized => {
                 warn!("Ignoring FUSE operation before init: {}", self.request);
-                return Err(Errno::EIO);
+                self.request.reply_err(Errno::EIO)
+                .with_iovec(
+                                self.request.unique(),
+                                 |iov| self.ch.send(iov)
+                            );
             }
             // Filesystem destroyed
             ll::Operation::Destroy(x) => {
                 se.filesystem.destroy();
                 se.destroyed = true;
-                return Ok(Some(x.reply()));
+                x.reply()
+                .with_iovec(
+                    self.request.unique(), 
+                    |iov| self.ch.send(iov)
+                );
             }
             // Any operation is invalid after destroy
             _ if se.destroyed => {
                 warn!("Ignoring FUSE operation after destroy: {}", self.request);
-                return Err(Errno::EIO);
+                self.request.reply_err(Errno::EIO);
             }
 
             ll::Operation::Interrupt(_) => {
                 // TODO: handle FUSE_INTERRUPT
-                return Err(Errno::ENOSYS);
+                self.request.reply_err(Errno::ENOSYS);
             }
 
             ll::Operation::Lookup(x) => {
@@ -225,7 +238,7 @@ impl<'a> Request<'a> {
                 se.filesystem.lookup(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name()
+                    x.name().into()
                 );
                 match response {
                     Ok(entry) => {
@@ -296,7 +309,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(data)=> {
-                        self.replyhandler.data(data)
+                        self.replyhandler.data(&data)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
@@ -307,7 +320,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.mknod(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name().as_ref(),
+                    x.name().into(),
                     x.mode(),
                     x.umask(),
                     x.rdev()
@@ -325,7 +338,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.mkdir(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name().as_ref(),
+                    x.name().into(),
                     x.mode(),
                     x.umask()
                 );
@@ -342,7 +355,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.unlink(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name().as_ref()
+                    x.name().into()
                 );
                 match response {
                     Ok(())=> {
@@ -357,7 +370,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.rmdir(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name().as_ref()
+                    x.name().into()
                 );
                 match response {
                     Ok(())=> {
@@ -372,8 +385,8 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.symlink(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.link_name().as_ref(),
-                    Path::new(x.target())
+                    x.link_name().into(),
+                    x.target().into()
                 );
                 match response {
                     Ok(entry)=> {
@@ -388,9 +401,9 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.rename(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.src().name.as_ref(),
+                    x.src().name.into(),
                     x.dest().dir.into(),
-                    x.dest().name.as_ref(),
+                    x.dest().name.into(),
                     0
                 );
                 match response {
@@ -407,7 +420,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     x.inode_no().into(),
                     self.request.nodeid().into(),
-                    x.dest().name.as_ref()
+                    x.dest().name.into()
                 );
                 match response {
                     Ok(entry)=> {
@@ -426,7 +439,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(open)=> {
-                        self.replyhandler.open(open)
+                        self.replyhandler.opened(open)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
@@ -445,7 +458,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(data)=> {
-                        self.replyhandler.data(data)
+                        self.replyhandler.data(&data)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
@@ -458,7 +471,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    x.data(),
+                    x.data().into(),
                     x.write_flags(),
                     x.flags(),
                     x.lock_owner().map(|l| l.into())
@@ -603,8 +616,8 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.setxattr(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name(),
-                    x.value(),
+                    x.name().into(),
+                    x.value().into(),
                     x.flags(),
                     x.position()
                 );
@@ -621,7 +634,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.getxattr(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name(),
+                    x.name().into(),
                     x.size_u32()
                 );
                 match response {
@@ -652,7 +665,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.removexattr(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name()
+                    x.name().into()
                 );
                 match response {
                     Ok(())=> {
@@ -682,7 +695,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.create(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name().as_ref(),
+                    x.name().into(),
                     x.mode(),
                     x.umask(),
                     x.flags()
@@ -983,6 +996,5 @@ impl<'a> Request<'a> {
                 return Err(Errno::ENOSYS);
             }
         }
-        Ok(None)
     }
 }

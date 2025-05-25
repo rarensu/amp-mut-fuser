@@ -55,7 +55,7 @@ pub(crate) struct ReplyHandler {
 }
 
 impl ReplyHandler {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyHandler {
+    pub(crate) fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyHandler {
         let sender = Box::new(sender);
         ReplyHandler {
             unique: ll::RequestId(unique),
@@ -78,9 +78,9 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        assert_ne!(err, 0);
-        self.send_ll(&ll::Response::new_error(ll::Errno::from_i32(err)));
+    pub fn error(self, err: ll::Errno) {
+        // assert_ne!(err.0, 0); redundant since it is already nonzero type
+        self.send_ll(&ll::Response::new_error(err));
     }
 }
 
@@ -136,7 +136,7 @@ impl ReplyHandler {
         self.send_ll(&ll::Response::new_entry(
             ll::INodeNo(entry.attr.ino),
             ll::Generation(entry.generation),
-            entry.attr,
+            &entry.attr.into(),
             entry.ttl,
             entry.ttl,
         ));
@@ -157,8 +157,7 @@ pub struct Attr {
 impl ReplyHandler {
     /// Reply to a request with the given attribute
     pub fn attr(self, attr: Attr) {
-        self.
-            .send_ll(&ll::Response::new_attr(&attr.ttl, &attr.attr.into()));
+        self.send_ll(&ll::Response::new_attr(&attr.ttl, &attr.attr.into()));
     }
 }
 
@@ -177,8 +176,7 @@ pub struct XTimes {
 impl ReplyHandler {
     /// Reply to a request with the given xtimes
     pub fn xtimes(self, xtimes: XTimes) {
-        self.
-            .send_ll(&ll::Response::new_xtimes(xtimes.bkuptime, xtimes.crtime))
+        self.send_ll(&ll::Response::new_xtimes(xtimes.bkuptime, xtimes.crtime))
     }
 }
 
@@ -197,8 +195,7 @@ impl ReplyHandler {
     pub fn opened(self, open: Open) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
-        self.
-            .send_ll(&ll::Response::new_open(ll::FileHandle(open.fh), open.flags, 0))
+        self.send_ll(&ll::Response::new_open(ll::FileHandle(open.fh), open.flags, 0))
     }
 
     /// Registers a fd for passthrough, returning a `BackingId`.  Once you have the backing ID,
@@ -326,8 +323,7 @@ pub struct Ioctl {
 impl ReplyHandler {
     /// Reply to a request with the given open result
     pub fn ioctl(self, ioctl: Ioctl) {
-        self.
-            .send_ll(&ll::Response::new_ioctl(ioctl.result, &[IoSlice::new(ioctl.data.as_ref())]));
+        self.send_ll(&ll::Response::new_ioctl(ioctl.result, &[IoSlice::new(ioctl.data.as_ref())]));
     }
 }
 
@@ -361,7 +357,7 @@ impl ReplyHandler {
     /// Reply to a request with the filled directory buffer
     pub fn dir(self, entries: Vec<DirEntry> ) {
         let size = entries.len();
-        let buf = DirEntList::new(size);
+        let mut buf = DirEntList::new(size);
         for item in entries.into_iter() {
             buf.push(&ll_DirEntry::new(
                 INodeNo(item.ino),
@@ -370,7 +366,7 @@ impl ReplyHandler {
                 item.name
             ));
         }
-        self.send_ll(buf.into());
+        self.send_ll(&buf.into());
     }
 }
 
@@ -381,15 +377,15 @@ impl ReplyHandler {
 impl ReplyHandler {
     /// Creates a new ReplyDirectory with a specified buffer size.
     pub fn dirplus(
-        &mut self,
+        self,
         entries: Vec<(DirEntry, Entry)>
-    ) -> bool {
+    ) {
         let size: usize=entries.len();
-        let buf = DirEntPlusList::new(size);
+        let mut buf = DirEntPlusList::new(size);
         for (item, plus) in entries.into_iter() {
         buf.push(&DirEntryPlus::new(
             INodeNo(item.ino),
-            Generation(item.generation),
+            Generation(plus.generation),
             DirEntOffset(item.offset),
             item.name,
             plus.ttl,
@@ -398,7 +394,7 @@ impl ReplyHandler {
         ));
         }
     // Reply to a request with the filled directory buffer
-        self.send_ll(buf.into());
+        self.send_ll(&buf.into());
     }
 }
 
@@ -419,13 +415,13 @@ impl ReplyHandler {
 
     /// Reply to a request with the data in the xattr.
     pub fn xattr_data(self, data: Vec<u8>) {
-        self.send_ll(&ll::Response::new_slice(data))
+        self.send_ll(&ll::Response::new_slice(&data))
     }
 
     pub fn xattr(self, reply: Xattr){
         match reply{
-            Size(s)=>self.size(s),
-            Data(d)=>self.data(d)
+            Xattr::Size(s)=>self.xattr_size(s),
+            Xattr::Data(d)=>self.xattr_data(d)
         };
     }
 }
@@ -590,7 +586,7 @@ mod test {
         expected[0] = (expected.len()) as u8;
 
         let sender = AssertSender { expected };
-        let reply: ReplyEntry = Reply::new(0xdeadbeef, sender);
+        let reply = Reply::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = FileAttr {
