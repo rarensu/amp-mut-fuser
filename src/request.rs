@@ -5,7 +5,7 @@
 //!
 //! TODO: This module is meant to go away soon in favor of `ll::Request`.
 
-use crate::ll::{fuse_abi as abi, Errno, Response};
+use crate::ll::{fuse_abi as abi, Errno};
 use log::{debug, error, warn};
 use std::convert::TryFrom;
 #[cfg(feature = "abi-7-28")]
@@ -198,29 +198,45 @@ impl<'a> Request<'a> {
                     config.max_write
                 );
                 se.initialized = true;
-                x.reply(&config).with_iovec(
+                match x.reply(&config).with_iovec(
                     self.request.unique(), 
                     |iov| self.ch.send(iov)
-                );
+                ) {
+                    Ok(()) => {}
+                    Err(err) => {
+                        error!("Failed to send INIT reply: {}", err);
+                    }
+                };
             }
             // Any operation is invalid before initialization
             _ if !se.initialized => {
                 warn!("Ignoring FUSE operation before init: {}", self.request);
-                self.request.reply_err(Errno::EIO)
+                match self.request.reply_err(Errno::EIO)
                 .with_iovec(
                                 self.request.unique(),
                                  |iov| self.ch.send(iov)
-                            );
+                            )
+                {
+                    Ok(()) => {}
+                    Err(err) => {
+                        error!("Failed to send uninitialised error: {}", err);
+                    }
+                };
             }
             // Filesystem destroyed
             ll::Operation::Destroy(x) => {
                 se.filesystem.destroy();
                 se.destroyed = true;
-                x.reply()
+                match x.reply()
                 .with_iovec(
                     self.request.unique(), 
                     |iov| self.ch.send(iov)
-                );
+                ) {
+                    Ok(()) => {}
+                    Err(err) => {
+                        error!("Failed to send DESTROY reply: {}", err);
+                    }
+                };
             }
             // Any operation is invalid after destroy
             _ if se.destroyed => {

@@ -126,7 +126,9 @@ impl ReplyHandler {
 pub struct Entry {
     /// Describes a file
     pub attr: FileAttr,
+    /// Time to live for the entry
     pub ttl: Duration,
+    /// The generation of the entry
     pub generation: u64
 }
 
@@ -151,6 +153,7 @@ impl ReplyHandler {
 pub struct Attr {
     /// Describes a file
     pub attr: FileAttr,
+    /// Time to live for the attribute
     pub ttl: Duration
 }
 
@@ -168,7 +171,9 @@ impl ReplyHandler {
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub struct XTimes {
+    /// Backup time
     bkuptime: SystemTime,
+    /// Creation time
     crtime: SystemTime
 }
 
@@ -185,7 +190,9 @@ impl ReplyHandler {
 ///
 #[derive(Debug)] //TODO #[derive(Copy)]
 pub struct Open {
+    /// File handle for the opened file
     fh: u64, 
+    /// Flags for the opened file
     flags: u32
 }
 
@@ -314,12 +321,17 @@ impl ReplyHandler {
 ///
 /// Ioctl Reply
 ///
-
+///             
+#[cfg(feature = "abi-7-11")]
+#[derive(Debug)]
 pub struct Ioctl {
+    /// Result of the ioctl operation
     result: i32,
+    /// Data to be returned with the ioctl operation
     data: Vec<u8>
 }
 
+#[cfg(feature = "abi-7-11")]
 impl ReplyHandler {
     /// Reply to a request with the given open result
     pub fn ioctl(self, ioctl: Ioctl) {
@@ -509,8 +521,8 @@ mod test {
                 0x00, 0x00, 0x12, 0x34, 0x78, 0x56,
             ],
         };
-        let reply: ReplyRaw = Reply::new(0xdeadbeef, sender);
-        reply.send_ll(&ll::Response::new_data(data.as_bytes()));
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.send_ll(&ll::Response::new_data(data.as_bytes()));
     }
 
     #[test]
@@ -521,8 +533,8 @@ mod test {
                 0x00, 0x00,
             ],
         };
-        let reply: ReplyRaw = Reply::new(0xdeadbeef, sender);
-        reply.error(66);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.error(66);
     }
 
     #[test]
@@ -533,8 +545,8 @@ mod test {
                 0x00, 0x00,
             ],
         };
-        let reply: ReplyEmpty = Reply::new(0xdeadbeef, sender);
-        reply.ok();
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.ok();
     }
 
     #[test]
@@ -545,8 +557,8 @@ mod test {
                 0x00, 0x00, 0xde, 0xad, 0xbe, 0xef,
             ],
         };
-        let reply: ReplyData = Reply::new(0xdeadbeef, sender);
-        reply.data(&[0xde, 0xad, 0xbe, 0xef]);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.data(&[0xde, 0xad, 0xbe, 0xef]);
     }
 
     #[test]
@@ -586,7 +598,7 @@ mod test {
         expected[0] = (expected.len()) as u8;
 
         let sender = AssertSender { expected };
-        let reply = Reply::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = FileAttr {
@@ -606,7 +618,13 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        reply.entry(&ttl, &attr, 0xaa);
+        replyhandler.entry(
+            Entry{
+                attr: attr, 
+                ttl: ttl, 
+                generation: 0xaa
+            }
+        );
     }
 
     #[test]
@@ -643,7 +661,7 @@ mod test {
         expected[0] = expected.len() as u8;
 
         let sender = AssertSender { expected };
-        let reply: ReplyAttr = Reply::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = FileAttr {
@@ -663,7 +681,9 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        reply.attr(&ttl, &attr);
+        replyhandler.attr(
+            Attr { attr: attr, ttl: ttl}
+        );
     }
 
     #[test]
@@ -676,9 +696,14 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
             ],
         };
-        let reply: ReplyXTimes = Reply::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
-        reply.xtimes(time, time);
+        replyhandler.xtimes(
+            XTimes{
+                bkuptime: time,
+                crtime: time,
+            }
+        );
     }
 
     #[test]
@@ -690,8 +715,10 @@ mod test {
                 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyOpen = Reply::new(0xdeadbeef, sender);
-        reply.opened(0x1122, 0x33);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.opened(
+            Open { fh: 0x1122, flags: 0x33}
+        );
     }
 
     #[test]
@@ -702,8 +729,8 @@ mod test {
                 0x00, 0x00, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyWrite = Reply::new(0xdeadbeef, sender);
-        reply.written(0x1122);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.written(0x1122);
     }
 
     #[test]
@@ -719,8 +746,19 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyStatfs = Reply::new(0xdeadbeef, sender);
-        reply.statfs(0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.statfs(
+            Statfs{
+                blocks: 0x11, 
+                bfree: 0x22, 
+                bavail: 0x33, 
+                files: 0x44, 
+                ffree: 0x55, 
+                bsize: 0x66, 
+                frsize: 0x77, 
+                namelen: 0x88
+            }
+        );
     }
 
     #[test]
@@ -759,14 +797,14 @@ mod test {
         if cfg!(feature = "abi-7-9") {
             let insert_at = expected.len() - 16;
             expected.splice(
-                insert_at.insert_at,
+                insert_at,
                 vec![0xdd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             );
         }
         expected[0] = (expected.len()) as u8;
 
         let sender = AssertSender { expected };
-        let reply: ReplyCreate = Reply::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = FileAttr {
@@ -786,7 +824,17 @@ mod test {
             flags: 0x99,
             blksize: 0xdd,
         };
-        reply.created(&ttl, &attr, 0xaa, 0xbb, 0xcc);
+        replyhandler.created(
+            Entry {
+                attr: attr, 
+                ttl: ttl,
+                generation: 0xaa
+            },
+            Open {
+                fh: 0xbb,
+                flags: 0xcc
+            }
+        );
     }
 
     #[test]
@@ -798,8 +846,15 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x44, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyLock = Reply::new(0xdeadbeef, sender);
-        reply.locked(0x11, 0x22, 0x33, 0x44);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.locked(
+            Lock {
+                start: 0x11,
+                end: 0x22,
+                pid: 0x33,
+                typ: 0x44
+            }
+        );
     }
 
     #[test]
@@ -810,8 +865,8 @@ mod test {
                 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyBmap = Reply::new(0xdeadbeef, sender);
-        reply.bmap(0x1234);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.bmap(0x1234);
     }
 
     #[test]
@@ -826,10 +881,22 @@ mod test {
                 0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
             ],
         };
-        let mut reply = ReplyDirectory::new(0xdeadbeef, sender, 4096);
-        assert!(!reply.add(0xaabb, 1, FileType::Directory, "hello"));
-        assert!(!reply.add(0xccdd, 2, FileType::RegularFile, "world.rs"));
-        reply.ok();
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let entries = vec!(
+            DirEntry {
+                ino: 0xaabb,
+                offset: 1,
+                kind: FileType::Directory,
+                name: OsString::from("hello"),
+            }, 
+            DirEntry {
+                ino: 0xccdd,
+                offset: 2,
+                kind: FileType::RegularFile,
+                name: OsString::from("world.rs"),
+            }
+        );
+        replyhandler.dir(entries);
     }
 
     #[test]
@@ -840,8 +907,8 @@ mod test {
                 0x00, 0x00, 0x78, 0x56, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply = ReplyXattr::new(0xdeadbeef, sender);
-        reply.size(0x12345678);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.xattr(Xattr::Size(0x12345678));
     }
 
     #[test]
@@ -852,8 +919,8 @@ mod test {
                 0x00, 0x00, 0x11, 0x22, 0x33, 0x44,
             ],
         };
-        let reply = ReplyXattr::new(0xdeadbeef, sender);
-        reply.data(&[0x11, 0x22, 0x33, 0x44]);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.xattr(Xattr::Data([0x11, 0x22, 0x33, 0x44].to_vec()));
     }
 
     impl super::ReplySender for SyncSender<()> {
@@ -871,9 +938,9 @@ mod test {
     #[test]
     fn async_reply() {
         let (tx, rx) = sync_channel::<()>(1);
-        let reply: ReplyEmpty = Reply::new(0xdeadbeef, tx);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, tx);
         thread::spawn(move || {
-            reply.ok();
+            replyhandler.ok();
         });
         rx.recv().unwrap();
     }
