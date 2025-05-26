@@ -172,9 +172,9 @@ impl ReplyHandler {
 #[derive(Debug)]
 pub struct XTimes {
     /// Backup time
-    bkuptime: SystemTime,
+    pub bkuptime: SystemTime,
     /// Creation time
-    crtime: SystemTime
+    pub crtime: SystemTime
 }
 
 #[cfg(target_os = "macos")]
@@ -191,9 +191,9 @@ impl ReplyHandler {
 #[derive(Debug)] //TODO #[derive(Copy)]
 pub struct Open {
     /// File handle for the opened file
-    fh: u64, 
+    pub fh: u64, 
     /// Flags for the opened file
-    flags: u32
+    pub flags: u32
 }
 
 
@@ -242,14 +242,14 @@ impl ReplyHandler {
 ///
 #[derive(Copy, Clone, Debug)]
 pub struct Statfs {
-    blocks: u64,
-    bfree: u64,
-    bavail: u64,
-    files: u64,
-    ffree: u64,
-    bsize: u32,
-    namelen: u32,
-    frsize: u32
+    pub blocks: u64,
+    pub bfree: u64,
+    pub bavail: u64,
+    pub files: u64,
+    pub ffree: u64,
+    pub bsize: u32,
+    pub namelen: u32,
+    pub frsize: u32
 }
 
 impl ReplyHandler {
@@ -290,10 +290,10 @@ impl ReplyHandler {
 ///
 #[derive(Copy, Clone, Debug)]
 pub struct Lock {
-    start: u64,
-    end: u64,
-    typ: i32,
-    pid: u32
+    pub start: u64,
+    pub end: u64,
+    pub typ: i32,
+    pub pid: u32
 }
 
 impl ReplyHandler {
@@ -326,9 +326,9 @@ impl ReplyHandler {
 #[derive(Debug)]
 pub struct Ioctl {
     /// Result of the ioctl operation
-    result: i32,
+    pub result: i32,
     /// Data to be returned with the ioctl operation
-    data: Vec<u8>
+    pub data: Vec<u8>
 }
 
 #[cfg(feature = "abi-7-11")]
@@ -357,10 +357,10 @@ impl ReplyHandler {
 
 #[derive(Debug)]
 pub struct DirEntry {
-    ino: u64,
-    offset: i64,
-    kind: FileType, 
-    name: OsString
+    pub ino: u64,
+    pub offset: i64,
+    pub kind: FileType, 
+    pub name: OsString
 }
 
 
