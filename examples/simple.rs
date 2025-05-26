@@ -9,8 +9,8 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow,
+    Filesystem, KernelConfig, MountOption, Attr, DirEntry,
+    Entry, Open, Statfs, Xattr, TimeOrNow, Errno, RequestMeta,
     FUSE_ROOT_ID,
 };
 #[cfg(feature = "abi-7-26")]
@@ -479,9 +479,9 @@ impl SimpleFS {
 impl Filesystem for SimpleFS {
     fn init(
         &mut self,
-        _req: &Request,
-        #[allow(unused_variables)] config: &mut KernelConfig,
-    ) -> Result<(), c_int> {
+        _req: RequestMeta,
+        config: KernelConfig,
+    ) -> Result<KernelConfig, c_int> {
         #[cfg(feature = "abi-7-26")]
         config.add_capabilities(FUSE_HANDLE_KILLPRIV).unwrap();
 
@@ -508,45 +508,61 @@ impl Filesystem for SimpleFS {
             entries.insert(b".".to_vec(), (FUSE_ROOT_ID, FileKind::Directory));
             self.write_directory_content(FUSE_ROOT_ID, entries);
         }
-        Ok(())
+        Ok(config)
     }
 
-    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn destroy(&mut self) {}
+
+    fn lookup(&mut self, req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if name.len() > MAX_NAME_LENGTH as usize {
-            reply.error(libc::ENAMETOOLONG);
-            return;
+            return Err(Errno::ENAMETOOLONG);
         }
-        let parent_attrs = self.get_inode(parent).unwrap();
-        if !check_access(
-            parent_attrs.uid,
-            parent_attrs.gid,
-            parent_attrs.mode,
+        let parent_attrs = match self.get_inode(parent) {
+            Ok(attrs) => attrs.attr,
+            Err(e) => {
+                return Err(Errno::from_code(e));
+            }
+        };
+        if !self.check_access(
             req.uid(),
             req.gid(),
-            libc::X_OK,
+            parent_attrs.uid,
+            parent_attrs.gid,
+            parent_attrs.perm,
+            libc::X_OK as u16,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
-        match self.lookup_name(parent, name) {
-            Ok(attrs) => reply.entry(&Duration::new(0, 0), &attrs.into(), 0),
-            Err(error_code) => reply.error(error_code),
+        match self.lookup_name(parent, &name) {
+            Ok(attrs) => Ok(Entry {
+                ino: attrs.ino,
+                generation: 0,
+                attr: attrs,
+                attr_valid: TTL,
+                entry_valid: TTL,
+            }),
+            Err(error_code) => Err(error_code),
         }
     }
 
-    fn forget(&mut self, _req: &Request, _ino: u64, _nlookup: u64) {}
+    fn forget(&mut self, _req: RequestMeta, _ino: u64, _nlookup: u64) {}
 
-    fn getattr(&mut self, _req: &Request, inode: u64, _fh: Option<u64>, reply: ReplyAttr) {
-        match self.get_inode(inode) {
-            Ok(attrs) => reply.attr(&Duration::new(0, 0), &attrs.into()),
-            Err(error_code) => reply.error(error_code),
+    fn getattr(
+        &mut self,
+        _req: RequestMeta,
+        ino: u64,
+        _fh: Option<u64>,
+    ) -> Result<Attr, Errno> {
+        match self.get_inode(ino) {
+            Ok(inode) => Ok(Attr { valid: TTL, attr: inode.attr }),
+            Err(e) => Err(Errno::from_code(e)),
         }
     }
 
     fn setattr(
         &mut self,
-        req: &Request,
+        req: RequestMeta,
         inode: u64,
         mode: Option<u32>,
         uid: Option<u32>,
@@ -560,21 +576,18 @@ impl Filesystem for SimpleFS {
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
         _flags: Option<u32>,
-        reply: ReplyAttr,
-    ) {
+    ) -> Result<Attr, Errno> {
         let mut attrs = match self.get_inode(inode) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(Errno::from_code(error_code));
             }
         };
 
         if let Some(mode) = mode {
             debug!("chmod() called with {:?}, {:o}", inode, mode);
-            if req.uid() != 0 && req.uid() != attrs.uid {
-                reply.error(libc::EPERM);
-                return;
+            if req.uid() != 0 && req.uid() != attrs.attr.uid {
+                return Err(Errno::EPERM);
             }
             if req.uid() != 0
                 && req.gid() != attrs.gid
@@ -588,8 +601,7 @@ impl Filesystem for SimpleFS {
             }
             attrs.last_metadata_changed = time_now();
             self.write_inode(&attrs);
-            reply.attr(&Duration::new(0, 0), &attrs.into());
-            return;
+            return Ok(attrs.attr);
         }
 
         if uid.is_some() || gid.is_some() {
@@ -606,14 +618,12 @@ impl Filesystem for SimpleFS {
                     // but no-op changes by the owner are not an error
                     && !(uid == attrs.uid && req.uid() == attrs.uid)
                 {
-                    reply.error(libc::EPERM);
-                    return;
+                    return Err(Errno::EPERM);
                 }
             }
             // Only owner may change the group
-            if gid.is_some() && req.uid() != 0 && req.uid() != attrs.uid {
-                reply.error(libc::EPERM);
-                return;
+            if gid.is_some() && req.uid() != 0 && req.uid() != attrs.attr.uid {
+                return Err(Errno::EPERM);
             }
 
             if attrs.mode & (libc::S_IXUSR | libc::S_IXGRP | libc::S_IXOTH) as u16 != 0 {
@@ -635,8 +645,7 @@ impl Filesystem for SimpleFS {
             }
             attrs.last_metadata_changed = time_now();
             self.write_inode(&attrs);
-            reply.attr(&Duration::new(0, 0), &attrs.into());
-            return;
+            return Ok(attrs.attr);
         }
 
         if let Some(size) = size {
@@ -648,16 +657,13 @@ impl Filesystem for SimpleFS {
                 // chmod'ed
                 if self.check_file_handle_write(handle) {
                     if let Err(error_code) = self.truncate(inode, size, 0, 0) {
-                        reply.error(error_code);
-                        return;
+                        return Err(Errno::from_code(error_code));
                     }
                 } else {
-                    reply.error(libc::EACCES);
-                    return;
+                    return Err(Errno::EACCES);
                 }
             } else if let Err(error_code) = self.truncate(inode, size, req.uid(), req.gid()) {
-                reply.error(error_code);
-                return;
+                return Err(Errno::from_code(error_code));
             }
         }
 
@@ -665,9 +671,8 @@ impl Filesystem for SimpleFS {
         if let Some(atime) = atime {
             debug!("utimens() called with {:?}, atime={:?}", inode, atime);
 
-            if attrs.uid != req.uid() && req.uid() != 0 && atime != Now {
-                reply.error(libc::EPERM);
-                return;
+            if attrs.attr.uid != req.uid() && req.uid() != 0 && atime != Now {
+                return Err(Errno::EPERM);
             }
 
             if attrs.uid != req.uid()
@@ -680,8 +685,7 @@ impl Filesystem for SimpleFS {
                     libc::W_OK,
                 )
             {
-                reply.error(libc::EACCES);
-                return;
+                return Err(Errno::EACCES);
             }
 
             attrs.last_accessed = match atime {
@@ -694,9 +698,8 @@ impl Filesystem for SimpleFS {
         if let Some(mtime) = mtime {
             debug!("utimens() called with {:?}, mtime={:?}", inode, mtime);
 
-            if attrs.uid != req.uid() && req.uid() != 0 && mtime != Now {
-                reply.error(libc::EPERM);
-                return;
+            if attrs.attr.uid != req.uid() && req.uid() != 0 && mtime != Now {
+                return Err(Errno::EPERM);
             }
 
             if attrs.uid != req.uid()
@@ -709,8 +712,7 @@ impl Filesystem for SimpleFS {
                     libc::W_OK,
                 )
             {
-                reply.error(libc::EACCES);
-                return;
+                return Err(Errno::EACCES);
             }
 
             attrs.last_modified = match mtime {
@@ -722,20 +724,19 @@ impl Filesystem for SimpleFS {
         }
 
         let attrs = self.get_inode(inode).unwrap();
-        reply.attr(&Duration::new(0, 0), &attrs.into());
-        return;
+        Ok(attrs.attr)
     }
 
-    fn readlink(&mut self, _req: &Request, inode: u64, reply: ReplyData) {
+    fn readlink(&mut self, _req: &Request, inode: u64) -> Result<Vec<u8>, Errno> {
         debug!("readlink() called on {:?}", inode);
         let path = self.content_path(inode);
         if let Ok(mut file) = File::open(path) {
             let file_size = file.metadata().unwrap().len();
             let mut buffer = vec![0; file_size as usize];
             file.read_exact(&mut buffer).unwrap();
-            reply.data(&buffer);
+            Ok(buffer)
         } else {
-            reply.error(libc::ENOENT);
+            Err(Errno::ENOENT)
         }
     }
 
@@ -747,8 +748,7 @@ impl Filesystem for SimpleFS {
         mut mode: u32,
         _umask: u32,
         _rdev: u32,
-        reply: ReplyEntry,
-    ) {
+    ) -> Result<Entry, Errno> {
         let file_type = mode & libc::S_IFMT as u32;
 
         if file_type != libc::S_IFREG as u32
@@ -757,20 +757,17 @@ impl Filesystem for SimpleFS {
         {
             // TODO
             warn!("mknod() implementation is incomplete. Only supports regular files, symlinks, and directories. Got {:o}", mode);
-            reply.error(libc::ENOSYS);
-            return;
+            return Err(Errno::ENOSYS);
         }
 
         if self.lookup_name(parent, name).is_ok() {
-            reply.error(libc::EEXIST);
-            return;
+            return Err(Errno::EEXIST);
         }
 
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(Errno::from_code(error_code));
             }
         };
 
@@ -782,8 +779,7 @@ impl Filesystem for SimpleFS {
             req.gid(),
             libc::W_OK,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
         parent_attrs.last_modified = time_now();
         parent_attrs.last_metadata_changed = time_now();
@@ -833,19 +829,16 @@ impl Filesystem for SimpleFS {
         name: &OsStr,
         mut mode: u32,
         _umask: u32,
-        reply: ReplyEntry,
-    ) {
+    ) -> Result<Entry, Errno> {
         debug!("mkdir() called with {:?} {:?} {:o}", parent, name, mode);
         if self.lookup_name(parent, name).is_ok() {
-            reply.error(libc::EEXIST);
-            return;
+            return Err(Errno::EEXIST);
         }
 
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(Errno::from_code(error_code));
             }
         };
 
@@ -857,8 +850,7 @@ impl Filesystem for SimpleFS {
             req.gid(),
             libc::W_OK,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
         parent_attrs.last_modified = time_now();
         parent_attrs.last_metadata_changed = time_now();
@@ -900,21 +892,19 @@ impl Filesystem for SimpleFS {
         reply.entry(&Duration::new(0, 0), &attrs.into(), 0);
     }
 
-    fn unlink(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&mut self, req: &Request, parent: u64, name: &OsStr) -> Result<(), Errno> {
         debug!("unlink() called with {:?} {:?}", parent, name);
         let mut attrs = match self.lookup_name(parent, name) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
@@ -926,8 +916,7 @@ impl Filesystem for SimpleFS {
             req.gid(),
             libc::W_OK,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         let uid = req.uid();
@@ -937,8 +926,7 @@ impl Filesystem for SimpleFS {
             && uid != parent_attrs.uid
             && uid != attrs.uid
         {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         parent_attrs.last_metadata_changed = time_now();
@@ -954,31 +942,28 @@ impl Filesystem for SimpleFS {
         entries.remove(name.as_bytes());
         self.write_directory_content(parent, entries);
 
-        reply.ok();
+        Ok(())
     }
 
-    fn rmdir(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&mut self, req: &Request, parent: u64, name: &OsStr) -> Result<(), Errno> {
         debug!("rmdir() called with {:?} {:?}", parent, name);
         let mut attrs = match self.lookup_name(parent, name) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
         // Directories always have a self and parent link
         if self.get_directory_content(attrs.inode).unwrap().len() > 2 {
-            reply.error(libc::ENOTEMPTY);
-            return;
+            return Err(Errno::ENOTEMPTY);
         }
         if !check_access(
             parent_attrs.uid,
@@ -998,8 +983,7 @@ impl Filesystem for SimpleFS {
             && req.uid() != parent_attrs.uid
             && req.uid() != attrs.uid
         {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         parent_attrs.last_metadata_changed = time_now();
@@ -1015,7 +999,7 @@ impl Filesystem for SimpleFS {
         entries.remove(name.as_bytes());
         self.write_directory_content(parent, entries);
 
-        reply.ok();
+        Ok(())
     }
 
     fn symlink(
@@ -1024,8 +1008,7 @@ impl Filesystem for SimpleFS {
         parent: u64,
         link_name: &OsStr,
         target: &Path,
-        reply: ReplyEntry,
-    ) {
+    ) -> Result<Entry, Errno> {
         debug!(
             "symlink() called with {:?} {:?} {:?}",
             parent, link_name, target
@@ -1033,8 +1016,7 @@ impl Filesystem for SimpleFS {
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
@@ -1046,8 +1028,7 @@ impl Filesystem for SimpleFS {
             req.gid(),
             libc::W_OK,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
         parent_attrs.last_modified = time_now();
         parent_attrs.last_metadata_changed = time_now();
@@ -1096,8 +1077,7 @@ impl Filesystem for SimpleFS {
         new_parent: u64,
         new_name: &OsStr,
         flags: u32,
-        reply: ReplyEmpty,
-    ) {
+    ) -> Result<(), Errno> {
         debug!(
             "rename() called with: source {parent:?} {name:?}, \
             destination {new_parent:?} {new_name:?}, flags {flags:#b}",
@@ -1105,16 +1085,14 @@ impl Filesystem for SimpleFS {
         let mut inode_attrs = match self.lookup_name(parent, name) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
@@ -1126,8 +1104,7 @@ impl Filesystem for SimpleFS {
             req.gid(),
             libc::W_OK,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         // "Sticky bit" handling
@@ -1136,15 +1113,13 @@ impl Filesystem for SimpleFS {
             && req.uid() != parent_attrs.uid
             && req.uid() != inode_attrs.uid
         {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         let mut new_parent_attrs = match self.get_inode(new_parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
@@ -1156,8 +1131,7 @@ impl Filesystem for SimpleFS {
             req.gid(),
             libc::W_OK,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         // "Sticky bit" handling in new_parent
@@ -1167,8 +1141,7 @@ impl Filesystem for SimpleFS {
                     && req.uid() != new_parent_attrs.uid
                     && req.uid() != existing_attrs.uid
                 {
-                    reply.error(libc::EACCES);
-                    return;
+                    return Err(Errno::EACCES);
                 }
             }
         }
@@ -1178,8 +1151,7 @@ impl Filesystem for SimpleFS {
             let mut new_inode_attrs = match self.lookup_name(new_parent, new_name) {
                 Ok(attrs) => attrs,
                 Err(error_code) => {
-                    reply.error(error_code);
-                    return;
+                    return Err(error_code);
                 }
             };
 
@@ -1219,8 +1191,7 @@ impl Filesystem for SimpleFS {
                 self.write_directory_content(new_inode_attrs.inode, entries);
             }
 
-            reply.ok();
-            return;
+            return Ok(());
         }
 
         // Only overwrite an existing directory if it's empty
@@ -1232,8 +1203,7 @@ impl Filesystem for SimpleFS {
                     .len()
                     > 2
             {
-                reply.error(libc::ENOTEMPTY);
-                return;
+                return Err(Errno::ENOTEMPTY);
             }
         }
 
@@ -1250,8 +1220,7 @@ impl Filesystem for SimpleFS {
                 libc::W_OK,
             )
         {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         // If target already exists decrement its hardlink count
@@ -1296,7 +1265,7 @@ impl Filesystem for SimpleFS {
             self.write_directory_content(inode_attrs.inode, entries);
         }
 
-        reply.ok();
+        Ok(())
     }
 
     fn link(
@@ -1305,8 +1274,7 @@ impl Filesystem for SimpleFS {
         inode: u64,
         new_parent: u64,
         new_name: &OsStr,
-        reply: ReplyEntry,
-    ) {
+    ) -> Result<Entry, Errno> {
         debug!(
             "link() called for {}, {}, {:?}",
             inode, new_parent, new_name
@@ -1314,8 +1282,7 @@ impl Filesystem for SimpleFS {
         let mut attrs = match self.get_inode(inode) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
         if let Err(error_code) = self.insert_link(req, new_parent, new_name, inode, attrs.kind) {
@@ -1328,14 +1295,13 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn open(&mut self, req: &Request, inode: u64, flags: i32, reply: ReplyOpen) {
+    fn open(&mut self, req: &Request, inode: u64, flags: i32) -> Result<Open, Errno> {
         debug!("open() called for {:?}", inode);
         let (access_mask, read, write) = match flags & libc::O_ACCMODE {
             libc::O_RDONLY => {
                 // Behavior is undefined, but most filesystems return EACCES
                 if flags & libc::O_TRUNC != 0 {
-                    reply.error(libc::EACCES);
-                    return;
+                    return Err(Errno::EACCES);
                 }
                 if flags & FMODE_EXEC != 0 {
                     // Open is from internal exec syscall
@@ -1348,8 +1314,7 @@ impl Filesystem for SimpleFS {
             libc::O_RDWR => (libc::R_OK | libc::W_OK, true, true),
             // Exactly one access mode flag must be specified
             _ => {
-                reply.error(libc::EINVAL);
-                return;
+                return Err(Errno::EINVAL);
             }
         };
 
@@ -1366,13 +1331,15 @@ impl Filesystem for SimpleFS {
                     attr.open_file_handles += 1;
                     self.write_inode(&attr);
                     let open_flags = if self.direct_io { FOPEN_DIRECT_IO } else { 0 };
-                    reply.opened(self.allocate_next_file_handle(read, write), open_flags);
+                    return Ok(Open {
+                        fh: self.allocate_next_file_handle(read, write),
+                        flags: open_flags,
+                    });
                 } else {
-                    reply.error(libc::EACCES);
+                    return Err(Errno::EACCES);
                 }
-                return;
             }
-            Err(error_code) => reply.error(error_code),
+            Err(error_code) => return Err(error_code),
         }
     }
 
@@ -1385,16 +1352,14 @@ impl Filesystem for SimpleFS {
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-        reply: ReplyData,
-    ) {
+    ) -> Result<Vec<u8>, Errno> {
         debug!(
             "read() called on {:?} offset={:?} size={:?}",
             inode, offset, size
         );
         assert!(offset >= 0);
         if !self.check_file_handle_read(fh) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         let path = self.content_path(inode);
@@ -1405,9 +1370,9 @@ impl Filesystem for SimpleFS {
 
             let mut buffer = vec![0; read_size as usize];
             file.read_exact_at(&mut buffer, offset as u64).unwrap();
-            reply.data(&buffer);
+            Ok(buffer)
         } else {
-            reply.error(libc::ENOENT);
+            Err(Errno::ENOENT)
         }
     }
 
@@ -1421,13 +1386,11 @@ impl Filesystem for SimpleFS {
         _write_flags: u32,
         #[allow(unused_variables)] flags: i32,
         _lock_owner: Option<u64>,
-        reply: ReplyWrite,
-    ) {
+    ) -> Result<u32, Errno> {
         debug!("write() called with {:?} size={:?}", inode, data.len());
         assert!(offset >= 0);
         if !self.check_file_handle_write(fh) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         let path = self.content_path(inode);
@@ -1450,9 +1413,9 @@ impl Filesystem for SimpleFS {
             clear_suid_sgid(&mut attrs);
             self.write_inode(&attrs);
 
-            reply.written(data.len() as u32);
+            Ok(data.len() as u32)
         } else {
-            reply.error(libc::EBADF);
+            Err(Errno::EBADF)
         }
     }
 
@@ -1464,22 +1427,20 @@ impl Filesystem for SimpleFS {
         _flags: i32,
         _lock_owner: Option<u64>,
         _flush: bool,
-        reply: ReplyEmpty,
-    ) {
+    ) -> Result<(), Errno> {
         if let Ok(mut attrs) = self.get_inode(inode) {
             attrs.open_file_handles -= 1;
         }
-        reply.ok();
+        Ok(())
     }
 
-    fn opendir(&mut self, req: &Request, inode: u64, flags: i32, reply: ReplyOpen) {
+    fn opendir(&mut self, req: &Request, inode: u64, flags: i32) -> Result<Open, Errno> {
         debug!("opendir() called on {:?}", inode);
         let (access_mask, read, write) = match flags & libc::O_ACCMODE {
             libc::O_RDONLY => {
                 // Behavior is undefined, but most filesystems return EACCES
                 if flags & libc::O_TRUNC != 0 {
-                    reply.error(libc::EACCES);
-                    return;
+                    return Err(Errno::EACCES);
                 }
                 (libc::R_OK, true, false)
             }
@@ -1487,8 +1448,7 @@ impl Filesystem for SimpleFS {
             libc::O_RDWR => (libc::R_OK | libc::W_OK, true, true),
             // Exactly one access mode flag must be specified
             _ => {
-                reply.error(libc::EINVAL);
-                return;
+                return Err(Errno::EINVAL);
             }
         };
 
@@ -1505,13 +1465,15 @@ impl Filesystem for SimpleFS {
                     attr.open_file_handles += 1;
                     self.write_inode(&attr);
                     let open_flags = if self.direct_io { FOPEN_DIRECT_IO } else { 0 };
-                    reply.opened(self.allocate_next_file_handle(read, write), open_flags);
+                    return Ok(Open {
+                        fh: self.allocate_next_file_handle(read, write),
+                        flags: open_flags,
+                    });
                 } else {
-                    reply.error(libc::EACCES);
+                    return Err(Errno::EACCES);
                 }
-                return;
             }
-            Err(error_code) => reply.error(error_code),
+            Err(error_code) => return Err(error_code),
         }
     }
 
@@ -1521,34 +1483,32 @@ impl Filesystem for SimpleFS {
         inode: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
-    ) {
+    ) -> Result<Vec<DirEntry>, Errno> {
         debug!("readdir() called with {:?}", inode);
         assert!(offset >= 0);
         let entries = match self.get_directory_content(inode) {
             Ok(entries) => entries,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
 
         for (index, entry) in entries.iter().skip(offset as usize).enumerate() {
             let (name, (inode, file_type)) = entry;
 
-            let buffer_full: bool = reply.add(
-                *inode,
-                offset + index as i64 + 1,
-                (*file_type).into(),
-                OsStr::from_bytes(name),
-            );
+            let buffer_full: bool = result.push(DirEntry {
+                ino: *inode,
+                offset: offset + index as i64 + 1,
+                kind: (*file_type).into(),
+                name: OsStr::from_bytes(name).to_owned(),
+            });
 
             if buffer_full {
                 break;
             }
         }
 
-        reply.ok();
+        Ok(result)
     }
 
     fn releasedir(
@@ -1557,27 +1517,26 @@ impl Filesystem for SimpleFS {
         inode: u64,
         _fh: u64,
         _flags: i32,
-        reply: ReplyEmpty,
-    ) {
+    ) -> Result<(), Errno> {
         if let Ok(mut attrs) = self.get_inode(inode) {
             attrs.open_file_handles -= 1;
         }
-        reply.ok();
+        Ok(())
     }
 
-    fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
+    fn statfs(&mut self, _req: &Request, _ino: u64) -> Result<Statfs, Errno> {
         warn!("statfs() implementation is a stub");
         // TODO: real implementation of this
-        reply.statfs(
-            10_000,
-            10_000,
-            10_000,
-            1,
-            10_000,
-            BLOCK_SIZE as u32,
-            MAX_NAME_LENGTH,
-            BLOCK_SIZE as u32,
-        );
+        Ok(Statfs {
+            block_size: 10_000,
+            blocks: 10_000,
+            bfree: 10_000,
+            bavail: 1,
+            files: 10_000,
+            ffree: MAX_NAME_LENGTH, //swapped?
+            namelen: BLOCK_SIZE as u32,
+            frsize: BLOCK_SIZE as u32,
+        })
     }
 
     fn setxattr(
@@ -1588,20 +1547,18 @@ impl Filesystem for SimpleFS {
         value: &[u8],
         _flags: i32,
         _position: u32,
-        reply: ReplyEmpty,
-    ) {
+    ) -> Result<(), Errno> {
         if let Ok(mut attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::W_OK, &attrs, request) {
-                reply.error(error);
-                return;
+                return Err(error);
             }
 
             attrs.xattrs.insert(key.as_bytes().to_vec(), value.to_vec());
             attrs.last_metadata_changed = time_now();
             self.write_inode(&attrs);
-            reply.ok();
+            Ok(())
         } else {
-            reply.error(libc::EBADF);
+            Err(Errno::EBADF)
         }
     }
 
@@ -1611,34 +1568,32 @@ impl Filesystem for SimpleFS {
         inode: u64,
         key: &OsStr,
         size: u32,
-        reply: ReplyXattr,
-    ) {
+    ) -> Result<Vec<u8>, Errno> {
         if let Ok(attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::R_OK, &attrs, request) {
-                reply.error(error);
-                return;
+                return Err(error);
             }
 
             if let Some(data) = attrs.xattrs.get(key.as_bytes()) {
                 if size == 0 {
-                    reply.size(data.len() as u32);
+                    return Ok(data.len() as u32);
                 } else if data.len() <= size as usize {
-                    reply.data(data);
+                    return Ok(data);
                 } else {
-                    reply.error(libc::ERANGE);
+                    return Err(Errno::ERANGE);
                 }
             } else {
                 #[cfg(target_os = "linux")]
-                reply.error(libc::ENODATA);
+                return Err(Errno::ENODATA);
                 #[cfg(not(target_os = "linux"))]
-                reply.error(libc::ENOATTR);
+                return Err(Errno::ENOATTR);
             }
         } else {
-            reply.error(libc::EBADF);
+            Err(Errno::EBADF)
         }
     }
 
-    fn listxattr(&mut self, _req: &Request<'_>, inode: u64, size: u32, reply: ReplyXattr) {
+    fn listxattr(&mut self, _req: &Request<'_>, inode: u64, size: u32) -> Result<Vec<u8>, Errno> {
         if let Ok(attrs) = self.get_inode(inode) {
             let mut bytes = vec![];
             // Convert to concatenated null-terminated strings
@@ -1647,50 +1602,49 @@ impl Filesystem for SimpleFS {
                 bytes.push(0);
             }
             if size == 0 {
-                reply.size(bytes.len() as u32);
+                return Ok(bytes.len() as u32);
             } else if bytes.len() <= size as usize {
-                reply.data(&bytes);
+                return Ok(bytes);
             } else {
-                reply.error(libc::ERANGE);
+                return Err(Errno::ERANGE);
             }
         } else {
-            reply.error(libc::EBADF);
+            Err(Errno::EBADF)
         }
     }
 
-    fn removexattr(&mut self, request: &Request<'_>, inode: u64, key: &OsStr, reply: ReplyEmpty) {
+    fn removexattr(&mut self, request: &Request<'_>, inode: u64, key: &OsStr) -> Result<(), Errno> {
         if let Ok(mut attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::W_OK, &attrs, request) {
-                reply.error(error);
-                return;
+                return Err(error);
             }
 
             if attrs.xattrs.remove(key.as_bytes()).is_none() {
                 #[cfg(target_os = "linux")]
-                reply.error(libc::ENODATA);
+                return Err(Errno::ENODATA);
                 #[cfg(not(target_os = "linux"))]
-                reply.error(libc::ENOATTR);
+                return Err(Errno::ENOATTR);
                 return;
             }
             attrs.last_metadata_changed = time_now();
             self.write_inode(&attrs);
-            reply.ok();
+            Ok(())
         } else {
-            reply.error(libc::EBADF);
+            Err(Errno::EBADF)
         }
     }
 
-    fn access(&mut self, req: &Request, inode: u64, mask: i32, reply: ReplyEmpty) {
+    fn access(&mut self, req: &Request, inode: u64, mask: i32) -> Result<(), Errno> {
         debug!("access() called with {:?} {:?}", inode, mask);
         match self.get_inode(inode) {
             Ok(attr) => {
                 if check_access(attr.uid, attr.gid, attr.mode, req.uid(), req.gid(), mask) {
                     reply.ok();
                 } else {
-                    reply.error(libc::EACCES);
+                    Err(Errno::EACCES)
                 }
             }
-            Err(error_code) => reply.error(error_code),
+            Err(error_code) => Err(Errno::from_code(error_code)),
         }
     }
 
@@ -1702,12 +1656,10 @@ impl Filesystem for SimpleFS {
         mut mode: u32,
         _umask: u32,
         flags: i32,
-        reply: ReplyCreate,
-    ) {
+    ) -> Result<Entry, Errno> {
         debug!("create() called with {:?} {:?}", parent, name);
         if self.lookup_name(parent, name).is_ok() {
-            reply.error(libc::EEXIST);
-            return;
+            return Err(Errno::EEXIST);
         }
 
         let (read, write) = match flags & libc::O_ACCMODE {
@@ -1716,16 +1668,14 @@ impl Filesystem for SimpleFS {
             libc::O_RDWR => (true, true),
             // Exactly one access mode flag must be specified
             _ => {
-                reply.error(libc::EINVAL);
-                return;
+                return Err(Errno::EINVAL);
             }
         };
 
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(Errno::from_code(error_code));
             }
         };
 
@@ -1737,8 +1687,7 @@ impl Filesystem for SimpleFS {
             req.gid(),
             libc::W_OK,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
         parent_attrs.last_modified = time_now();
         parent_attrs.last_metadata_changed = time_now();
@@ -1796,8 +1745,7 @@ impl Filesystem for SimpleFS {
         offset: i64,
         length: i64,
         mode: i32,
-        reply: ReplyEmpty,
-    ) {
+    ) -> Result<(), Errno> {
         let path = self.content_path(inode);
         if let Ok(file) = OpenOptions::new().write(true).open(path) {
             unsafe {
@@ -1812,9 +1760,9 @@ impl Filesystem for SimpleFS {
                 }
                 self.write_inode(&attrs);
             }
-            reply.ok();
+            Ok(())
         } else {
-            reply.error(libc::ENOENT);
+            Err(Errno::ENOENT)
         }
     }
 
@@ -1829,19 +1777,16 @@ impl Filesystem for SimpleFS {
         dest_offset: i64,
         size: u64,
         _flags: u32,
-        reply: ReplyWrite,
-    ) {
+    ) -> Result<u32, Errno> {
         debug!(
             "copy_file_range() called with src ({}, {}, {}) dest ({}, {}, {}) size={}",
             src_fh, src_inode, src_offset, dest_fh, dest_inode, dest_offset, size
         );
         if !self.check_file_handle_read(src_fh) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
         if !self.check_file_handle_write(dest_fh) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
         let src_path = self.content_path(src_inode);
@@ -1866,12 +1811,12 @@ impl Filesystem for SimpleFS {
                 }
                 self.write_inode(&attrs);
 
-                reply.written(data.len() as u32);
+                return Ok(data.len() as u32);
             } else {
-                reply.error(libc::EBADF);
+                return Err(Errno::EBADF);
             }
         } else {
-            reply.error(libc::ENOENT);
+            return Err(Errno::ENOENT);
         }
     }
 }
