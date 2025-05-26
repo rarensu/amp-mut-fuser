@@ -8,16 +8,16 @@
 
 use crate::ll::{
     self,
-    reply::{DirEntList, DirEntOffset, DirEntPlusList, DirEntryPlus},
+    reply::{DirEntList, DirEntOffset}, //, DirEntPlusList, DirEntryPlus},
     reply::DirEntry as ll_DirEntry,
-    Generation,
+    // Generation,
     INodeNo,
 };
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
-use libc::c_int;
+//use libc::c_int;
 use log::{error, warn};
-use std::convert::AsRef;
+//use std::convert::AsRef;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::IoSlice;
@@ -371,12 +371,15 @@ impl ReplyHandler {
         let size = entries.len();
         let mut buf = DirEntList::new(size);
         for item in entries.into_iter() {
-            buf.push(&ll_DirEntry::new(
+            let full= buf.push(&ll_DirEntry::new(
                 INodeNo(item.ino),
                 DirEntOffset(item.offset),
                 item.kind,
                 item.name
             ));
+            if full {
+                break;
+            }
         }
         self.send_ll(&buf.into());
     }
@@ -385,7 +388,7 @@ impl ReplyHandler {
 ///
 /// DirectoryPlus reply
 ///
-
+#[cfg(feature = "abi-7-21")]
 impl ReplyHandler {
     /// Creates a new ReplyDirectory with a specified buffer size.
     pub fn dirplus(
@@ -395,15 +398,18 @@ impl ReplyHandler {
         let size: usize=entries.len();
         let mut buf = DirEntPlusList::new(size);
         for (item, plus) in entries.into_iter() {
-        buf.push(&DirEntryPlus::new(
-            INodeNo(item.ino),
-            Generation(plus.generation),
-            DirEntOffset(item.offset),
-            item.name,
-            plus.ttl,
-            plus.attr.into(),
-            plus.ttl,
-        ));
+            let full = buf.push(&DirEntryPlus::new(
+                INodeNo(item.ino),
+                Generation(plus.generation),
+                DirEntOffset(item.offset),
+                item.name,
+                plus.ttl,
+                plus.attr.into(),
+                plus.ttl,
+            ));
+            if full {
+                break;
+            }     
         }
     // Reply to a request with the filled directory buffer
         self.send_ll(&buf.into());
@@ -414,8 +420,12 @@ impl ReplyHandler {
 /// Xattr reply
 ///
 
+
+#[derive(Debug)]
 pub enum Xattr{
+    /// Reply to a request with the size of the xattr.
     Size(u32),
+    /// Reply to a request with the data in the xattr.
     Data(Vec<u8>)
 }
 
@@ -441,7 +451,7 @@ impl ReplyHandler {
 ///
 /// Lseek Reply
 ///
-
+#[cfg(feature = "abi-7-24")]
 impl ReplyHandler {
     /// Reply to a request with seeked offset
     pub fn offset(self, offset: i64) {
@@ -534,7 +544,8 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.error(66);
+        use crate::ll::Errno;
+        replyhandler.error(Errno::from_i32(66));
     }
 
     #[test]
@@ -797,7 +808,7 @@ mod test {
         if cfg!(feature = "abi-7-9") {
             let insert_at = expected.len() - 16;
             expected.splice(
-                insert_at,
+                insert_at..insert_at,
                 vec![0xdd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             );
         }
