@@ -1404,7 +1404,7 @@ impl Filesystem for SimpleFS {
         inode: u64,
         fh: u64,
         offset: i64,
-        data: Vec<u8>,
+        data: Vec<u8>, // Changed
         _write_flags: u32,
         #[allow(unused_variables)] flags: i32,
         _lock_owner: Option<u64>,
