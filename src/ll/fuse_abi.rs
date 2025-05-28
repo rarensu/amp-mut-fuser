@@ -530,7 +530,7 @@ pub struct fuse_forget_in {
 
 #[cfg(feature = "abi-7-16")]
 #[repr(C)]
-#[derive(Debug, FromBytes, KnownLayout, Immutable)]
+#[derive(Debug, FromBytes, KnownLayout, Immutable, Clone)]
 pub struct fuse_forget_one {
     pub nodeid: u64,
     pub nlookup: u64,

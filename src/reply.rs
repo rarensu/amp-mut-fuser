@@ -8,11 +8,14 @@
 
 use crate::ll::{
     self,
-    reply::{DirEntList, DirEntOffset}, //, DirEntPlusList, DirEntryPlus},
+    reply::{DirEntList, DirEntOffset},
     reply::DirEntry as ll_DirEntry,
-    // Generation,
     INodeNo,
 };
+#[cfg(feature = "abi-7-21")]
+use crate::ll::reply::{DirEntPlusList, DirEntryPlus};
+#[cfg(feature = "abi-7-21")]
+use crate::ll::Generation;
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
 //use libc::c_int;

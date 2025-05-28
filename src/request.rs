@@ -14,8 +14,6 @@ use std::convert::TryInto;
 
 use crate::channel::ChannelSender;
 use crate::ll::Request as _;
-#[cfg(feature = "abi-7-21")]
-use crate::reply::ReplyDirectoryPlus;
 use crate::reply::{ReplyHandler, ReplySender};
 use crate::session::{Session, SessionACL};
 use crate::Filesystem;
@@ -78,84 +76,47 @@ impl<'a> Request<'a> {
     /// request and sends back the returned reply to the kernel
     pub(crate) fn dispatch<FS: Filesystem>(self, se: &mut Session<FS>) {
         debug!("{}", self.request);
-        let res = self.request.operation().map_err(|_| Errno::ENOSYS);
-        let op = match res {
-            Ok(op) => op,
-            Err(err) => {
-                self.replyhandler.error(err);
-                return;
-            }
-        };
+        let op_result = self.request.operation().map_err(|_| Errno::ENOSYS);
+
+        if let Err(err) = op_result {
+            self.replyhandler.error(err);
+            return;
+        }
+        let op = op_result.unwrap();
+
         // Implement allow_root & access check for auto_unmount
-        if (se.allowed == SessionACL::RootAndOwner
+        let access_denied = if (se.allowed == SessionACL::RootAndOwner
             && self.request.uid() != se.session_owner
             && self.request.uid() != 0)
             || (se.allowed == SessionACL::Owner && self.request.uid() != se.session_owner)
         {
-            #[cfg(feature = "abi-7-21")]
-            {
-                match op {
-                    // Only allow operations that the kernel may issue without a uid set
-                    ll::Operation::Init(_)
-                    | ll::Operation::Destroy(_)
-                    | ll::Operation::Read(_)
-                    | ll::Operation::ReadDir(_)
-                    | ll::Operation::ReadDirPlus(_)
-                    | ll::Operation::BatchForget(_)
-                    | ll::Operation::Forget(_)
-                    | ll::Operation::Write(_)
-                    | ll::Operation::FSync(_)
-                    | ll::Operation::FSyncDir(_)
-                    | ll::Operation::Release(_)
-                    | ll::Operation::ReleaseDir(_) => {}
-                    _ => {
-                        self.replyhandler.error(Errno::EACCES);
-                    }
-                }
+            match op {
+                // Only allow operations that the kernel may issue without a uid set
+                ll::Operation::Init(_)
+                | ll::Operation::Destroy(_)
+                | ll::Operation::Read(_)
+                | ll::Operation::ReadDir(_)
+                | ll::Operation::Forget(_)
+                | ll::Operation::Write(_)
+                | ll::Operation::FSync(_)
+                | ll::Operation::FSyncDir(_)
+                | ll::Operation::Release(_)
+                | ll::Operation::ReleaseDir(_) => false,
+                #[cfg(feature = "abi-7-16")]
+                ll::Operation::BatchForget(_) => false,
+                #[cfg(feature = "abi-7-21")]
+                ll::Operation::ReadDirPlus(_) => false,
+                _ => true,
             }
-            #[cfg(all(feature = "abi-7-16", not(feature = "abi-7-21")))]
-            {
-                match op {
-                    // Only allow operations that the kernel may issue without a uid set
-                    ll::Operation::Init(_)
-                    | ll::Operation::Destroy(_)
-                    | ll::Operation::Read(_)
-                    | ll::Operation::ReadDir(_)
-                    | ll::Operation::BatchForget(_)
-                    | ll::Operation::Forget(_)
-                    | ll::Operation::Write(_)
-                    | ll::Operation::FSync(_)
-                    | ll::Operation::FSyncDir(_)
-                    | ll::Operation::Release(_)
-                    | ll::Operation::ReleaseDir(_) => {}
-                    _ => {
-                        self.replyhandler.error(Errno::EACCES);
-                        return;
-                   }
-                }
-            }
-            #[cfg(not(feature = "abi-7-16"))]
-            {
-                match op {
-                    // Only allow operations that the kernel may issue without a uid set
-                    ll::Operation::Init(_)
-                    | ll::Operation::Destroy(_)
-                    | ll::Operation::Read(_)
-                    | ll::Operation::ReadDir(_)
-                    | ll::Operation::Forget(_)
-                    | ll::Operation::Write(_)
-                    | ll::Operation::FSync(_)
-                    | ll::Operation::FSyncDir(_)
-                    | ll::Operation::Release(_)
-                    | ll::Operation::ReleaseDir(_) => {}
-                    _ => {
-                        // todo: self.replyhandler.error()
-                        self.replyhandler.error(Errno::EACCES);
-                        return;
-                    }
-                }
-            }
+        } else {
+            false
+        };
+
+        if access_denied {
+            self.replyhandler.error(Errno::EACCES);
+            return;
         }
+
         match op {
             // Filesystem initialization
             ll::Operation::Init(x) => {
@@ -173,20 +134,15 @@ impl<'a> Request<'a> {
                 let config = KernelConfig::new(x.capabilities(), x.max_readahead());
                 // Call filesystem init method and give it a chance to 
                 // propose a different config or return an error
-                let response = se.filesystem
-                    .init(self.meta, config)
-                    .map_err(Errno::from_i32);
-                let config = match response {
-                    Ok(config) => {
-                        config
-                    }
+                let config = match se.filesystem.init(self.meta, config).map_err(Errno::from_i32) {
+                    Ok(config) => config,
                     Err(errno) => {
                         self.replyhandler.error(errno);
                         return;
                     }
                 };
 
-                // Reply with our desiredI version and settings. If the kernel supports a
+                // Reply with our desired version and settings. If the kernel supports a
                 // larger major version, it'll re-send a matching init message. If it
                 // supports only lower major versions, we replied with an error above.
                 debug!(
@@ -487,7 +443,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    x.data().into(),
+                    x.data().to_vec(),
                     x.write_flags(),
                     x.flags(),
                     x.lock_owner().map(|l| l.into())
@@ -808,7 +764,7 @@ impl<'a> Request<'a> {
             #[cfg(feature = "abi-7-11")]
             ll::Operation::IoCtl(x) => {
                 if x.unrestricted() {
-                    return Err(Errno::ENOSYS);
+                    self.replyhandler.error(Errno::ENOSYS);
                 } else {
                     let response = se.filesystem.ioctl(
                         self.meta,
@@ -816,7 +772,7 @@ impl<'a> Request<'a> {
                         x.file_handle().into(),
                         x.flags(),
                         x.command(),
-                        x.in_data(),
+                        x.in_data().to_vec(),
                         x.out_size()
                     );
                     match response {
@@ -853,11 +809,11 @@ impl<'a> Request<'a> {
             #[cfg(feature = "abi-7-15")]
             ll::Operation::NotifyReply(_) => {
                 // TODO: handle FUSE_NOTIFY_REPLY
-                return Err(Errno::ENOSYS);
+                self.replyhandler.error(Errno::ENOSYS);
             }
             #[cfg(feature = "abi-7-16")]
             ll::Operation::BatchForget(x) => {
-                se.filesystem.batch_forget(self, x.nodes()); // no reply
+                se.filesystem.batch_forget(self.meta, x.nodes().to_vec()); // no reply
             }
             #[cfg(feature = "abi-7-19")]
             ll::Operation::FAllocate(x) => {
@@ -900,9 +856,9 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.rename(
                     self.meta,
                     x.from().dir.into(),
-                    x.from().name.as_ref(),
+                    x.from().name.as_os_str().to_owned(),
                     x.to().dir.into(),
-                    x.to().name.as_ref(),
+                    x.to().name.as_os_str().to_owned(),
                     x.flags()
                 );
                 match response {
@@ -991,9 +947,9 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.exchange(
                     self.meta,
                     x.from().dir.into(),
-                    x.from().name.as_ref(),
+                    x.from().name.as_os_str().to_owned(),
                     x.to().dir.into(),
-                    x.to().name.as_ref(),
+                    x.to().name.as_os_str().to_owned(),
                     x.options()
                 );
                 match response {
@@ -1009,7 +965,7 @@ impl<'a> Request<'a> {
             #[cfg(feature = "abi-7-12")]
             ll::Operation::CuseInit(_) => {
                 // TODO: handle CUSE_INIT
-                return Err(Errno::ENOSYS);
+                self.replyhandler.error(Errno::ENOSYS);
             }
         }
     }
