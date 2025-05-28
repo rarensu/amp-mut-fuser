@@ -1176,14 +1176,14 @@ impl Filesystem for SimpleFS {
                 }
             };
 
-            let mut entries = self.get_directory_content(new_parent).unwrap();
+            let mut entries = self.get_directory_content(new_parent).map_err(Errno::from_i32)?;
             entries.insert(
                 new_name.as_bytes().to_vec(),
                 (inode_attrs.inode, inode_attrs.kind),
             );
             self.write_directory_content(new_parent, entries);
 
-            let mut entries = self.get_directory_content(parent).unwrap();
+            let mut entries = self.get_directory_content(parent).map_err(Errno::from_i32)?;
             entries.insert(
                 name.as_bytes().to_vec(),
                 (new_inode_attrs.inode, new_inode_attrs.kind),
@@ -1202,12 +1202,12 @@ impl Filesystem for SimpleFS {
             self.write_inode(&new_inode_attrs);
 
             if inode_attrs.kind == FileKind::Directory {
-                let mut entries = self.get_directory_content(inode_attrs.inode).unwrap();
+                let mut entries = self.get_directory_content(inode_attrs.inode).map_err(Errno::from_i32)?;
                 entries.insert(b"..".to_vec(), (new_parent, FileKind::Directory));
                 self.write_directory_content(inode_attrs.inode, entries);
             }
             if new_inode_attrs.kind == FileKind::Directory {
-                let mut entries = self.get_directory_content(new_inode_attrs.inode).unwrap();
+                let mut entries = self.get_directory_content(new_inode_attrs.inode).map_err(Errno::from_i32)?;
                 entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
                 self.write_directory_content(new_inode_attrs.inode, entries);
             }
@@ -1217,14 +1217,11 @@ impl Filesystem for SimpleFS {
 
         // Only overwrite an existing directory if it's empty
         if let Ok(new_name_attrs) = self.lookup_name(new_parent, new_name) {
-            if new_name_attrs.kind == FileKind::Directory
-                && self
-                    .get_directory_content(new_name_attrs.inode)
-                    .unwrap()
-                    .len()
-                    > 2
-            {
-                return Err(Errno::ENOTEMPTY);
+            if new_name_attrs.kind == FileKind::Directory {
+                let dir_entries = self.get_directory_content(new_name_attrs.inode).map_err(Errno::from_i32)?;
+                if dir_entries.len() > 2 {
+                    return Err(Errno::ENOTEMPTY);
+                }
             }
         }
 
@@ -1246,7 +1243,7 @@ impl Filesystem for SimpleFS {
 
         // If target already exists decrement its hardlink count
         if let Ok(mut existing_inode_attrs) = self.lookup_name(new_parent, new_name) {
-            let mut entries = self.get_directory_content(new_parent).unwrap();
+            let mut entries = self.get_directory_content(new_parent).map_err(Errno::from_i32)?;
             entries.remove(new_name.as_bytes());
             self.write_directory_content(new_parent, entries);
 
@@ -1260,11 +1257,11 @@ impl Filesystem for SimpleFS {
             self.gc_inode(&existing_inode_attrs);
         }
 
-        let mut entries = self.get_directory_content(parent).unwrap();
+        let mut entries = self.get_directory_content(parent).map_err(Errno::from_i32)?;
         entries.remove(name.as_bytes());
         self.write_directory_content(parent, entries);
 
-        let mut entries = self.get_directory_content(new_parent).unwrap();
+        let mut entries = self.get_directory_content(new_parent).map_err(Errno::from_i32)?;
         entries.insert(
             new_name.as_bytes().to_vec(),
             (inode_attrs.inode, inode_attrs.kind),
@@ -1281,7 +1278,7 @@ impl Filesystem for SimpleFS {
         self.write_inode(&inode_attrs);
 
         if inode_attrs.kind == FileKind::Directory {
-            let mut entries = self.get_directory_content(inode_attrs.inode).unwrap();
+            let mut entries = self.get_directory_content(inode_attrs.inode).map_err(Errno::from_i32)?;
             entries.insert(b"..".to_vec(), (new_parent, FileKind::Directory));
             self.write_directory_content(inode_attrs.inode, entries);
         }
