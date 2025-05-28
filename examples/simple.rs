@@ -1661,7 +1661,7 @@ impl Filesystem for SimpleFS {
         match self.get_inode(inode) {
             Ok(attr) => {
                 if check_access(attr.uid, attr.gid, attr.mode, req.uid, req.gid, mask) {
-                    reply.ok();
+                    return OK(());
                 } else {
                     Err(Errno::EACCES)
                 }
