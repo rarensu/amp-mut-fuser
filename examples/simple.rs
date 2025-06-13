@@ -1157,7 +1157,7 @@ impl Filesystem for SimpleFS {
 
         // "Sticky bit" handling in new_parent
         if new_parent_attrs.mode & libc::S_ISVTX as u16 != 0 {
-            if let Ok(existing_attrs) = self.lookup_name(new_parent, new_name) {
+            if let Ok(existing_attrs) = self.lookup_name(new_parent, &new_name) {
                 if req.uid != 0
                     && req.uid != new_parent_attrs.uid
                     && req.uid != existing_attrs.uid
@@ -1169,7 +1169,7 @@ impl Filesystem for SimpleFS {
 
         #[cfg(target_os = "linux")]
         if flags & libc::RENAME_EXCHANGE as u32 != 0 {
-            let mut new_inode_attrs = match self.lookup_name(new_parent, new_name) {
+            let mut new_inode_attrs = match self.lookup_name(new_parent, &new_name) {
                 Ok(attrs) => attrs,
                 Err(error_code) => {
                     return Err(Errno::from_i32(error_code));
@@ -1216,7 +1216,7 @@ impl Filesystem for SimpleFS {
         }
 
         // Only overwrite an existing directory if it's empty
-        if let Ok(new_name_attrs) = self.lookup_name(new_parent, new_name) {
+        if let Ok(new_name_attrs) = self.lookup_name(new_parent, &new_name) {
             if new_name_attrs.kind == FileKind::Directory {
                 let dir_entries = self.get_directory_content(new_name_attrs.inode).map_err(Errno::from_i32)?;
                 if dir_entries.len() > 2 {
@@ -1242,7 +1242,7 @@ impl Filesystem for SimpleFS {
         }
 
         // If target already exists decrement its hardlink count
-        if let Ok(mut existing_inode_attrs) = self.lookup_name(new_parent, new_name) {
+        if let Ok(mut existing_inode_attrs) = self.lookup_name(new_parent, &new_name) {
             let mut entries = self.get_directory_content(new_parent).map_err(Errno::from_i32)?;
             entries.remove(new_name.as_bytes());
             self.write_directory_content(new_parent, entries);
@@ -1514,20 +1514,22 @@ impl Filesystem for SimpleFS {
                 return Err(Errno::from_i32(error_code));
             }
         };
+        let mut result=Vec::new();
 
         for (index, entry) in entries.iter().skip(offset as usize).enumerate() {
             let (name, (inode, file_type)) = entry;
 
-            let buffer_full: bool = result.push(DirEntry {
+            result.push(DirEntry {
                 ino: *inode,
                 offset: offset + index as i64 + 1,
                 kind: (*file_type).into(),
                 name: OsStr::from_bytes(name).to_owned(),
             });
 
-            if buffer_full {
-                break;
-            }
+            // to-do: stop if enough bytes
+            // if bytes > MAX_DIRENTLIST_BYTES {
+            //     break;
+            // }
         }
 
         Ok(result)
@@ -1550,13 +1552,13 @@ impl Filesystem for SimpleFS {
         warn!("statfs() implementation is a stub");
         // TODO: real implementation of this
         Ok(Statfs {
-            block_size: 10_000,
             blocks: 10_000,
             bfree: 10_000,
-            bavail: 1,
-            files: 10_000,
-            ffree: MAX_NAME_LENGTH, //swapped?
-            namelen: BLOCK_SIZE as u32,
+            bavail: 10_000,
+            files: 1,
+            ffree: 10_000,
+            bsize: BLOCK_SIZE as u32,
+            namelen: MAX_NAME_LENGTH,
             frsize: BLOCK_SIZE as u32,
         })
     }
@@ -1566,13 +1568,13 @@ impl Filesystem for SimpleFS {
         request: RequestMeta,
         inode: u64,
         key: OsString,
-        value: &[u8],
+        value: Vec<u8>,
         _flags: i32,
         _position: u32,
     ) -> Result<(), Errno> {
         if let Ok(mut attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::W_OK, &attrs, request) {
-                return Err(error);
+                return Err(Errno::from_i32(error));
             }
 
             attrs.xattrs.insert(key.as_bytes().to_vec(), value.to_vec());
@@ -1590,17 +1592,17 @@ impl Filesystem for SimpleFS {
         inode: u64,
         key: OsString,
         size: u32,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<Xattr, Errno> {
         if let Ok(attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::R_OK, &attrs, request) {
-                return Err(error);
+                return Err(Errno::from_i32(error));
             }
 
             if let Some(data) = attrs.xattrs.get(key.as_bytes()) {
                 if size == 0 {
                     return Ok(Xattr::Size(data.len() as u32));
                 } else if data.len() <= size as usize {
-                    return Ok(Xattr::Data(data));
+                    return Ok(Xattr::Data(data.to_owned()));
                 } else {
                     return Err(Errno::ERANGE);
                 }
@@ -1615,7 +1617,7 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn listxattr(&mut self, _req: RequestMeta, inode: u64, size: u32) -> Result<Vec<u8>, Errno> {
+    fn listxattr(&mut self, _req: RequestMeta, inode: u64, size: u32) -> Result<Xattr, Errno> {
         if let Ok(attrs) = self.get_inode(inode) {
             let mut bytes = vec![];
             // Convert to concatenated null-terminated strings
@@ -1624,9 +1626,9 @@ impl Filesystem for SimpleFS {
                 bytes.push(0);
             }
             if size == 0 {
-                return Ok(bytes.len() as u32);
+                return Ok(Xattr::Size(bytes.len() as u32));
             } else if bytes.len() <= size as usize {
-                return Ok(bytes);
+                return Ok(Xattr::Data(bytes));
             } else {
                 return Err(Errno::ERANGE);
             }
@@ -1638,7 +1640,7 @@ impl Filesystem for SimpleFS {
     fn removexattr(&mut self, request: RequestMeta, inode: u64, key: OsString) -> Result<(), Errno> {
         if let Ok(mut attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::W_OK, &attrs, request) {
-                return Err(error);
+                return Err(Errno::from_i32(error));
             }
 
             if attrs.xattrs.remove(key.as_bytes()).is_none() {
@@ -1646,7 +1648,6 @@ impl Filesystem for SimpleFS {
                 return Err(Errno::ENODATA);
                 #[cfg(not(target_os = "linux"))]
                 return Err(Errno::ENOATTR);
-                return;
             }
             attrs.last_metadata_changed = time_now();
             self.write_inode(&attrs);
@@ -1661,7 +1662,7 @@ impl Filesystem for SimpleFS {
         match self.get_inode(inode) {
             Ok(attr) => {
                 if check_access(attr.uid, attr.gid, attr.mode, req.uid, req.gid, mask) {
-                    return OK(());
+                    return Ok(());
                 } else {
                     Err(Errno::EACCES)
                 }
