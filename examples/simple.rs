@@ -483,8 +483,11 @@ impl Filesystem for SimpleFS {
         config: KernelConfig,
     ) -> Result<KernelConfig, c_int> {
         #[cfg(feature = "abi-7-26")]
-        config.add_capabilities(FUSE_HANDLE_KILLPRIV).unwrap();
-
+        let config = {
+            let mut config = config;
+            config.add_capabilities(FUSE_HANDLE_KILLPRIV).unwrap();
+            config
+        };
         fs::create_dir_all(Path::new(&self.data_dir).join("inodes")).unwrap();
         fs::create_dir_all(Path::new(&self.data_dir).join("contents")).unwrap();
         if self.get_inode(FUSE_ROOT_ID).is_err() {
