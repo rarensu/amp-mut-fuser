@@ -80,11 +80,6 @@ impl ReplyHandler {
         self.send_ll_mut(response)
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: ll::Errno) {
-        // assert_ne!(err.0, 0); redundant since it is already nonzero type
-        self.send_ll(&ll::Response::new_error(err));
-    }
 }
 
 impl Drop for ReplyHandler {
@@ -100,32 +95,139 @@ impl Drop for ReplyHandler {
 }
 
 ///
-/// Empty reply
+/// Structs for managing response data
+/// 
+
+#[derive(Debug)]
+/// File attribute response data
+pub struct Attr {
+    /// Describes a file
+    pub attr: FileAttr,
+    /// Time to live for the attribute
+    pub ttl: Duration
+}
+
+#[derive(Debug)]
+/// File entry response data
+pub struct Entry {
+    /// Describes a file
+    pub attr: FileAttr,
+    /// Time to live for the entry
+    pub ttl: Duration,
+    /// The generation of the entry
+    pub generation: u64
+}
+
+#[derive(Debug)] //TODO #[derive(Copy)]
+/// Open file handle response data
+pub struct Open {
+    /// File handle for the opened file
+    pub fh: u64, 
+    /// Flags for the opened file
+    pub flags: u32
+}
+
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+/// Xtimes response data
+pub struct XTimes {
+    /// Backup time
+    pub bkuptime: SystemTime,
+    /// Creation time
+    pub crtime: SystemTime
+}
+
+#[derive(Copy, Clone, Debug)]
+/// Statfs response data
+pub struct Statfs {
+    /// Total blocks (in units of frsize)
+    pub blocks: u64,
+    /// Free blocks
+    pub bfree: u64,
+    /// Free blocks for unprivileged users
+    pub bavail: u64,
+    /// Total inodes
+    pub files: u64,
+    /// Free inodes
+    pub ffree: u64,
+    /// Filesystem block size
+    pub bsize: u32,
+    /// Maximum filename length
+    pub namelen: u32,
+    /// Fundamental file system block size
+    pub frsize: u32
+}
+
+#[derive(Debug)]
+/// Directory listing response data
+pub struct DirEntry {
+    /// file inode number
+    pub ino: u64,
+    /// entry number in directory
+    pub offset: i64,
+    /// kind of file
+    pub kind: FileType, 
+    /// name of file
+    pub name: OsString
+}
+
+#[derive(Copy, Clone, Debug)]
+/// File lock response data
+pub struct Lock {
+    /// start of locked byte range
+    pub start: u64,
+    /// end of locked byte range
+    pub end: u64,
+    // NOTE: lock field is defined as u32 in fuse_kernel.h in libfuse. However, it is treated as signed
+    // TODO enum {F_RDLCK, F_WRLCK, F_UNLCK}
+    /// kind of lock (read and/or write) 
+    pub typ: i32,
+    /// PID of process blocking our lock
+    pub pid: u32, 
+}
+
+#[derive(Debug)]
+/// Extended attribute response data
+pub enum Xattr{
+    /// Reply to a request with the size of the xattr.
+    Size(u32),
+    /// Reply to a request with the data in the xattr.
+    Data(Vec<u8>)
+}
+
+#[cfg(feature = "abi-7-11")]
+#[derive(Debug)]
+/// File io control reponse data
+pub struct Ioctl {
+    /// Result of the ioctl operation
+    pub result: i32,
+    /// Data to be returned with the ioctl operation
+    pub data: Vec<u8>
+}
+
+///
+/// Methods to reply to a request for each kind of data
 ///
 
 impl ReplyHandler {
-    /// Reply to a request with nothing
+
+    /// Reply to a general request with Ok
     pub fn ok(self) {
         self.send_ll(&ll::Response::new_empty());
     }
-}
 
-///
-/// Data reply
-///
+    /// Reply to a general request with an error code
+    pub fn error(self, err: ll::Errno) {
+        self.send_ll(&ll::Response::new_error(err));
+    }
 
-impl ReplyHandler {
-    /// Reply to a request with the given data
+    /// Reply to a general request with data
     pub fn data(self, data: &[u8]) {
         self.send_ll(&ll::Response::new_slice(data));
     }
-}
 
-///
-/// config reply
-/// 
-
-impl ReplyHandler {
+    // Reply to an init request with available features
     pub fn config(self, capabilities: u64, config: KernelConfig) {
         let flags = capabilities & config.requested; // use requested features and reported as capable
 
@@ -165,24 +267,8 @@ impl ReplyHandler {
         };
         self.send_ll(&ll::Response::new_data(init.as_bytes()));
     }
-}
 
-///
-/// Entry reply
-///
-
-#[derive(Debug)]
-pub struct Entry {
-    /// Describes a file
-    pub attr: FileAttr,
-    /// Time to live for the entry
-    pub ttl: Duration,
-    /// The generation of the entry
-    pub generation: u64
-}
-
-impl ReplyHandler {
-    /// Reply to a request with the given entry
+    /// Reply to a request with a file entry
     pub fn entry(self, entry: Entry) {
         self.send_ll(&ll::Response::new_entry(
             ll::INodeNo(entry.attr.ino),
@@ -192,62 +278,19 @@ impl ReplyHandler {
             entry.ttl,
         ));
     }
-}
 
-///
-/// Attribute Reply
-///
-
-#[derive(Debug)]
-pub struct Attr {
-    /// Describes a file
-    pub attr: FileAttr,
-    /// Time to live for the attribute
-    pub ttl: Duration
-}
-
-impl ReplyHandler {
-    /// Reply to a request with the given attribute
+    /// Reply to a request with a file attributes
     pub fn attr(self, attr: Attr) {
         self.send_ll(&ll::Response::new_attr(&attr.ttl, &attr.attr.into()));
     }
-}
 
-///
-/// XTimes Reply
-///
-
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-pub struct XTimes {
-    /// Backup time
-    pub bkuptime: SystemTime,
-    /// Creation time
-    pub crtime: SystemTime
-}
-
-#[cfg(target_os = "macos")]
-impl ReplyHandler {
-    /// Reply to a request with the given xtimes
+    #[cfg(target_os = "macos")]
+    /// Reply to a request with xtimes attributes
     pub fn xtimes(self, xtimes: XTimes) {
         self.send_ll(&ll::Response::new_xtimes(xtimes.bkuptime, xtimes.crtime))
     }
-}
 
-///
-/// Open Reply
-///
-#[derive(Debug)] //TODO #[derive(Copy)]
-pub struct Open {
-    /// File handle for the opened file
-    pub fh: u64, 
-    /// Flags for the opened file
-    pub flags: u32
-}
-
-
-impl ReplyHandler {
-    /// Reply to a request with the given open result
+    /// Reply to a request with a newly opened file handle
     pub fn opened(self, open: Open) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(open.flags & FOPEN_PASSTHROUGH, 0);
@@ -273,44 +316,13 @@ impl ReplyHandler {
             backing_id.backing_id,
         ))
     }
-}
 
-///
-/// Write Reply
-///
-
-impl ReplyHandler {
-    /// Reply to a request with the given open result
+    /// Reply to a request with the number of bytes written
     pub fn written(self, size: u32) {
         self.send_ll(&ll::Response::new_write(size))
     }
-}
 
-///
-/// Statfs Reply
-///
-#[derive(Copy, Clone, Debug)]
-pub struct Statfs {
-    /// Total blocks (in units of frsize)
-    pub blocks: u64,
-    /// Free blocks
-    pub bfree: u64,
-    /// Free blocks for unprivileged users
-    pub bavail: u64,
-    /// Total inodes
-    pub files: u64,
-    /// Free inodes
-    pub ffree: u64,
-    /// Filesystem block size
-    pub bsize: u32,
-    /// Maximum filename length
-    pub namelen: u32,
-    /// Fundamental file system block size
-    pub frsize: u32
-}
-
-impl ReplyHandler {
-    /// Reply to a request with the given open result
+    /// Reply to a statfs request 
     #[allow(clippy::too_many_arguments)]
     pub fn statfs(
         self,
@@ -320,14 +332,8 @@ impl ReplyHandler {
             statfs.blocks, statfs.bfree, statfs.bavail, statfs.files, statfs.ffree, statfs.bsize, statfs.namelen, statfs.frsize,
         ))
     }
-}
 
-///
-/// Create reply
-///
-
-impl ReplyHandler {
-    /// Reply to a request with the given entry
+    /// Reply to a request with a newle created file entry and its newly open file handle
     pub fn created(self, entry: Entry, open: Open) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(open.flags & FOPEN_PASSTHROUGH, 0);
@@ -340,27 +346,8 @@ impl ReplyHandler {
             0,
         ))
     }
-}
 
-///
-/// Lock Reply
-///
-#[derive(Copy, Clone, Debug)]
-pub struct Lock {
-    /// start of locked byte range
-    pub start: u64,
-    /// end of locked byte range
-    pub end: u64,
-    // NOTE: lock field is defined as u32 in fuse_kernel.h in libfuse. However, it is treated as signed
-    // TODO enum {F_RDLCK, F_WRLCK, F_UNLCK}
-    /// kind of lock (read and/or write) 
-    pub typ: i32,
-    /// PID of process blocking our lock
-    pub pid: u32, 
-}
-
-impl ReplyHandler {
-    /// Reply to a request with the given open result
+    /// Reply to a request with a file lock
     pub fn locked(self, lock: Lock) {
         self.send_ll(&ll::Response::new_lock(&ll::Lock{
             range: (lock.start, lock.end),
@@ -368,73 +355,30 @@ impl ReplyHandler {
             pid: lock.pid,
         }))
     }
-}
 
-///
-/// Bmap Reply
-///
-
-impl ReplyHandler {
-    /// Reply to a request with the given open result
+    /// Reply to a request with a bmap
     pub fn bmap(self, block: u64) {
         self.send_ll(&ll::Response::new_bmap(block))
     }
-}
 
-///
-/// Ioctl Reply
-///
-///             
-#[cfg(feature = "abi-7-11")]
-#[derive(Debug)]
-pub struct Ioctl {
-    /// Result of the ioctl operation
-    pub result: i32,
-    /// Data to be returned with the ioctl operation
-    pub data: Vec<u8>
-}
-
-#[cfg(feature = "abi-7-11")]
-impl ReplyHandler {
-    /// Reply to a request with the given open result
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with an ioctl
     pub fn ioctl(self, ioctl: Ioctl) {
         self.send_ll(&ll::Response::new_ioctl(ioctl.result, &[IoSlice::new(ioctl.data.as_ref())]));
     }
-}
 
-///
-/// Poll Reply
-///
-
-#[cfg(feature = "abi-7-11")]
-impl ReplyHandler {
-    /// Reply to a request with the given poll result
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with a poll result
     pub fn poll(self, revents: u32) {
         self.send_ll(&ll::Response::new_poll(revents))
     }
-}
 
-///
-/// Directory reply
-///
-
-#[derive(Debug)]
-pub struct DirEntry {
-    /// file inode number
-    pub ino: u64,
-    /// entry number in directory
-    pub offset: i64,
-    /// kind of file
-    pub kind: FileType, 
-    /// name of file
-    pub name: OsString
-}
-
-
-impl ReplyHandler {
-
-    /// Reply to a request with the filled directory buffer
-    pub fn dir(self, entries: Vec<DirEntry> , size: usize) {
+    /// Reply to a request with a filled directory buffer
+    pub fn dir(
+        self,
+        entries: Vec<DirEntry>,
+        size: usize
+    ) {
         let mut buf = DirEntList::new(size);
         for item in entries.into_iter() {
             let full= buf.push(&ll_DirEntry::new(
@@ -449,14 +393,9 @@ impl ReplyHandler {
         }
         self.send_ll(&buf.into());
     }
-}
 
-///
-/// DirectoryPlus reply
-///
-#[cfg(feature = "abi-7-21")]
-impl ReplyHandler {
-    /// Creates a new ReplyDirectory with a specified buffer size.
+    #[cfg(feature = "abi-7-21")]
+    // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
         self,
         entries: Vec<(DirEntry, Entry)>,
@@ -477,52 +416,33 @@ impl ReplyHandler {
                 break;
             }     
         }
-    // Reply to a request with the filled directory buffer
         self.send_ll(&buf.into());
     }
-}
 
-///
-/// Xattr reply
-///
-
-
-#[derive(Debug)]
-pub enum Xattr{
-    /// Reply to a request with the size of the xattr.
-    Size(u32),
-    /// Reply to a request with the data in the xattr.
-    Data(Vec<u8>)
-}
-
-impl ReplyHandler {
-    /// Reply to a request with the size of the xattr.
-    pub fn xattr_size(self, size: u32) {
-        self.send_ll(&ll::Response::new_xattr_size(size))
-    }
-
-    /// Reply to a request with the data in the xattr.
-    pub fn xattr_data(self, data: Vec<u8>) {
-        self.send_ll(&ll::Response::new_slice(&data))
-    }
-
+    /// Reply to a request with extended attributes.
     pub fn xattr(self, reply: Xattr){
         match reply{
             Xattr::Size(s)=>self.xattr_size(s),
             Xattr::Data(d)=>self.xattr_data(d)
         };
     }
-}
 
-///
-/// Lseek Reply
-///
-#[cfg(feature = "abi-7-24")]
-impl ReplyHandler {
-    /// Reply to a request with seeked offset
+    /// Reply to a request with the size of an xattr result.
+    pub fn xattr_size(self, size: u32) {
+        self.send_ll(&ll::Response::new_xattr_size(size))
+    }
+
+    /// Reply to a request with the data in an xattr result.
+    pub fn xattr_data(self, data: Vec<u8>) {
+        self.send_ll(&ll::Response::new_slice(&data))
+    }
+
+    #[cfg(feature = "abi-7-24")]
+    /// Reply to a request with a seeked offset
     pub fn offset(self, offset: i64) {
         self.send_ll(&ll::Response::new_lseek(offset))
     }
+
 }
 
 #[cfg(test)]
