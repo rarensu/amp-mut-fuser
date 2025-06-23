@@ -510,7 +510,8 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.offset()
+                    x.offset(),
+                    x.size()
                 );
                 match response {
                     Ok(entries)=> {
@@ -823,11 +824,12 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.offset()
+                    x.offset(),
+                    x.size()
                 );
                 match response {
                     Ok(entries)=> {
-                        self.replyhandler.dirplus(entries)
+                        self.replyhandler.dirplus(entries, x.size())
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)

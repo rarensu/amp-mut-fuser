@@ -1524,6 +1524,7 @@ impl Filesystem for SimpleFS {
         inode: u64,
         _fh: u64,
         offset: i64,
+        _max_bytes: u32
     ) -> Result<Vec<DirEntry>, Errno> {
         debug!("readdir() called with {:?}", inode);
         assert!(offset >= 0);

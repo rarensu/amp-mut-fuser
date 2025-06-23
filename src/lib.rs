@@ -354,7 +354,7 @@ pub trait Filesystem {
     /// Like forget, but take multiple forget requests at once for performance. The default
     /// implementation will fallback to forget.
     #[cfg(feature = "abi-7-16")]
-    fn batch_forget(&mut self, req: RequestMeta, nodes: Vec<fuse_forget_one>) {
+    fn batch_forget(&mut self, #[allow(unused_variables)] req: RequestMeta, nodes: Vec<fuse_forget_one>) {
         for node in nodes {
             self.forget(req, node.nodeid, node.nlookup);
         }
@@ -653,10 +653,11 @@ pub trait Filesystem {
         ino: u64,
         fh: u64,
         offset: i64,
+        max_bytes: u32
     ) -> Result<Vec<DirEntry>, Errno> {
         debug!(
-            "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {})",
-            ino, fh, offset
+            "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
+            ino, fh, offset, max_bytes
         );
         Err(Errno::ENOSYS)
     }
@@ -673,10 +674,11 @@ pub trait Filesystem {
         ino: u64,
         fh: u64,
         offset: i64,
+        max_bytes: u32,
     ) -> Result<Vec<(DirEntry, Entry)>, Errno>{
         debug!(
-            "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {})",
-            ino, fh, offset
+            "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
+            ino, fh, offset, max_bytes
         );
         Err(Errno::ENOSYS)
     }
@@ -884,7 +886,7 @@ pub trait Filesystem {
     #[cfg(feature = "abi-7-11")]
     fn ioctl(
         &mut self,
-        req: RequestMeta,
+        #[allow(unused_variables)] req: RequestMeta,
         ino: u64,
         fh: u64,
         flags: u32,
@@ -909,7 +911,7 @@ pub trait Filesystem {
     #[cfg(feature = "abi-7-11")]
     fn poll(
         &mut self,
-        req: RequestMeta,
+        #[allow(unused_variables)] req: RequestMeta,
         ino: u64,
         fh: u64,
         ph: PollHandle,
@@ -1010,7 +1012,7 @@ pub trait Filesystem {
     /// macOS only: Query extended times (bkuptime and crtime). Set fuse_init_out.flags
     /// during init to FUSE_XTIMES to enable
     #[cfg(target_os = "macos")]
-    fn getxtimes(&mut self, req: RequestMeta, ino: u64) -> Result<XTimes, Errno> {
+    fn getxtimes(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64) -> Result<XTimes, Errno> {
         debug!("[Not Implemented] getxtimes(ino: {:#x?})", ino);
         Err(Errno::ENOSYS)
     }

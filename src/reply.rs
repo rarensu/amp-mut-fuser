@@ -291,13 +291,21 @@ impl ReplyHandler {
 ///
 #[derive(Copy, Clone, Debug)]
 pub struct Statfs {
+    /// Total blocks (in units of frsize)
     pub blocks: u64,
+    /// Free blocks
     pub bfree: u64,
+    /// Free blocks for unprivileged users
     pub bavail: u64,
+    /// Total inodes
     pub files: u64,
+    /// Free inodes
     pub ffree: u64,
+    /// Filesystem block size
     pub bsize: u32,
+    /// Maximum filename length
     pub namelen: u32,
+    /// Fundamental file system block size
     pub frsize: u32
 }
 
@@ -339,10 +347,16 @@ impl ReplyHandler {
 ///
 #[derive(Copy, Clone, Debug)]
 pub struct Lock {
+    /// start of locked byte range
     pub start: u64,
+    /// end of locked byte range
     pub end: u64,
+    // NOTE: lock field is defined as u32 in fuse_kernel.h in libfuse. However, it is treated as signed
+    // TODO enum {F_RDLCK, F_WRLCK, F_UNLCK}
+    /// kind of lock (read and/or write) 
     pub typ: i32,
-    pub pid: u32
+    /// PID of process blocking our lock
+    pub pid: u32, 
 }
 
 impl ReplyHandler {
@@ -406,9 +420,13 @@ impl ReplyHandler {
 
 #[derive(Debug)]
 pub struct DirEntry {
+    /// file inode number
     pub ino: u64,
+    /// entry number in directory
     pub offset: i64,
+    /// kind of file
     pub kind: FileType, 
+    /// name of file
     pub name: OsString
 }
 
@@ -441,9 +459,9 @@ impl ReplyHandler {
     /// Creates a new ReplyDirectory with a specified buffer size.
     pub fn dirplus(
         self,
-        entries: Vec<(DirEntry, Entry)>
+        entries: Vec<(DirEntry, Entry)>,
+        size: usize
     ) {
-        let size: usize=entries.len();
         let mut buf = DirEntPlusList::new(size);
         for (item, plus) in entries.into_iter() {
             let full = buf.push(&DirEntryPlus::new(
