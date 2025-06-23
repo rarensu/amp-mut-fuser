@@ -315,7 +315,7 @@ mod op {
         arg: &'a fuse_forget_in,
     }
     impl_request!(Forget<'_>);
-    impl<'a> Forget<'a> {
+    impl Forget<'_> {
         /// The number of lookups previously performed on this inode
         pub fn nlookup(&self) -> u64 {
             self.arg.nlookup
@@ -333,7 +333,7 @@ mod op {
     impl_request!(GetAttr<'_>);
 
     #[cfg(feature = "abi-7-9")]
-    impl<'a> GetAttr<'a> {
+    impl GetAttr<'_> {
         pub fn file_handle(&self) -> Option<FileHandle> {
             if self.arg.getattr_flags & crate::FUSE_GETATTR_FH != 0 {
                 Some(FileHandle(self.arg.fh))
@@ -350,7 +350,7 @@ mod op {
         arg: &'a fuse_setattr_in,
     }
     impl_request!(SetAttr<'_>);
-    impl<'a> SetAttr<'a> {
+    impl SetAttr<'_> {
         pub fn mode(&self) -> Option<u32> {
             match self.arg.valid & FATTR_MODE {
                 0 => None,
@@ -470,7 +470,7 @@ mod op {
 
         // TODO: Why does *set*attr want to have an attr response?
     }
-    impl<'a> Display for SetAttr<'a> {
+    impl Display for SetAttr<'_> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(
                 f,
@@ -654,7 +654,7 @@ mod op {
         arg: &'a fuse_open_in,
     }
     impl_request!(Open<'_>);
-    impl<'a> Open<'a> {
+    impl Open<'_> {
         pub fn flags(&self) -> i32 {
             self.arg.flags
         }
@@ -673,7 +673,7 @@ mod op {
         arg: &'a fuse_read_in,
     }
     impl_request!(Read<'_>);
-    impl<'a> Read<'a> {
+    impl Read<'_> {
         /// The value set by the [Open] method.
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -777,7 +777,7 @@ mod op {
         arg: &'a fuse_release_in,
     }
     impl_request!(Release<'_>);
-    impl<'a> Release<'a> {
+    impl Release<'_> {
         pub fn flush(&self) -> bool {
             self.arg.release_flags & FUSE_RELEASE_FLUSH != 0
         }
@@ -809,7 +809,7 @@ mod op {
         arg: &'a fuse_fsync_in,
     }
     impl_request!(FSync<'a>);
-    impl<'a> FSync<'a> {
+    impl FSync<'_> {
         /// The value set by the [Open] method.
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -909,7 +909,7 @@ mod op {
         arg: &'a fuse_getxattr_in,
     }
     impl_request!(ListXAttr<'a>);
-    impl<'a> ListXAttr<'a> {
+    impl ListXAttr<'_> {
         /// The size of the buffer the caller has allocated to receive the list of
         /// XAttrs.  If this is 0 the user is just probing to find how much space is
         /// required to fit the whole list.
@@ -954,7 +954,7 @@ mod op {
         arg: &'a fuse_flush_in,
     }
     impl_request!(Flush<'a>);
-    impl<'a> Flush<'a> {
+    impl Flush<'_> {
         /// The value set by the open method
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -970,7 +970,7 @@ mod op {
         arg: &'a fuse_init_in,
     }
     impl_request!(Init<'a>);
-    impl<'a> Init<'a> {
+    impl Init<'_> {
         pub fn capabilities(&self) -> u64 {
             #[cfg(feature = "abi-7-36")]
             if self.arg.flags & (FUSE_INIT_EXT as u32) != 0 {
@@ -1003,7 +1003,7 @@ mod op {
         arg: &'a fuse_open_in,
     }
     impl_request!(OpenDir<'a>);
-    impl<'a> OpenDir<'a> {
+    impl OpenDir<'_> {
         /// Flags as passed to open
         pub fn flags(&self) -> i32 {
             self.arg.flags
@@ -1017,7 +1017,7 @@ mod op {
         arg: &'a fuse_read_in,
     }
     impl_request!(ReadDir<'a>);
-    impl<'a> ReadDir<'a> {
+    impl ReadDir<'_> {
         /// The value set by the [OpenDir] method.
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1039,7 +1039,7 @@ mod op {
         arg: &'a fuse_release_in,
     }
     impl_request!(ReleaseDir<'a>);
-    impl<'a> ReleaseDir<'a> {
+    impl ReleaseDir<'_> {
         /// The value set by the [OpenDir] method.
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1070,7 +1070,7 @@ mod op {
         arg: &'a fuse_fsync_in,
     }
     impl_request!(FSyncDir<'a>);
-    impl<'a> FSyncDir<'a> {
+    impl FSyncDir<'_> {
         /// The value set by the [OpenDir] method. See [FileHandle].
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1088,7 +1088,7 @@ mod op {
         arg: &'a fuse_lk_in,
     }
     impl_request!(GetLk<'a>);
-    impl<'a> GetLk<'a> {
+    impl GetLk<'_> {
         /// The value set by the [Open] method. See [FileHandle].
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1115,7 +1115,7 @@ mod op {
         arg: &'a fuse_lk_in,
     }
     impl_request!(SetLk<'a>);
-    impl<'a> SetLk<'a> {
+    impl SetLk<'_> {
         /// The value set by the [Open] method. See [FileHandle].
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1133,7 +1133,7 @@ mod op {
         arg: &'a fuse_lk_in,
     }
     impl_request!(SetLkW<'a>);
-    impl<'a> SetLkW<'a> {
+    impl SetLkW<'_> {
         /// The value set by the [Open] method. See [FileHandle].
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1156,7 +1156,7 @@ mod op {
         arg: &'a fuse_access_in,
     }
     impl_request!(Access<'a>);
-    impl<'a> Access<'a> {
+    impl Access<'_> {
         pub fn mask(&self) -> i32 {
             self.arg.mask
         }
@@ -1242,7 +1242,7 @@ mod op {
         arg: &'a fuse_interrupt_in,
     }
     impl_request!(Interrupt<'a>);
-    impl<'a> Interrupt<'a> {
+    impl Interrupt<'_> {
         pub fn unique(&self) -> RequestId {
             RequestId(self.arg.unique)
         }
@@ -1257,7 +1257,7 @@ mod op {
         arg: &'a fuse_bmap_in,
     }
     impl_request!(BMap<'a>);
-    impl<'a> BMap<'a> {
+    impl BMap<'_> {
         pub fn block_size(&self) -> u32 {
             self.arg.blocksize
         }
@@ -1283,7 +1283,7 @@ mod op {
     #[cfg(feature = "abi-7-11")]
     impl_request!(IoCtl<'a>);
     #[cfg(feature = "abi-7-11")]
-    impl<'a> IoCtl<'a> {
+    impl IoCtl<'_> {
         pub fn in_data(&self) -> &[u8] {
             &self.data[..self.arg.in_size as usize]
         }
@@ -1317,7 +1317,7 @@ mod op {
     #[cfg(feature = "abi-7-11")]
     impl_request!(Poll<'a>);
     #[cfg(feature = "abi-7-11")]
-    impl<'a> Poll<'a> {
+    impl Poll<'_> {
         /// The value set by the [Open] method. See [FileHandle].
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1384,7 +1384,7 @@ mod op {
     #[cfg(feature = "abi-7-19")]
     impl_request!(FAllocate<'a>);
     #[cfg(feature = "abi-7-19")]
-    impl<'a> FAllocate<'a> {
+    impl FAllocate<'_> {
         /// The value set by the [Open] method. See [FileHandle].
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1413,7 +1413,7 @@ mod op {
     #[cfg(feature = "abi-7-21")]
     impl_request!(ReadDirPlus<'a>);
     #[cfg(feature = "abi-7-21")]
-    impl<'a> ReadDirPlus<'a> {
+    impl ReadDirPlus<'_> {
         /// The value set by the [Open] method. See [FileHandle].
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1477,7 +1477,7 @@ mod op {
     #[cfg(feature = "abi-7-24")]
     impl_request!(Lseek<'a>);
     #[cfg(feature = "abi-7-24")]
-    impl<'a> Lseek<'a> {
+    impl Lseek<'_> {
         /// The value set by the [Open] method. See [FileHandle].
         pub fn file_handle(&self) -> FileHandle {
             FileHandle(self.arg.fh)
@@ -1509,7 +1509,7 @@ mod op {
     #[cfg(feature = "abi-7-28")]
     impl_request!(CopyFileRange<'a>);
     #[cfg(feature = "abi-7-28")]
-    impl<'a> CopyFileRange<'a> {
+    impl CopyFileRange<'_> {
         /// File and offset to copy data from
         pub fn src(&self) -> CopyFileRangeFile {
             CopyFileRangeFile {
@@ -1927,7 +1927,7 @@ pub enum Operation<'a> {
     CuseInit(CuseInit<'a>),
 }
 
-impl<'a> fmt::Display for Operation<'a> {
+impl fmt::Display for Operation<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Operation::Lookup(x) => write!(f, "LOOKUP name {:?}", x.name()),
@@ -2143,7 +2143,7 @@ impl<'a> AnyRequest<'a> {
     }
 }
 
-impl<'a> fmt::Display for AnyRequest<'a> {
+impl fmt::Display for AnyRequest<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Ok(op) = self.operation() {
             write!(
