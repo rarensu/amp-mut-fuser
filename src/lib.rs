@@ -6,7 +6,6 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use libc::c_int;
 use log::{warn};
 use mnt::mount_options::parse_options_from_args;
 #[cfg(feature = "serializable")]
@@ -325,7 +324,7 @@ pub trait Filesystem {
     /// Initialize filesystem.
     /// Called before any other filesystem method.
     /// The kernel module connection can be configured using the KernelConfig object
-    fn init(&mut self, #[allow(unused_variables)] req: RequestMeta, config: KernelConfig) -> Result<KernelConfig, c_int> {
+    fn init(&mut self, #[allow(unused_variables)] req: RequestMeta, config: KernelConfig) -> Result<KernelConfig, Errno> {
         Ok(config)
     }
 
@@ -335,7 +334,7 @@ pub trait Filesystem {
 
     /// Look up a directory entry by name and get its attributes.
     fn lookup(&mut self, #[allow(unused_variables)] req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] lookup(parent: {:#x?}, name {:?})",
             parent, name
         );
@@ -362,7 +361,7 @@ pub trait Filesystem {
 
     /// Get file attributes.
     fn getattr(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, fh: Option<u64>) -> Result<Attr, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] getattr(ino: {:#x?}, fh: {:#x?})",
             ino, fh
         );

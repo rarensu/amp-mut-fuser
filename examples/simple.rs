@@ -489,7 +489,7 @@ impl Filesystem for SimpleFS {
         &mut self,
         _req: RequestMeta,
         config: KernelConfig,
-    ) -> Result<KernelConfig, c_int> {
+    ) -> Result<KernelConfig, Errno> {
         #[cfg(feature = "abi-7-26")]
         let config = {
             let mut config = config;
@@ -555,9 +555,9 @@ impl Filesystem for SimpleFS {
 
         match self.lookup_name(parent, &name) {
             Ok(attrs) => Ok(Entry {
+                attr: attrs.into(),
                 ttl: Duration::new(0,0),
                 generation: 0,
-                attr: attrs.into(),
             }),
             Err(error_code) => Err(Errno::from_i32(error_code)),
         }
@@ -574,8 +574,8 @@ impl Filesystem for SimpleFS {
         match self.get_inode(ino) {
             Ok(inode) => 
                 Ok(Attr {
+                    attr: inode.into(), 
                     ttl: Duration::new(0, 0), 
-                    attr: inode.into() 
                 }),
             Err(e) => Err(Errno::from_i32(e)),
         }
@@ -623,8 +623,8 @@ impl Filesystem for SimpleFS {
             attrs.last_metadata_changed = time_now();
             self.write_inode(&attrs);
             return Ok(Attr { 
-                ttl: Duration::new(0,0),
                 attr: attrs.into(), 
+                ttl: Duration::new(0,0),
             });
         }
 
@@ -668,7 +668,7 @@ impl Filesystem for SimpleFS {
             }
             attrs.last_metadata_changed = time_now();
             self.write_inode(&attrs);
-            return Ok(Attr { ttl: Duration::new(0,0), attr: attrs.into() });
+            return Ok(Attr { attr: attrs.into(), ttl: Duration::new(0,0),  });
         }
 
         if let Some(size_val) = size_option {
@@ -684,7 +684,7 @@ impl Filesystem for SimpleFS {
             };
     
             return match truncated_attrs_result {
-                Ok(current_attrs) => Ok(Attr { ttl: Duration::new(0,0), attr: current_attrs.into() }),
+                Ok(current_attrs) => Ok(Attr { attr: current_attrs.into(), ttl: Duration::new(0,0), }),
                 Err(error_code) => Err(Errno::from_i32(error_code)),
             };
         }
@@ -756,7 +756,7 @@ impl Filesystem for SimpleFS {
         // If only atime/mtime were set, or if no attributes were set,
         // we fetch the latest attributes and return them.
         let final_attrs = self.get_inode(inode).map_err(Errno::from_i32)?;
-        Ok(Attr { ttl: Duration::new(0,0), attr: final_attrs.into() })
+        Ok(Attr { attr: final_attrs.into(), ttl: Duration::new(0,0), })
     }
 
     fn readlink(&mut self, _req: RequestMeta, inode: u64) -> Result<Vec<u8>, Errno> {
@@ -856,7 +856,7 @@ impl Filesystem for SimpleFS {
         entries.insert(name.as_bytes().to_vec(), (inode, attrs.kind));
         self.write_directory_content(parent, entries);
 
-        Ok(Entry { ttl: Duration::new(0,0), attr: attrs.into(), generation: 0 })
+        Ok(Entry { attr: attrs.into(), ttl: Duration::new(0,0), generation: 0 })
     }
 
     fn mkdir(
@@ -926,7 +926,7 @@ impl Filesystem for SimpleFS {
         entries.insert(name.as_bytes().to_vec(), (inode, FileKind::Directory));
         self.write_directory_content(parent, entries);
 
-        Ok(Entry { ttl: Duration::new(0,0), attr: attrs.into(), generation: 0 })
+        Ok(Entry { attr: attrs.into(), ttl: Duration::new(0,0), generation: 0 })
     }
 
     fn unlink(&mut self, req: RequestMeta, parent: u64, name: OsString) -> Result<(), Errno> {
@@ -1106,7 +1106,7 @@ impl Filesystem for SimpleFS {
             .map_err(|_| Errno::EIO)?;
         file.write_all(target.as_os_str().as_bytes()).map_err(|_| Errno::EIO)?;
 
-        Ok(Entry { ttl: Duration::new(0,0), attr: attrs.into(), generation: 0 })
+        Ok(Entry { attr: attrs.into(), ttl: Duration::new(0,0), generation: 0 })
     }
 
     fn rename(
@@ -1771,8 +1771,8 @@ impl Filesystem for SimpleFS {
         // TODO: implement flags
         return Ok(( 
             Entry {
-                ttl: Duration::new(0, 0),
                 attr: attrs.into(),
+                ttl: Duration::new(0, 0),
                 generation: 0,
             }, 
             Open {
