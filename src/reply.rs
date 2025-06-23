@@ -1,10 +1,8 @@
 //! Filesystem operation reply
 //!
-//! A reply is passed to filesystem operation implementations and must be used to send back the
-//! result of an operation. The reply can optionally be sent to another thread to asynchronously
-//! work on an operation and provide the result later. Also it allows replying with a block of
-//! data without cloning the data. A reply *must always* be used (by calling either ok() or
-//! error() exactly once).
+//! A reply handler object is created to guarantee that each fuse request receives a reponse exactly once.
+//! Either the request logic will call the one of the reply handler's self-destructive methods, 
+//! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response. 
 
 use crate::ll::{
     self,
@@ -18,9 +16,7 @@ use crate::ll::reply::{DirEntPlusList, DirEntryPlus};
 use crate::ll::Generation;
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
-//use libc::c_int;
 use log::{error, warn};
-//use std::convert::AsRef;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::IoSlice;
