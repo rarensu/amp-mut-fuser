@@ -17,13 +17,14 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use libc::{EACCES, EINVAL, EISDIR, ENOBUFS, ENOENT, ENOTDIR};
+// libc imports likely not needed if Errno::NAME is used
+// use libc::{EACCES, EINVAL, EISDIR, ENOENT};
 
 use clap::Parser;
+use std::ffi::OsString;
 
 use fuser::{
-    consts, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory,
-    ReplyEntry, ReplyOpen, Request, FUSE_ROOT_ID,
+    consts, FileAttr, FileType, Filesystem, MountOption, RequestMeta, Entry, Attr, DirEntry, Open, Errno, FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
@@ -67,17 +68,23 @@ impl<'a> ClockFS<'a> {
 }
 
 impl<'a> Filesystem for ClockFS<'a> {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        if parent != FUSE_ROOT_ID || name != AsRef::<OsStr>::as_ref(&Self::FILE_NAME) {
-            reply.error(ENOENT);
-            return;
+    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
+        if parent != FUSE_ROOT_ID || name != OsStr::new(Self::FILE_NAME) {
+            return Err(Errno::ENOENT);
         }
 
         self.lookup_cnt.fetch_add(1, SeqCst);
-        reply.entry(&Duration::MAX, &self.stat(ClockFS::FILE_INO).unwrap(), 0);
+        match self.stat(ClockFS::FILE_INO) {
+            Some(attr) => Ok(Entry {
+                ttl: Duration::MAX, // Effectively infinite TTL
+                attr,
+                generation: 0,
+            }),
+            None => Err(Errno::EIO), // Should not happen
+        }
     }
 
-    fn forget(&mut self, _req: &Request, ino: u64, nlookup: u64) {
+    fn forget(&mut self, _req: RequestMeta, ino: u64, nlookup: u64) {
         if ino == ClockFS::FILE_INO {
             let prev = self.lookup_cnt.fetch_sub(nlookup, SeqCst);
             assert!(prev >= nlookup);
@@ -86,82 +93,91 @@ impl<'a> Filesystem for ClockFS<'a> {
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match self.stat(ino) {
-            Some(a) => reply.attr(&Duration::MAX, &a),
-            None => reply.error(ENOENT),
+            Some(attr) => Ok(Attr {
+                ttl: Duration::MAX, // Effectively infinite TTL
+                attr,
+            }),
+            None => Err(Errno::ENOENT),
         }
     }
 
     fn readdir(
         &mut self,
-        _req: &Request,
+        _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
-    ) {
+        _max_bytes: u32,
+    ) -> Result<Vec<DirEntry>, Errno> {
         if ino != FUSE_ROOT_ID {
-            reply.error(ENOTDIR);
-            return;
+            return Err(Errno::ENOTDIR);
         }
-
-        if offset == 0
-            && reply.add(
-                ClockFS::FILE_INO,
-                offset + 1,
-                FileType::RegularFile,
-                Self::FILE_NAME,
-            )
-        {
-            reply.error(ENOBUFS);
-        } else {
-            reply.ok();
+        let mut entries = Vec::new();
+        if offset == 0 {
+            entries.push(DirEntry {
+                ino: ClockFS::FILE_INO,
+                offset: 1, // Next offset
+                kind: FileType::RegularFile,
+                name: OsString::from(Self::FILE_NAME),
+            });
         }
+        Ok(entries)
     }
 
-    fn open(&mut self, _req: &Request, ino: u64, flags: i32, reply: ReplyOpen) {
+    fn open(&mut self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
         if ino == FUSE_ROOT_ID {
-            reply.error(EISDIR);
+            Err(Errno::EISDIR)
         } else if flags & libc::O_ACCMODE != libc::O_RDONLY {
-            reply.error(EACCES);
+            Err(Errno::EACCES)
         } else if ino != Self::FILE_INO {
             eprintln!("Got open for nonexistent inode {}", ino);
-            reply.error(ENOENT);
+            Err(Errno::ENOENT)
         } else {
-            reply.opened(ino, consts::FOPEN_KEEP_CACHE);
+            Ok(Open {
+                fh: ino, // Using ino as fh, as it's unique for the file
+                flags: consts::FOPEN_KEEP_CACHE,
+            })
         }
     }
 
     fn read(
         &mut self,
-        _req: &Request,
+        _req: RequestMeta,
         ino: u64,
-        _fh: u64,
+        _fh: u64, // fh is ino in this implementation as set in open()
         offset: i64,
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-        reply: ReplyData,
-    ) {
+    ) -> Result<Vec<u8>, Errno> {
         assert!(ino == Self::FILE_INO);
         if offset < 0 {
-            reply.error(EINVAL);
-            return;
+            return Err(Errno::EINVAL);
         }
         let file = self.file_contents.lock().unwrap();
         let filedata = file.as_bytes();
-        let dlen = filedata.len().try_into().unwrap();
-        let Ok(start) = offset.min(dlen).try_into() else {
-            reply.error(EINVAL);
-            return;
-        };
-        let Ok(end) = (offset + size as i64).min(dlen).try_into() else {
-            reply.error(EINVAL);
-            return;
-        };
-        eprintln!("read returning {} bytes at offset {}", end - start, offset);
-        reply.data(&filedata[start..end]);
+        let dlen: i64 = filedata.len().try_into().map_err(|_| Errno::EIO)?; // EIO if size doesn't fit i64
+
+        let start_offset: usize = offset.try_into().map_err(|_| Errno::EINVAL)?;
+        if start_offset > filedata.len() {
+             return Ok(Vec::new()); // Read past EOF
+        }
+
+        let end_offset: usize = (offset + i64::from(size))
+            .min(dlen) // cap at file length
+            .try_into()
+            .map_err(|_| Errno::EINVAL)?; // Should not fail if dlen fits usize
+
+        let actual_end = std::cmp::min(end_offset, filedata.len());
+
+        eprintln!(
+            "read returning {} bytes at offset {}",
+            actual_end.saturating_sub(start_offset),
+            offset
+        );
+        Ok(filedata[start_offset..actual_end].to_vec())
     }
 }
 

@@ -3,7 +3,7 @@ use fuser::{
     Filesystem, MountOption, Attr, DirEntry,
     Entry, Errno, RequestMeta, FileType
 };
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::time::{Duration, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
@@ -50,10 +50,10 @@ struct HelloFS;
 
 impl Filesystem for HelloFS {
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
-        if parent == 1 && name.to_str() == Some("hello.txt") {
-            return Ok(Entry{ttl: TTL, attr: HELLO_TXT_ATTR, generation: 0});
+        if parent == 1 && name == OsStr::new("hello.txt") {
+            Ok(Entry{ttl: TTL, attr: HELLO_TXT_ATTR, generation: 0})
         } else {
-            return Err(Errno::ENOENT);
+            Err(Errno::ENOENT)
         }
     }
 
@@ -81,9 +81,9 @@ impl Filesystem for HelloFS {
         _lock_owner: Option<u64>,
     ) -> Result<Vec<u8>, Errno> {
         if ino == 2 {
-            return Ok(HELLO_TXT_CONTENT.as_bytes()[offset as usize..].to_vec());
+            Ok(HELLO_TXT_CONTENT.as_bytes()[offset as usize..].to_vec())
         } else {
-            return Err(Errno::ENOENT);
+            Err(Errno::ENOENT)
         }
     }
 
@@ -93,22 +93,23 @@ impl Filesystem for HelloFS {
         ino: u64,
         _fh: u64,
         offset: i64,
+        _max_bytes: u32,
     ) -> Result<Vec<DirEntry>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
 
         let entries = vec![
-            (1, FileType::Directory, "."),
-            (1, FileType::Directory, ".."),
-            (2, FileType::RegularFile, "hello.txt"),
+            DirEntry { ino: 1, offset: 1, kind: FileType::Directory, name: OsString::from(".") },
+            DirEntry { ino: 1, offset: 2, kind: FileType::Directory, name: OsString::from("..") },
+            DirEntry { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsString::from("hello.txt") },
         ];
-        let mut reply = Vec::new();
-        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-            // i + 1 means the index of the next entry
-            reply.push(DirEntry { ino: entry.0, offset: (i + 1) as i64, kind: entry.1, name: entry.2.into()} );
+
+        let mut result = Vec::new();
+        for entry in entries.into_iter().skip(offset as usize) {
+            result.push(entry);
         }
-        return Ok(reply);
+        Ok(result)
     }
 }
 

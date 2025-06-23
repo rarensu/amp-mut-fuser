@@ -17,12 +17,13 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use libc::{ENOBUFS, ENOENT, ENOTDIR};
+// use libc::{ENOENT}; // Removed ENOTDIR, c_int, ENOBUFS
 
 use clap::Parser;
+use std::ffi::OsString;
 
 use fuser::{
-    Errno, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyDirectory, ReplyEntry, Request, FUSE_ROOT_ID
+    Errno, FileAttr, FileType, Filesystem, MountOption, RequestMeta, Entry, Attr, DirEntry, FUSE_ROOT_ID
 };
 
 struct ClockFS<'a> {
@@ -67,17 +68,20 @@ impl<'a> ClockFS<'a> {
 }
 
 impl<'a> Filesystem for ClockFS<'a> {
-    fn lookup(&mut self, req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
-        if parent != FUSE_ROOT_ID || name != AsRef::<OsStr>::as_ref(&self.get_filename()) {
+    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
+        if parent != FUSE_ROOT_ID || name != OsStr::new(&self.get_filename()) {
             return Err(Errno::ENOENT);
         }
 
         self.lookup_cnt.fetch_add(1, SeqCst);
-        Ok(Entry {
-                ttl: &self.timeout,
+        match ClockFS::stat(ClockFS::FILE_INO) {
+            Some(attr) => Ok(Entry {
+                ttl: self.timeout,
                 generation: 0,
-                attr: &ClockFS::stat(ClockFS::FILE_INO).unwrap(),
-            })
+                attr,
+            }),
+            None => Err(Errno::EIO), // Should not happen if FILE_INO is valid
+        }
     }
 
     fn forget(&mut self, _req: RequestMeta, ino: u64, nlookup: u64) {
@@ -92,33 +96,36 @@ impl<'a> Filesystem for ClockFS<'a> {
     fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match ClockFS::stat(ino) {
             Some(a) => Ok(Attr {
-                    ttl: &self.timeout, 
-                    attr: a 
-                }),
+                ttl: self.timeout,
+                attr: a,
+            }),
             None => Err(Errno::ENOENT),
         }
     }
 
     fn readdir(
         &mut self,
-        _req: &Request,
+        _req: RequestMeta,
         ino: u64,
         _fh: u64,
-        offset: i64
+        offset: i64,
+        _max_bytes: u32,
     ) -> Result<Vec<DirEntry>, Errno> {
         if ino != FUSE_ROOT_ID {
-            return Err(Errno::ENOTDIR)
+            return Err(Errno::ENOTDIR);
         }
+        let mut entries = Vec::new();
         if offset == 0 {
-            Ok(vec!(DirEntry{
+            entries.push(DirEntry {
                 ino: ClockFS::FILE_INO,
-                offset: offset + 1,
+                offset: 1, // Next offset is 1
                 kind: FileType::RegularFile,
-                name: self.get_filename()
-            }))
-        } else {
-           Err(Errno::ENOBUFS)
+                name: OsString::from(self.get_filename()),
+            });
         }
+        // If offset is > 0, we've already returned the single entry, so return empty.
+        // If ENOBUFS was meant for buffer size, that's handled by the library now.
+        Ok(entries)
     }
 }
 
