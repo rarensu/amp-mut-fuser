@@ -829,7 +829,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(entries)=> {
-                        self.replyhandler.dirplus(entries, x.size())
+                        self.replyhandler.dirplus(entries, x.size() as usize)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
