@@ -6,12 +6,12 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use libc::c_int;//{, ENOSYS, EPERM};
-use log::{debug, warn};
+use libc::c_int;
+use log::{warn};
 use mnt::mount_options::parse_options_from_args;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
-use std::ffi::{OsStr,OsString};
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "abi-7-23")]
@@ -65,7 +65,7 @@ const INIT_FLAGS: u64 = FUSE_ASYNC_READ | FUSE_BIG_WRITES;
 /// On macOS, we additionally support case insensitiveness, volume renames and xtimes
 /// TODO: we should eventually let the filesystem implementation decide which flags to set
 #[cfg(target_os = "macos")]
-const INIT_FLAGS: u32 = FUSE_ASYNC_READ | FUSE_CASE_INSENSITIVE | FUSE_VOL_RENAME | FUSE_XTIMES;
+const INIT_FLAGS: u64 = FUSE_ASYNC_READ | FUSE_CASE_INSENSITIVE | FUSE_VOL_RENAME | FUSE_XTIMES;
 // TODO: Add FUSE_EXPORT_SUPPORT and FUSE_BIG_WRITES (requires ABI 7.10)
 
 const fn default_init_flags(#[allow(unused_variables)] capabilities: u64) -> u64 {
@@ -387,7 +387,7 @@ pub trait Filesystem {
         _bkuptime: Option<SystemTime>,
         flags: Option<u32>
     ) -> Result<Attr, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] setattr(ino: {:#x?}, mode: {:?}, uid: {:?}, \
             gid: {:?}, size: {:?}, fh: {:?}, flags: {:?})",
             ino, mode, uid, gid, size, fh, flags
@@ -397,7 +397,7 @@ pub trait Filesystem {
 
     /// Read symbolic link.
     fn readlink(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64) -> Result<Vec<u8>, Errno> {
-        debug!("[Not Implemented] readlink(ino: {:#x?})", ino);
+        warn!("[Not Implemented] readlink(ino: {:#x?})", ino);
         Err(Errno::ENOSYS)
     }
 
@@ -412,7 +412,7 @@ pub trait Filesystem {
         umask: u32,
         rdev: u32,
     ) -> Result<Entry, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] mknod(parent: {:#x?}, name: {:?}, mode: {}, \
             umask: {:#x?}, rdev: {})",
             parent, name, mode, umask, rdev
@@ -429,7 +429,7 @@ pub trait Filesystem {
         mode: u32,
         umask: u32,
     ) -> Result<Entry, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] mkdir(parent: {:#x?}, name: {:?}, mode: {}, umask: {:#x?})",
             parent, name, mode, umask
         );
@@ -438,7 +438,7 @@ pub trait Filesystem {
 
     /// Remove a file.
     fn unlink(&mut self, #[allow(unused_variables)] req: RequestMeta, parent: u64, name: OsString) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] unlink(parent: {:#x?}, name: {:?})",
             parent, name,
         );
@@ -447,7 +447,7 @@ pub trait Filesystem {
 
     /// Remove a directory.
     fn rmdir(&mut self, #[allow(unused_variables)] req: RequestMeta, parent: u64, name: OsString) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] rmdir(parent: {:#x?}, name: {:?})",
             parent, name,
         );
@@ -462,7 +462,7 @@ pub trait Filesystem {
         link_name: OsString,
         target: PathBuf,
     ) -> Result<Entry, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] symlink(parent: {:#x?}, link_name: {:?}, target: {:?})",
             parent, link_name, target,
         );
@@ -479,7 +479,7 @@ pub trait Filesystem {
         newname: OsString,
         flags: u32,
     ) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] rename(parent: {:#x?}, name: {:?}, newparent: {:#x?}, \
             newname: {:?}, flags: {})",
             parent, name, newparent, newname, flags,
@@ -495,7 +495,7 @@ pub trait Filesystem {
         newparent: u64,
         newname: OsString,
     ) -> Result<Entry, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] link(ino: {:#x?}, newparent: {:#x?}, newname: {:?})",
             ino, newparent, newname
         );
@@ -511,7 +511,7 @@ pub trait Filesystem {
     /// filesystem may set, to change the way the file is opened. See fuse_file_info
     /// structure in <fuse_common.h> for more details.
     fn open(&mut self, #[allow(unused_variables)] req: RequestMeta, _ino: u64, _flags: i32) -> Result<Open, Errno> {
-        debug!("[Not Implemented] open(ino: {:#x?}, flags: {})", _ino, _flags);
+        warn!("[Not Implemented] open(ino: {:#x?}, flags: {})", _ino, _flags);
         Err(Errno::ENOSYS)
     }
 
@@ -535,7 +535,7 @@ pub trait Filesystem {
         flags: i32,
         lock_owner: Option<u64>,
     ) -> Result<Vec<u8>, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] read(ino: {:#x?}, fh: {}, offset: {}, size: {}, \
             flags: {:#x?}, lock_owner: {:?})",
             ino, fh, offset, size, flags, lock_owner
@@ -566,7 +566,7 @@ pub trait Filesystem {
         flags: i32,
         lock_owner: Option<u64>,
     ) -> Result<u32, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] write(ino: {:#x?}, fh: {}, offset: {}, data.len(): {}, \
             write_flags: {:#x?}, flags: {:#x?}, lock_owner: {:?})",
             ino,
@@ -591,7 +591,7 @@ pub trait Filesystem {
     /// filesystem wants to return write errors. If the filesystem supports file locking
     /// operations (setlk, getlk) it should remove all locks belonging to 'lock_owner'.
     fn flush(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, fh: u64, lock_owner: u64) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] flush(ino: {:#x?}, fh: {}, lock_owner: {:?})",
             ino, fh, lock_owner
         );
@@ -622,7 +622,7 @@ pub trait Filesystem {
     /// If the datasync parameter is non-zero, then only the user data should be flushed,
     /// not the meta data.
     fn fsync(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, fh: u64, datasync: bool) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] fsync(ino: {:#x?}, fh: {}, datasync: {})",
             ino, fh, datasync
         );
@@ -637,13 +637,13 @@ pub trait Filesystem {
     /// directory stream operations in case the contents of the directory can change
     /// between opendir and releasedir.
     fn opendir(&mut self, #[allow(unused_variables)] req: RequestMeta, _ino: u64, _flags: i32) -> Result<Open, Errno> {
-        debug!("[Not Implemented] open(ino: {:#x?}, flags: {})", _ino, _flags);
+        warn!("[Not Implemented] open(ino: {:#x?}, flags: {})", _ino, _flags);
         Err(Errno::ENOSYS)
         // TODO: Open{0,0}
     }
 
     /// Read directory.
-    /// Send a buffer filled using buffer.fill(), with size not exceeding the
+    /// Send a buffer filled with entries, with size not exceeding the
     /// requested size. Send an empty buffer on end of stream. fh will contain the
     /// value set by the opendir method, or will be undefined if the opendir method
     /// didn't set any value.
@@ -655,7 +655,7 @@ pub trait Filesystem {
         offset: i64,
         max_bytes: u32
     ) -> Result<Vec<DirEntry>, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
         );
@@ -663,7 +663,7 @@ pub trait Filesystem {
     }
 
     /// Read directory.
-    /// Send a buffer filled using buffer.fill(), with size not exceeding the
+    /// Send a buffer filled entries, with size not exceeding the
     /// requested size. Send an empty buffer on end of stream. fh will contain the
     /// value set by the opendir method, or will be undefined if the opendir method
     /// didn't set any value.
@@ -676,7 +676,7 @@ pub trait Filesystem {
         offset: i64,
         max_bytes: u32,
     ) -> Result<Vec<(DirEntry, Entry)>, Errno>{
-        debug!(
+        warn!(
             "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
         );
@@ -708,7 +708,7 @@ pub trait Filesystem {
         fh: u64,
         datasync: bool,
     ) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] fsyncdir(ino: {:#x?}, fh: {}, datasync: {})",
             ino, fh, datasync
         );
@@ -717,7 +717,7 @@ pub trait Filesystem {
 
     /// Get file system statistics.
     fn statfs(&mut self, #[allow(unused_variables)] req: RequestMeta, _ino: u64) -> Result<Statfs, Errno> {
-        debug!("[Not Implemented] statfs(ino: {:#x?})", _ino);
+        warn!("[Not Implemented] statfs(ino: {:#x?})", _ino);
         Err(Errno::ENOSYS)
         // TODO: Statfs{0, 0, 0, 0, 0, 512, 255, 0}
     }
@@ -732,7 +732,7 @@ pub trait Filesystem {
         flags: i32,
         position: u32,
     ) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] setxattr(ino: {:#x?}, name: {:?}, flags: {:#x?}, position: {})",
             ino, name, flags, position
         );
@@ -740,9 +740,9 @@ pub trait Filesystem {
     }
 
     /// Get an extended attribute.
-    /// If `size` is 0, the size of the value should be sent with `reply.size()`.
-    /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
-    /// `Err(ERANGE)` if it doesn't.
+    /// If `size` is 0, the size of the value should be sent with `Xattr::size()`.
+    /// If `size` is not 0, and the value fits, send it with `Xattr::data()`, or
+    /// `Err(Errno::ERANGE)` if it doesn't.
     fn getxattr(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -750,7 +750,7 @@ pub trait Filesystem {
         name: OsString,
         size: u32,
     ) -> Result<Xattr, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] getxattr(ino: {:#x?}, name: {:?}, size: {})",
             ino, name, size
         );
@@ -758,16 +758,16 @@ pub trait Filesystem {
     }
 
     /// List extended attribute names.
-    /// If `size` is 0, the size of the value should be sent with `reply.size()`.
-    /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
-    /// `Err(ERANGE)` if it doesn't.
+    /// If `size` is 0, the size of the value should be sent with `Xattr::size()`.
+    /// If `size` is not 0, and the value fits, send it with `Xattr::data()`, or
+    /// `Err(Errno::ERANGE)` if it doesn't.
     fn listxattr(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
         ino: u64,
         size: u32,
     ) -> Result<Xattr, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] listxattr(ino: {:#x?}, size: {})",
             ino, size
         );
@@ -781,7 +781,7 @@ pub trait Filesystem {
         ino: u64,
         name: OsString,
     ) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] removexattr(ino: {:#x?}, name: {:?})",
             ino, name
         );
@@ -793,7 +793,7 @@ pub trait Filesystem {
     /// mount option is given, this method is not called. This method is not called
     /// under Linux kernel versions 2.4.x
     fn access(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, mask: i32) -> Result<(), Errno> {
-        debug!("[Not Implemented] access(ino: {:#x?}, mask: {})", ino, mask);
+        warn!("[Not Implemented] access(ino: {:#x?}, mask: {})", ino, mask);
         Err(Errno::ENOSYS)
     }
 
@@ -816,7 +816,7 @@ pub trait Filesystem {
         umask: u32,
         flags: i32,
     ) -> Result<(Entry,Open), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] create(parent: {:#x?}, name: {:?}, mode: {}, umask: {:#x?}, \
             flags: {:#x?})",
             parent, name, mode, umask, flags
@@ -836,7 +836,7 @@ pub trait Filesystem {
         typ: i32,
         pid: u32,
     ) -> Result<Lock, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] getlk(ino: {:#x?}, fh: {}, lock_owner: {}, start: {}, \
             end: {}, typ: {}, pid: {})",
             ino, fh, lock_owner, start, end, typ, pid
@@ -863,7 +863,7 @@ pub trait Filesystem {
         pid: u32,
         sleep: bool,
     ) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] setlk(ino: {:#x?}, fh: {}, lock_owner: {}, start: {}, \
             end: {}, typ: {}, pid: {}, sleep: {})",
             ino, fh, lock_owner, start, end, typ, pid, sleep
@@ -875,7 +875,7 @@ pub trait Filesystem {
     /// Note: This makes sense only for block device backed filesystems mounted
     /// with the 'blkdev' option
     fn bmap(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, blocksize: u32, idx: u64) -> Result<u64, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] bmap(ino: {:#x?}, blocksize: {}, idx: {})",
             ino, blocksize, idx,
         );
@@ -894,7 +894,7 @@ pub trait Filesystem {
         in_data: Vec<u8>,
         out_size: u32,
     ) -> Result<Ioctl, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] ioctl(ino: {:#x?}, fh: {}, flags: {}, cmd: {}, \
             in_data.len(): {}, out_size: {})",
             ino,
@@ -918,7 +918,7 @@ pub trait Filesystem {
         events: u32,
         flags: u32,
     ) -> Result<u32, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] poll(ino: {:#x?}, fh: {}, ph: {:?}, events: {}, flags: {})",
             ino, fh, ph, events, flags
         );
@@ -935,7 +935,7 @@ pub trait Filesystem {
         length: i64,
         mode: i32,
     ) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] fallocate(ino: {:#x?}, fh: {}, offset: {}, \
             length: {}, mode: {})",
             ino, fh, offset, length, mode
@@ -953,7 +953,7 @@ pub trait Filesystem {
         offset: i64,
         whence: i32,
     ) -> Result<i64, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] lseek(ino: {:#x?}, fh: {}, offset: {}, whence: {})",
             ino, fh, offset, whence
         );
@@ -973,7 +973,7 @@ pub trait Filesystem {
         len: u64,
         flags: u32,
     ) -> Result<u32, Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] copy_file_range(ino_in: {:#x?}, fh_in: {}, \
             offset_in: {}, ino_out: {:#x?}, fh_out: {}, offset_out: {}, \
             len: {}, flags: {})",
@@ -986,7 +986,7 @@ pub trait Filesystem {
     /// FUSE_VOL_RENAME to enable
     #[cfg(target_os = "macos")]
     fn setvolname(&mut self, #[allow(unused_variables)] req: RequestMeta, name: OsStr) -> Result<(), Errno> {
-        debug!("[Not Implemented] setvolname(name: {:?})", name);
+        warn!("[Not Implemented] setvolname(name: {:?})", name);
         Err(Errno::ENOSYS);
     }
 
@@ -1001,7 +1001,7 @@ pub trait Filesystem {
         newname: OsString,
         options: u64
     ) -> Result<(), Errno> {
-        debug!(
+        warn!(
             "[Not Implemented] exchange(parent: {:#x?}, name: {:?}, newparent: {:#x?}, \
             newname: {:?}, options: {})",
             parent, name, newparent, newname, options
@@ -1013,7 +1013,7 @@ pub trait Filesystem {
     /// during init to FUSE_XTIMES to enable
     #[cfg(target_os = "macos")]
     fn getxtimes(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64) -> Result<XTimes, Errno> {
-        debug!("[Not Implemented] getxtimes(ino: {:#x?})", ino);
+        warn!("[Not Implemented] getxtimes(ino: {:#x?})", ino);
         Err(Errno::ENOSYS)
     }
 }

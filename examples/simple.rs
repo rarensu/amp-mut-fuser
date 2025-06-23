@@ -795,7 +795,7 @@ impl Filesystem for SimpleFS {
         {
             // TODO
             warn!("mknod() implementation is incomplete. Only supports regular files, symlinks, and directories. Got {:o}", mode);
-            return Err(Errno::ENOSYS);
+            return Err(Errno::EPERM);
         }
 
         if self.lookup_name(parent, &name).is_ok() {
