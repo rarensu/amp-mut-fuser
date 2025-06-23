@@ -832,8 +832,8 @@ mod test {
                 files: 0x44, 
                 ffree: 0x55, 
                 bsize: 0x66, 
-                frsize: 0x77, 
-                namelen: 0x88
+                namelen: 0x77, 
+                frsize: 0x88
             }
         );
     }
@@ -928,8 +928,8 @@ mod test {
             Lock {
                 start: 0x11,
                 end: 0x22,
-                pid: 0x33,
-                typ: 0x44
+                typ: 0x33,
+                pid: 0x44
             }
         );
     }
