@@ -136,7 +136,7 @@ impl ReplyHandler {
             #[cfg(not(feature = "abi-7-36"))]
             flags: flags as u32,
             #[cfg(feature = "abi-7-36")]
-            flags: (flags | ll::fuse_abi::FUSE_INIT_EXT) as u32,
+            flags: (flags | ll::fuse_abi::consts::FUSE_INIT_EXT) as u32,
             #[cfg(not(feature = "abi-7-13"))]
             unused: 0,
             #[cfg(feature = "abi-7-13")]
@@ -250,7 +250,7 @@ impl ReplyHandler {
     /// Reply to a request with the given open result
     pub fn opened(self, open: Open) {
         #[cfg(feature = "abi-7-40")]
-        assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
+        assert_eq!(open.flags & FOPEN_PASSTHROUGH, 0);
         self.send_ll(&ll::Response::new_open(ll::FileHandle(open.fh), open.flags, 0))
     }
 
@@ -330,7 +330,7 @@ impl ReplyHandler {
     /// Reply to a request with the given entry
     pub fn created(self, entry: Entry, open: Open) {
         #[cfg(feature = "abi-7-40")]
-        assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
+        assert_eq!(open.flags & FOPEN_PASSTHROUGH, 0);
         self.send_ll(&ll::Response::new_create(
             &entry.ttl,
             &entry.attr.into(),
