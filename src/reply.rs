@@ -27,11 +27,11 @@ use std::io::IoSlice;
 #[cfg(feature = "abi-7-40")]
 use std::os::fd::BorrowedFd;
 use std::time::Duration;
-
+use zerocopy::IntoBytes;
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
 
-use crate::{FileAttr, FileType};
+use crate::{FileAttr, FileType, KernelConfig};
 
 /// Generic reply callback to send data
 pub trait ReplySender: Send + Sync + Unpin + 'static {
@@ -118,6 +118,52 @@ impl ReplyHandler {
     /// Reply to a request with the given data
     pub fn data(self, data: &[u8]) {
         self.send_ll(&ll::Response::new_slice(data));
+    }
+}
+
+///
+/// config reply
+/// 
+
+impl ReplyHandler {
+    pub fn config(self, capabilities: u64, config: KernelConfig) {
+        let flags = capabilities & config.requested; // use requested features and reported as capable
+
+        let init = ll::fuse_abi::fuse_init_out {
+            major: ll::fuse_abi::FUSE_KERNEL_VERSION,
+            minor: ll::fuse_abi::FUSE_KERNEL_MINOR_VERSION,
+            max_readahead: config.max_readahead,
+            #[cfg(not(feature = "abi-7-36"))]
+            flags: flags as u32,
+            #[cfg(feature = "abi-7-36")]
+            flags: (flags | ll::fuse_abi::FUSE_INIT_EXT) as u32,
+            #[cfg(not(feature = "abi-7-13"))]
+            unused: 0,
+            #[cfg(feature = "abi-7-13")]
+            max_background: config.max_background,
+            #[cfg(feature = "abi-7-13")]
+            congestion_threshold: config.congestion_threshold(),
+            max_write: config.max_write,
+            #[cfg(feature = "abi-7-23")]
+            time_gran: config.time_gran.as_nanos() as u32,
+            #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
+            reserved: [0; 9],
+            #[cfg(feature = "abi-7-28")]
+            max_pages: config.max_pages(),
+            #[cfg(feature = "abi-7-28")]
+            unused2: 0,
+            #[cfg(all(feature = "abi-7-28", not(feature = "abi-7-36")))]
+            reserved: [0; 8],
+            #[cfg(feature = "abi-7-36")]
+            flags2: (flags >> 32) as u32,
+            #[cfg(all(feature = "abi-7-36", not(feature = "abi-7-40")))]
+            reserved: [0; 7],
+            #[cfg(feature = "abi-7-40")]
+            max_stack_depth: config.max_stack_depth,
+            #[cfg(feature = "abi-7-40")]
+            reserved: [0; 6],
+        };
+        self.send_ll(&ll::Response::new_data(init.as_bytes()));
     }
 }
 
@@ -370,8 +416,7 @@ pub struct DirEntry {
 impl ReplyHandler {
 
     /// Reply to a request with the filled directory buffer
-    pub fn dir(self, entries: Vec<DirEntry> ) {
-        let size = entries.len();
+    pub fn dir(self, entries: Vec<DirEntry> , size: usize) {
         let mut buf = DirEntList::new(size);
         for item in entries.into_iter() {
             let full= buf.push(&ll_DirEntry::new(
@@ -910,8 +955,9 @@ mod test {
                 name: OsString::from("world.rs"),
             }
         );
-        replyhandler.dir(entries);
+        replyhandler.dir(entries, size_of::<u8>()*128);
     }
+
 
     #[test]
     fn reply_xattr_size() {

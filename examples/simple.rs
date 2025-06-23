@@ -156,6 +156,7 @@ fn xattr_access_check(
                     return Err(libc::EPERM);
                 }
             } else if request.uid != 0 {
+                // this branch is problematic when mounted in --user mode
                 return Err(libc::EPERM);
             }
         }
@@ -492,6 +493,7 @@ impl Filesystem for SimpleFS {
         fs::create_dir_all(Path::new(&self.data_dir).join("contents")).unwrap();
         if self.get_inode(FUSE_ROOT_ID).is_err() {
             // Initialize with empty filesystem
+            // TODO :: use uid, gid in --user mode
             let root = InodeAttributes {
                 inode: FUSE_ROOT_ID,
                 open_file_handles: 0,
@@ -1534,7 +1536,6 @@ impl Filesystem for SimpleFS {
             //     break;
             // }
         }
-
         Ok(result)
     }
 
@@ -1967,6 +1968,12 @@ fn main() {
                 .help("Enable setuid support when run as root"),
         )
         .arg(
+            Arg::new( "user")
+                .long("user")
+                .action(ArgAction::SetTrue)
+                .help("disable root-priviledge features"),
+        )
+        .arg(
             Arg::new("v")
                 .short('v')
                 .action(ArgAction::Count)
@@ -1989,25 +1996,27 @@ fn main() {
 
     let mut options = vec![MountOption::FSName("fuser".to_string())];
 
-    #[cfg(feature = "abi-7-26")]
-    {
-        if matches.get_flag("suid") {
-            info!("setuid bit support enabled");
-            options.push(MountOption::Suid);
-        } else {
+    if !matches.get_flag("user"){
+        #[cfg(feature = "abi-7-26")]
+        {
+            if matches.get_flag("suid") {
+                info!("setuid bit support enabled");
+                options.push(MountOption::Suid);
+            } else {
+                options.push(MountOption::AutoUnmount);
+            }
+        }
+        #[cfg(not(feature = "abi-7-26"))]
+        {
             options.push(MountOption::AutoUnmount);
         }
-    }
-    #[cfg(not(feature = "abi-7-26"))]
-    {
-        options.push(MountOption::AutoUnmount);
-    }
-    if let Ok(enabled) = fuse_allow_other_enabled() {
-        if enabled {
-            options.push(MountOption::AllowOther);
+        if let Ok(enabled) = fuse_allow_other_enabled() {
+            if enabled {
+                options.push(MountOption::AllowOther);
+            }
+        } else {
+            eprintln!("Unable to read /etc/fuse.conf");
         }
-    } else {
-        eprintln!("Unable to read /etc/fuse.conf");
     }
 
     let data_dir = matches.get_one::<String>("data-dir").unwrap().to_string();
@@ -2021,7 +2030,7 @@ fn main() {
         SimpleFS::new(
             data_dir,
             matches.get_flag("direct-io"),
-            matches.get_flag("suid"),
+            matches.get_flag("suid")
         ),
         mountpoint,
         &options,

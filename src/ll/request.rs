@@ -282,7 +282,6 @@ mod op {
         path::Path,
         time::{Duration, SystemTime},
     };
-    use zerocopy::IntoBytes;
 
     /// Look up a directory entry by name and get its attributes.
     ///
@@ -988,45 +987,6 @@ mod op {
             super::Version(self.arg.major, self.arg.minor)
         }
 
-        pub fn reply(&self, config: &crate::KernelConfig) -> Response<'a> {
-            let flags = self.capabilities() & config.requested; // use requested features and reported as capable
-
-            let init = fuse_init_out {
-                major: FUSE_KERNEL_VERSION,
-                minor: FUSE_KERNEL_MINOR_VERSION,
-                max_readahead: config.max_readahead,
-                #[cfg(not(feature = "abi-7-36"))]
-                flags: flags as u32,
-                #[cfg(feature = "abi-7-36")]
-                flags: (flags | FUSE_INIT_EXT) as u32,
-                #[cfg(not(feature = "abi-7-13"))]
-                unused: 0,
-                #[cfg(feature = "abi-7-13")]
-                max_background: config.max_background,
-                #[cfg(feature = "abi-7-13")]
-                congestion_threshold: config.congestion_threshold(),
-                max_write: config.max_write,
-                #[cfg(feature = "abi-7-23")]
-                time_gran: config.time_gran.as_nanos() as u32,
-                #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
-                reserved: [0; 9],
-                #[cfg(feature = "abi-7-28")]
-                max_pages: config.max_pages(),
-                #[cfg(feature = "abi-7-28")]
-                unused2: 0,
-                #[cfg(all(feature = "abi-7-28", not(feature = "abi-7-36")))]
-                reserved: [0; 8],
-                #[cfg(feature = "abi-7-36")]
-                flags2: (flags >> 32) as u32,
-                #[cfg(all(feature = "abi-7-36", not(feature = "abi-7-40")))]
-                reserved: [0; 7],
-                #[cfg(feature = "abi-7-40")]
-                max_stack_depth: config.max_stack_depth,
-                #[cfg(feature = "abi-7-40")]
-                reserved: [0; 6],
-            };
-            Response::new_data(init.as_bytes())
-        }
     }
 
     /// Open a directory.
@@ -1313,11 +1273,6 @@ mod op {
         header: &'a fuse_in_header,
     }
     impl_request!(Destroy<'a>);
-    impl<'a> Destroy<'a> {
-        pub fn reply(&self) -> Response<'a> {
-            Response::new_empty()
-        }
-    }
 
     /// Control device
     #[cfg(feature = "abi-7-11")]

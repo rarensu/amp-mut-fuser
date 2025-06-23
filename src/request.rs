@@ -154,15 +154,7 @@ impl<'a> Request<'a> {
                     config.max_write
                 );
                 se.initialized = true;
-                match x.reply(&config).with_iovec(
-                    self.request.unique(), 
-                    |iov| self.ch.send(iov)
-                ) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        error!("Failed to send INIT reply: {}", err);
-                    }
-                };
+                self.replyhandler.config(x.capabilities(), config);
             }
             // Any operation is invalid before initialization
             _ if !se.initialized => {
@@ -180,29 +172,20 @@ impl<'a> Request<'a> {
                 };
             }
             // Filesystem destroyed
-            ll::Operation::Destroy(x) => {
+            ll::Operation::Destroy(_x) => {
                 se.filesystem.destroy();
                 se.destroyed = true;
-                match x.reply()
-                .with_iovec(
-                    self.request.unique(), 
-                    |iov| self.ch.send(iov)
-                ) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        error!("Failed to send DESTROY reply: {}", err);
-                    }
-                };
+                self.replyhandler.ok();
             }
             // Any operation is invalid after destroy
             _ if se.destroyed => {
                 warn!("Ignoring FUSE operation after destroy: {}", self.request);
-                self.request.reply_err(Errno::EIO);
+                self.replyhandler.error(Errno::EIO);
             }
 
             ll::Operation::Interrupt(_) => {
                 // TODO: handle FUSE_INTERRUPT
-                self.request.reply_err(Errno::ENOSYS);
+                self.replyhandler.error(Errno::ENOSYS);
             }
 
             ll::Operation::Lookup(x) => {
@@ -531,7 +514,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(entries)=> {
-                        self.replyhandler.dir(entries)
+                        self.replyhandler.dir(entries, x.size() as usize)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
