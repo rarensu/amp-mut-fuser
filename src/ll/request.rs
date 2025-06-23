@@ -265,8 +265,6 @@ macro_rules! impl_request {
 }
 
 mod op {
-    use crate::ll::Response;
-
     use super::{
         super::{argument::ArgumentIterator, TimeOrNow},
         FilenameInDir, Request,

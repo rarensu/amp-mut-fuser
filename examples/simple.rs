@@ -155,8 +155,11 @@ fn xattr_access_check(
                 ) {
                     return Err(libc::EPERM);
                 }
+            } else if key.eq(b"system.posix_acl_default"){
+                return Err(libc::EOPNOTSUPP);
+            } else if key.eq(b"system.nfs4_acl"){
+                return Err(libc::EOPNOTSUPP);
             } else if request.uid != 0 {
-                // this branch is problematic when mounted in --user mode
                 return Err(libc::EPERM);
             }
         }
@@ -249,6 +252,7 @@ struct SimpleFS {
     next_file_handle: AtomicU64,
     direct_io: bool,
     suid_support: bool,
+    usermode: bool
 }
 
 impl SimpleFS {
@@ -256,6 +260,7 @@ impl SimpleFS {
         data_dir: String,
         direct_io: bool,
         #[allow(unused_variables)] suid_support: bool,
+        usermode: bool
     ) -> SimpleFS {
         #[cfg(feature = "abi-7-26")]
         {
@@ -264,6 +269,7 @@ impl SimpleFS {
                 next_file_handle: AtomicU64::new(1),
                 direct_io,
                 suid_support,
+                usermode,
             }
         }
         #[cfg(not(feature = "abi-7-26"))]
@@ -273,6 +279,7 @@ impl SimpleFS {
                 next_file_handle: AtomicU64::new(1),
                 direct_io,
                 suid_support: false,
+                usermode,
             }
         }
     }
@@ -493,7 +500,14 @@ impl Filesystem for SimpleFS {
         fs::create_dir_all(Path::new(&self.data_dir).join("contents")).unwrap();
         if self.get_inode(FUSE_ROOT_ID).is_err() {
             // Initialize with empty filesystem
-            // TODO :: use uid, gid in --user mode
+            let (init_uid, init_gid) = if self.usermode  {
+                use libc::{getuid, getgid};
+                let current_uid = unsafe { getuid() };
+                let current_gid = unsafe { getgid() };
+                (current_uid, current_gid)
+            } else {
+                (0, 0)
+            };
             let root = InodeAttributes {
                 inode: FUSE_ROOT_ID,
                 open_file_handles: 0,
@@ -504,8 +518,8 @@ impl Filesystem for SimpleFS {
                 kind: FileKind::Directory,
                 mode: 0o777,
                 hardlinks: 2,
-                uid: 0,
-                gid: 0,
+                uid: init_uid,
+                gid: init_gid,
                 xattrs: Default::default(),
             };
             self.write_inode(&root);
@@ -2030,7 +2044,8 @@ fn main() {
         SimpleFS::new(
             data_dir,
             matches.get_flag("direct-io"),
-            matches.get_flag("suid")
+            matches.get_flag("suid"),
+            matches.get_flag("user")
         ),
         mountpoint,
         &options,
