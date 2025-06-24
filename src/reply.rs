@@ -30,7 +30,7 @@ use std::time::SystemTime;
 use crate::{FileAttr, FileType, KernelConfig};
 
 /// Generic reply callback to send data
-pub trait ReplySender: Send + Sync + Unpin + 'static {
+pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
     /// Send data.
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()>;
     /// Open a backing file
@@ -299,7 +299,6 @@ impl ReplyHandler {
     }
 
     /// Reply to a statfs request 
-    #[allow(clippy::too_many_arguments)]
     pub fn statfs(
         self,
         statfs: Statfs

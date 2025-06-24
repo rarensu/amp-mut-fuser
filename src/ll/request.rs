@@ -1371,6 +1371,24 @@ mod op {
             self.nodes
         }
     }
+    #[cfg(feature = "abi-7-16")]
+    use crate::ForgetMe;
+    #[cfg(feature = "abi-7-16")]
+    #[allow(clippy::from_over_into)]
+    impl Into<Vec<ForgetMe>> for BatchForget<'_> {
+        fn into(self) -> Vec<ForgetMe> {
+            let mut buf = Vec::new();
+            for node in self.nodes {
+                buf.push({
+                    ForgetMe{
+                        ino: node.nodeid,
+                        nlookup: node.nlookup
+                    }
+                })
+            }
+            buf
+        }
+    }
 
     /// Preallocate or deallocate space to a file
     ///

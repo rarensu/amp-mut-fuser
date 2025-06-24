@@ -23,8 +23,6 @@ pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
 pub use crate::ll::{fuse_abi::consts, TimeOrNow};
 use crate::mnt::mount_options::check_option_conflicts;
 use crate::session::MAX_WRITE_SIZE;
-#[cfg(feature = "abi-7-16")]
-pub use ll::fuse_abi::fuse_forget_one;
 pub use mnt::mount_options::MountOption;
 #[cfg(feature = "abi-7-11")]
 pub use notify::{Notifier, PollHandle};
@@ -137,6 +135,16 @@ pub struct FileAttr {
     pub blksize: u32,
     /// Flags (macOS only, see chflags(2))
     pub flags: u32,
+}
+
+#[derive(Debug)]
+/// Target of a Forget operation
+pub struct ForgetMe {
+    //TODO: double check these document comments
+    /// inode of the file to be forgotten
+    pub ino: u64,
+    /// number of times the file has been looked up 
+    pub nlookup: u64
 }
 
 /// Configuration of the fuse kernel module connection
@@ -348,14 +356,14 @@ pub trait Filesystem {
     /// each forget. The filesystem may ignore forget calls, if the inodes don't need to
     /// have a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
-    fn forget(&mut self, #[allow(unused_variables)] req: RequestMeta, _ino: u64, _nlookup: u64) {}
+    fn forget(&mut self, #[allow(unused_variables)] req: RequestMeta, _target: ForgetMe) {}
 
     /// Like forget, but take multiple forget requests at once for performance. The default
     /// implementation will fallback to forget.
     #[cfg(feature = "abi-7-16")]
-    fn batch_forget(&mut self, #[allow(unused_variables)] req: RequestMeta, nodes: Vec<fuse_forget_one>) {
+    fn batch_forget(&mut self, #[allow(unused_variables)] req: RequestMeta, nodes: Vec<ForgetMe>) {
         for node in nodes {
-            self.forget(req, node.nodeid, node.nlookup);
+            self.forget(req, node);
         }
     }
 

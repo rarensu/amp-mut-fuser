@@ -9,9 +9,7 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Filesystem, KernelConfig, MountOption, Attr, DirEntry,
-    Entry, Open, Statfs, Xattr, TimeOrNow, Errno, RequestMeta,
-    FUSE_ROOT_ID,
+    Attr, DirEntry, Entry, Errno, Filesystem, ForgetMe, KernelConfig, MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr, FUSE_ROOT_ID
 };
 #[cfg(feature = "abi-7-26")]
 use log::info;
@@ -563,7 +561,7 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn forget(&mut self, _req: RequestMeta, _ino: u64, _nlookup: u64) {}
+    fn forget(&mut self, _req: RequestMeta, _target: ForgetMe) {}
 
     fn getattr(
         &mut self,

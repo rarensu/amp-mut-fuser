@@ -19,7 +19,7 @@ use crate::session::{Session, SessionACL};
 use crate::Filesystem;
 #[cfg(feature = "abi-7-11")]
 use crate::PollHandle;
-use crate::{ll, KernelConfig};
+use crate::{ll, KernelConfig, ForgetMe};
 
 /// Request data structure
 #[derive(Debug)]
@@ -205,8 +205,12 @@ impl<'a> Request<'a> {
                 }
             }
             ll::Operation::Forget(x) => {
+                let target = ForgetMe {
+                    ino: self.request.nodeid().into(), 
+                    nlookup: x.nlookup()
+                };
                 se.filesystem
-                    .forget(self.meta, self.request.nodeid().into(), x.nlookup()); // no reply
+                    .forget(self.meta, target); // no reply
             }
             ll::Operation::GetAttr(_attr) => {
                 #[cfg(feature = "abi-7-9")]
@@ -797,7 +801,7 @@ impl<'a> Request<'a> {
             }
             #[cfg(feature = "abi-7-16")]
             ll::Operation::BatchForget(x) => {
-                se.filesystem.batch_forget(self.meta, x.nodes().to_vec()); // no reply
+                se.filesystem.batch_forget(self.meta, x.into()); // no reply
             }
             #[cfg(feature = "abi-7-19")]
             ll::Operation::FAllocate(x) => {
