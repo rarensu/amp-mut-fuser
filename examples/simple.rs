@@ -153,9 +153,7 @@ fn xattr_access_check(
                 ) {
                     return Err(libc::EPERM);
                 }
-            } else if key.eq(b"system.posix_acl_default"){
-                return Err(libc::EOPNOTSUPP);
-            } else if key.eq(b"system.nfs4_acl"){
+            } else if key.eq(b"system.posix_acl_default") | key.eq(b"system.nfs4_acl") {
                 return Err(libc::EOPNOTSUPP);
             } else if request.uid != 0 {
                 return Err(libc::EPERM);
@@ -223,7 +221,7 @@ impl From<InodeAttributes> for fuser::FileAttr {
         fuser::FileAttr {
             ino: attrs.inode,
             size: attrs.size,
-            blocks: (attrs.size + BLOCK_SIZE - 1) / BLOCK_SIZE,
+            blocks: attrs.size.div_ceil(BLOCK_SIZE),
             atime: system_time_from_time(attrs.last_accessed.0, attrs.last_accessed.1),
             mtime: system_time_from_time(attrs.last_modified.0, attrs.last_modified.1),
             ctime: system_time_from_time(
@@ -2066,7 +2064,7 @@ fn main() {
         // Return a special error code for permission denied, which usually indicates that
         // "user_allow_other" is missing from /etc/fuse.conf
         if e.kind() == ErrorKind::PermissionDenied {
-            error!("{}", e.to_string());
+            error!("{}", e);
             std::process::exit(2);
         }
     }

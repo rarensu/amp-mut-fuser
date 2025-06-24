@@ -29,7 +29,7 @@ struct ClockFS<'a> {
     timeout: Duration,
 }
 
-impl<'a> ClockFS<'a> {
+impl ClockFS<'_> {
     const FILE_INO: u64 = 2;
 
     fn get_filename(&self) -> String {
@@ -64,7 +64,7 @@ impl<'a> ClockFS<'a> {
     }
 }
 
-impl<'a> Filesystem for ClockFS<'a> {
+impl Filesystem for ClockFS<'_> {
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name != OsStr::new(&self.get_filename()) {
             return Err(Errno::ENOENT);
@@ -73,7 +73,7 @@ impl<'a> Filesystem for ClockFS<'a> {
         self.lookup_cnt.fetch_add(1, SeqCst);
         match ClockFS::stat(ClockFS::FILE_INO) {
             Some(attr) => Ok(Entry {
-                attr: attr,
+                attr,
                 ttl: self.timeout,
                 generation: 0,
             }),
@@ -93,7 +93,7 @@ impl<'a> Filesystem for ClockFS<'a> {
     fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match ClockFS::stat(ino) {
             Some(attr) => Ok(Attr {
-                    attr: attr,
+                    attr,
                     ttl: self.timeout,
                 }),
             None => Err(Errno::ENOENT),

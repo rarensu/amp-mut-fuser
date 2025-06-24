@@ -191,7 +191,7 @@ impl Filesystem for PassthroughFs {
         // TODO: Ensure fd-passthrough is correctly set up if intended.
         // The Open struct would carry necessary info.
         // TODO: implement flags for Open struct
-        Ok(Open{fh: fh, flags: 0 })
+        Ok(Open{fh, flags: 0 })
     }
 
     fn release(

@@ -28,7 +28,7 @@ struct ClockFS<'a> {
     lookup_cnt: &'a AtomicU64,
 }
 
-impl<'a> ClockFS<'a> {
+impl ClockFS<'_> {
     const FILE_INO: u64 = 2;
     const FILE_NAME: &'static str = "current_time";
 
@@ -63,7 +63,7 @@ impl<'a> ClockFS<'a> {
     }
 }
 
-impl<'a> Filesystem for ClockFS<'a> {
+impl Filesystem for ClockFS<'_> {
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name != OsStr::new(Self::FILE_NAME) {
             return Err(Errno::ENOENT);
@@ -72,7 +72,7 @@ impl<'a> Filesystem for ClockFS<'a> {
         self.lookup_cnt.fetch_add(1, SeqCst);
         match self.stat(ClockFS::FILE_INO) {
             Some(attr) => Ok(Entry {
-                    attr: attr,
+                    attr,
                     ttl: Duration::MAX, // Effectively infinite TTL
                     generation: 0,
                 }),
@@ -92,7 +92,7 @@ impl<'a> Filesystem for ClockFS<'a> {
     fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match self.stat(ino) {
             Some(attr) => Ok(Attr {
-                attr: attr,
+                attr,
                 ttl: Duration::MAX, // Effectively infinite TTL
             }),
             None => Err(Errno::ENOENT),

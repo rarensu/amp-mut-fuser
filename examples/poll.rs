@@ -164,7 +164,7 @@ impl fuser::Filesystem for FSelFS {
                 ino: FSelData::idx_to_ino(idx),
                 offset: (idx + 1).into(),
                 kind: FileType::RegularFile,
-                name: name,
+                name,
             });
             // TODO: compare to _max_bytes; stop if full.
         }
