@@ -11,8 +11,8 @@
 
 use std::{
     convert::TryInto,
-    ffi::{OsStr, OsString},
-    os::unix::ffi::OsStrExt,
+    ffi::OsString,
+    os::unix::ffi::{OsStrExt, OsStringExt}, // for converting to and from
     sync::{
         atomic::{AtomicU64, Ordering::SeqCst},
         Arc, Mutex,
@@ -158,8 +158,8 @@ impl fuser::Filesystem for FSelFS {
                 10..=15 => b'A' + idx - 10, // Corrected range to 15 for NUMFILES = 16
                 _ => panic!("idx out of range for NUMFILES"),
             };
-            let name_bytes = [ascii_char_val]; // Byte array (but just one byte)
-            let name = OsString::from(name_bytes);
+            let name_bytes = vec![ascii_char_val]; // Byte vector (but just one byte)
+            let name = OsString::from_vec(name_bytes);
             entries.push(DirEntry {
                 ino: FSelData::idx_to_ino(idx),
                 offset: (idx + 1).into(),

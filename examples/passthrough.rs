@@ -10,7 +10,6 @@ use fuser::{
 use std::collections::HashMap;
 use std::ffi::{OsString};
 use std::fs::File;
-use std::io::Error;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -172,7 +171,7 @@ impl Filesystem for PassthroughFs {
         }
     }
 
-    fn open(&mut self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
+    fn open(&mut self, _req: RequestMeta, ino: u64, _flags: i32) -> Result<Open, Errno> {
         if ino != 2 {
             return Err(Errno::ENOENT);
         }
