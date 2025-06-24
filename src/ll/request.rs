@@ -2321,7 +2321,10 @@ mod tests {
     #[test]
     fn short_read() {
         match AnyRequest::try_from(&INIT_REQUEST[..48]) {
+            #[cfg(not(feature = "abi-7-36"))]
             Err(RequestError::ShortRead(48, 56)) => (),
+            #[cfg(feature = "abi-7-36")]
+            Err(RequestError::ShortRead(48, 104)) => (),
             _ => panic!("Unexpected request parsing result"),
         }
     }
