@@ -1,5 +1,12 @@
 # FUSE for Rust - Changelog
 
+## 0.16.0 - YYYY-MM-DD
+* **Major API Refactor**: The `Filesystem` trait methods have been refactored to return `Result<Output, Errno>` instead of using `Reply<T>` objects for callbacks.
+    * All `Filesystem` trait methods that previously accepted a `reply: ReplyXxx` parameter now return a `Result<XxxData, Errno>`, where `XxxData` is a struct containing the success data for that operation.
+    * The `Request` object passed to `Filesystem` methods has been replaced with `RequestMeta`, a smaller struct containing only the request's metadata (uid, gid, pid, unique id). The full request parsing is now handled internally.
+    * This change simplifies the implementation of `Filesystem` methods and makes error handling more explicit.
+    * Examples and internal request dispatch logic have been updated to match this new API.
+
 ## 0.15.1 - 2024-11-27
 * Fix crtime related panic that could occur on MacOS. See PR #322 for details.
 
