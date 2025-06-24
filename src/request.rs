@@ -10,7 +10,6 @@ use log::{debug, error, warn};
 use std::convert::TryFrom;
 #[cfg(feature = "abi-7-28")]
 use std::convert::TryInto;
-// use std::path::PathBuf;
 
 use crate::channel::ChannelSender;
 use crate::ll::Request as _;
@@ -19,7 +18,7 @@ use crate::session::{Session, SessionACL};
 use crate::Filesystem;
 #[cfg(feature = "abi-7-11")]
 use crate::PollHandle;
-use crate::{ll, KernelConfig, ForgetMe};
+use crate::{ll, KernelConfig, Forget};
 
 /// Request data structure
 #[derive(Debug)]
@@ -189,8 +188,7 @@ impl<'a> Request<'a> {
             }
 
             ll::Operation::Lookup(x) => {
-                let response =
-                se.filesystem.lookup(
+                let response = se.filesystem.lookup(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name().into()
@@ -205,7 +203,7 @@ impl<'a> Request<'a> {
                 }
             }
             ll::Operation::Forget(x) => {
-                let target = ForgetMe {
+                let target = Forget {
                     ino: self.request.nodeid().into(), 
                     nlookup: x.nlookup()
                 };
@@ -670,8 +668,7 @@ impl<'a> Request<'a> {
                 }
             }
             ll::Operation::GetLk(x) => {
-                let response =
-                se.filesystem.getlk(
+                let response = se.filesystem.getlk(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -776,8 +773,7 @@ impl<'a> Request<'a> {
             #[cfg(feature = "abi-7-11")]
             ll::Operation::Poll(x) => {
                 let ph = PollHandle::new(se.ch.sender(), x.kernel_handle());
-                let response =
-                se.filesystem.poll(
+                let response = se.filesystem.poll(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -845,9 +841,9 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.rename(
                     self.meta,
                     x.from().dir.into(),
-                    x.from().name.as_os_str().to_owned(),
+                    x.from().name.into(),
                     x.to().dir.into(),
-                    x.to().name.as_os_str().to_owned(),
+                    x.to().name.into(),
                     x.flags()
                 );
                 match response {
@@ -936,9 +932,9 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.exchange(
                     self.meta,
                     x.from().dir.into(),
-                    x.from().name.as_os_str().to_owned(),
+                    x.from().name.into(),
                     x.to().dir.into(),
-                    x.to().name.as_os_str().to_owned(),
+                    x.to().name.into(),
                     x.options()
                 );
                 match response {

@@ -5,10 +5,9 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
     FileAttr, FileType, Filesystem, MountOption, RequestMeta, Entry, Attr, Ioctl, Errno, DirEntry,
-}; // Removed Open, FUSE_ROOT_ID
-// use libc::{EINVAL}; // Removed ENOENT, c_int, EACCES, ENOSYS, EPERM
+};
 use log::debug;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::time::{Duration, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
@@ -68,14 +67,12 @@ impl FiocFS {
     }
 }
 
-use std::ffi::OsString;
-
 impl Filesystem for FiocFS {
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent == 1 && name == OsStr::new("fioc") {
             Ok(Entry {
-                ttl: TTL,
                 attr: self.fioc_file_attr,
+                ttl: TTL,
                 generation: 0,
             })
         } else {
@@ -85,8 +82,8 @@ impl Filesystem for FiocFS {
 
     fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match ino {
-            1 => Ok(Attr { ttl: TTL, attr: self.root_attr }),
-            2 => Ok(Attr { ttl: TTL, attr: self.fioc_file_attr }),
+            1 => Ok(Attr { attr: self.root_attr, ttl: TTL,}),
+            2 => Ok(Attr { attr: self.fioc_file_attr, ttl: TTL,}),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -99,7 +96,7 @@ impl Filesystem for FiocFS {
         offset: i64,
         _size: u32,
         _flags: i32,
-        _lock_owner: Option<u64>,
+        _lock: Option<u64>,
     ) -> Result<Vec<u8>, Errno> {
         if ino == 2 {
             Ok(self.content[offset as usize..].to_vec())
@@ -128,6 +125,7 @@ impl Filesystem for FiocFS {
 
         let mut result = Vec::new();
         for entry in entries.into_iter().skip(offset as usize) {
+            // example loop where additional logic could be inserted
             result.push(entry);
         }
         Ok(result)

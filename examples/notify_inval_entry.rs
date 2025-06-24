@@ -8,7 +8,7 @@
 // licensed under the terms of the GNU GPLv2.
 
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     sync::{
         atomic::{AtomicU64, Ordering::SeqCst},
         Arc, Mutex,
@@ -17,13 +17,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-// use libc::{ENOENT}; // Removed ENOTDIR, c_int, ENOBUFS
-
 use clap::Parser;
-use std::ffi::OsString;
 
 use fuser::{
-    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, ForgetMe, MountOption, RequestMeta, FUSE_ROOT_ID
+    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption, RequestMeta, FUSE_ROOT_ID
 };
 
 struct ClockFS<'a> {
@@ -76,15 +73,15 @@ impl<'a> Filesystem for ClockFS<'a> {
         self.lookup_cnt.fetch_add(1, SeqCst);
         match ClockFS::stat(ClockFS::FILE_INO) {
             Some(attr) => Ok(Entry {
+                attr: attr,
                 ttl: self.timeout,
                 generation: 0,
-                attr,
             }),
             None => Err(Errno::EIO), // Should not happen if FILE_INO is valid
         }
     }
 
-    fn forget(&mut self, _req: RequestMeta, target: ForgetMe) {
+    fn forget(&mut self, _req: RequestMeta, target: Forget) {
         if target.ino == ClockFS::FILE_INO {
             let prev = self.lookup_cnt.fetch_sub(target.nlookup, SeqCst);
             assert!(prev >= target.nlookup);
@@ -95,10 +92,10 @@ impl<'a> Filesystem for ClockFS<'a> {
 
     fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match ClockFS::stat(ino) {
-            Some(a) => Ok(Attr {
-                ttl: self.timeout,
-                attr: a,
-            }),
+            Some(attr) => Ok(Attr {
+                    attr: attr,
+                    ttl: self.timeout,
+                }),
             None => Err(Errno::ENOENT),
         }
     }
@@ -123,8 +120,7 @@ impl<'a> Filesystem for ClockFS<'a> {
                 name: OsString::from(self.get_filename()),
             });
         }
-        // If offset is > 0, we've already returned the single entry, so return empty.
-        // If ENOBUFS was meant for buffer size, that's handled by the library now.
+        // If offset is > 0, we've already returned the single entry, so return an empty vector.
         Ok(entries)
     }
 }

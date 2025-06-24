@@ -44,7 +44,10 @@ impl fmt::Debug for Box<dyn ReplySender> {
     }
 }
 
-/// TODO document
+/// ReplyHander is a struct which holds the unique identifiers needed to reply
+/// to a specific request. Traits are implemented on the struct so that ownership
+/// of the struct determines whether the identifiers have ever been used. 
+/// This guarantees that a reply is send at most once per request.
 #[derive(Debug)]
 pub(crate) struct ReplyHandler {
     /// Unique id of the request to reply to
@@ -54,6 +57,7 @@ pub(crate) struct ReplyHandler {
 }
 
 impl ReplyHandler {
+    /// Create a reply handler for a specific request identifier
     pub(crate) fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyHandler {
         let sender = Box::new(sender);
         ReplyHandler {
@@ -62,8 +66,9 @@ impl ReplyHandler {
         }
     }
 
-    /// Reply to a request with the given error code and data. Must be called
-    /// only once (the `ok` and `error` methods ensure this by consuming `self`)
+    /// Reply to a request with a formatted reponse. Can be called
+    /// more than once (the `&mut self`` argument does not consume `self`)
+    /// Avoid using this variant unless you know what you are doing!
     fn send_ll_mut(&mut self, response: &ll::Response<'_>) {
         assert!(self.sender.is_some());
         let sender = self.sender.take().unwrap();
@@ -72,12 +77,18 @@ impl ReplyHandler {
             error!("Failed to send FUSE reply: {}", err);
         }
     }
+    /// Reply to a request with a formatted reponse. May be called
+    /// only once (the `mut self`` argument consumes `self`).
+    /// Use this variant for general replies. 
     fn send_ll(mut self, response: &ll::Response<'_>) {
         self.send_ll_mut(response)
     }
 
 }
 
+/// Drop is implemented on ReplyHandler so that if the program logic fails 
+/// (for example, due to an interrupt or a panic),
+/// a reply will be sent when the Reply Handler falls out of scope.
 impl Drop for ReplyHandler {
     fn drop(&mut self) {
         if self.sender.is_some() {

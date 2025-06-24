@@ -1,14 +1,14 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
     Filesystem, MountOption, Attr, DirEntry,
-    Entry, Errno, RequestMeta, FileType
+    Entry, Errno, RequestMeta, FileType, FileAttr
 };
 use std::ffi::{OsStr, OsString};
 use std::time::{Duration, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
-const HELLO_DIR_ATTR: fuser::FileAttr = fuser::FileAttr {
+const HELLO_DIR_ATTR: FileAttr = FileAttr {
     ino: 1,
     size: 0,
     blocks: 0,
@@ -28,7 +28,7 @@ const HELLO_DIR_ATTR: fuser::FileAttr = fuser::FileAttr {
 
 const HELLO_TXT_CONTENT: &str = "Hello World!\n";
 
-const HELLO_TXT_ATTR: fuser::FileAttr = fuser::FileAttr {
+const HELLO_TXT_ATTR: FileAttr = FileAttr {
     ino: 2,
     size: 13,
     blocks: 1,
@@ -51,7 +51,7 @@ struct HelloFS;
 impl Filesystem for HelloFS {
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent == 1 && name == OsStr::new("hello.txt") {
-            Ok(Entry{ttl: TTL, attr: HELLO_TXT_ATTR, generation: 0})
+            Ok(Entry{attr: HELLO_TXT_ATTR, ttl: TTL, generation: 0})
         } else {
             Err(Errno::ENOENT)
         }
@@ -64,8 +64,8 @@ impl Filesystem for HelloFS {
         _fh: Option<u64>,
     ) -> Result<Attr, Errno> {
         match ino {
-            1 => Ok(Attr{ttl: TTL, attr: HELLO_DIR_ATTR}),
-            2 => Ok(Attr{ttl: TTL, attr: HELLO_TXT_ATTR}),
+            1 => Ok(Attr{attr: HELLO_DIR_ATTR, ttl: TTL,}),
+            2 => Ok(Attr{attr: HELLO_TXT_ATTR, ttl: TTL,}),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -78,7 +78,7 @@ impl Filesystem for HelloFS {
         offset: i64,
         _size: u32,
         _flags: i32,
-        _lock_owner: Option<u64>,
+        _lock: Option<u64>,
     ) -> Result<Vec<u8>, Errno> {
         if ino == 2 {
             Ok(HELLO_TXT_CONTENT.as_bytes()[offset as usize..].to_vec())
@@ -107,6 +107,7 @@ impl Filesystem for HelloFS {
 
         let mut result = Vec::new();
         for entry in entries.into_iter().skip(offset as usize) {
+            // example loop where additional logic could be inserted
             result.push(entry);
         }
         Ok(result)

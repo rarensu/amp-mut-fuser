@@ -7,9 +7,11 @@
 // Due to the above provenance, unlike the rest of fuser this file is
 // licensed under the terms of the GNU GPLv2.
 
+// Requires feature = "abi-7-11"
+
 use std::{
     convert::TryInto,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     os::unix::ffi::OsStrExt,
     sync::{
         atomic::{AtomicU64, Ordering::SeqCst},
@@ -19,14 +21,10 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-// libc imports likely not needed if Errno::NAME is used
-// use libc::{EACCES, EBADF, EBUSY, EINVAL, ENOENT, ENOTDIR};
-
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
     FileAttr, FileType, MountOption, PollHandle, RequestMeta, Entry, Attr, DirEntry, Open, Errno, FUSE_ROOT_ID,
 };
-use std::ffi::OsString;
 
 const NUMFILES: u8 = 16;
 const MAXBYTES: u64 = 10;
@@ -99,8 +97,8 @@ impl fuser::Filesystem for FSelFS {
         };
 
         Ok(Entry {
-            ttl: Duration::ZERO,
             attr: self.get_data().filestat(idx),
+            ttl: Duration::ZERO,
             generation: 0,
         })
     }
@@ -129,8 +127,8 @@ impl fuser::Filesystem for FSelFS {
         let idx = FSelData::ino_to_idx(ino);
         if idx < NUMFILES {
             Ok(Attr {
-                ttl: Duration::ZERO,
                 attr: self.get_data().filestat(idx),
+                ttl: Duration::ZERO,
             })
         } else {
             Err(Errno::ENOENT)
@@ -160,17 +158,15 @@ impl fuser::Filesystem for FSelFS {
                 10..=15 => b'A' + idx - 10, // Corrected range to 15 for NUMFILES = 16
                 _ => panic!("idx out of range for NUMFILES"),
             };
-            let name_bytes = [ascii_char_val]; // Byte array with a lifetime that matches 'entries.push'
-            let name_str = OsStr::from_bytes(&name_bytes);
+            let name_bytes = [ascii_char_val]; // Byte array (but just one byte)
+            let name = OsString::from(name_bytes);
             entries.push(DirEntry {
                 ino: FSelData::idx_to_ino(idx),
                 offset: (idx + 1).into(),
                 kind: FileType::RegularFile,
-                name: name_str.to_os_string(),
+                name: name,
             });
-            // The original code implicitly relied on reply.add stopping when buffer is full.
-            // Here, we'd ideally check _max_bytes, but for simplicity and matching original logic,
-            // we'll let the library handle truncation if the vector gets too large.
+            // TODO: compare to _max_bytes; stop if full.
         }
         Ok(entries)
     }
@@ -223,7 +219,7 @@ impl fuser::Filesystem for FSelFS {
         _ino: u64,
         fh: u64,
         _offset: i64, // offset is ignored due to FOPEN_NONSEEKABLE
-        size: u32,
+        max_size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
     ) -> Result<Vec<u8>, Errno> {
@@ -234,18 +230,19 @@ impl fuser::Filesystem for FSelFS {
             return Err(Errno::EBADF);
         }
         let cnt = &mut self.get_data().bytecnt[idx as usize];
-        let read_size = (*cnt).min(size.into());
-        println!("READ   {:X} transferred={} cnt={}", idx, read_size, *cnt);
-        *cnt -= read_size;
+        let size = (*cnt).min(max_size.into());
+        println!("READ   {:X} transferred={} cnt={}", idx, size, *cnt);
+        *cnt -= size;
         let elt = match idx {
             0..=9 => b'0' + idx,
             10..=15 => b'A' + idx - 10, // Corrected range
             _ => panic!("idx out of range for NUMFILES"),
         };
-        let data = vec![elt; read_size.try_into().unwrap()];
+        let data = vec![elt; size.try_into().unwrap()];
         Ok(data)
     }
 
+    #[cfg(feature = "abi-7-11")]
     fn poll(
         &mut self,
         _req: RequestMeta,

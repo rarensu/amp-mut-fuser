@@ -148,7 +148,7 @@ pub struct fuse_file_lock {
     /// kind of lock (read and/or write) 
     pub typ: i32,
     /// PID of process blocking our lock
-    pub pid: u32, 
+    pub pid: u32,
 }
 
 pub mod consts {

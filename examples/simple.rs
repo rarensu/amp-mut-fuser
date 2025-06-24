@@ -9,7 +9,7 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Attr, DirEntry, Entry, Errno, Filesystem, ForgetMe, KernelConfig, MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr, FUSE_ROOT_ID
+    Attr, DirEntry, Entry, Errno, Filesystem, Forget, KernelConfig, MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr, FUSE_ROOT_ID
 };
 #[cfg(feature = "abi-7-26")]
 use log::info;
@@ -498,13 +498,15 @@ impl Filesystem for SimpleFS {
         fs::create_dir_all(Path::new(&self.data_dir).join("contents")).unwrap();
         if self.get_inode(FUSE_ROOT_ID).is_err() {
             // Initialize with empty filesystem
-            let (init_uid, init_gid) = if self.usermode  {
+            let (init_uid, init_gid, init_mode) = if self.usermode  {
+                // root dir: owned by current user, private
                 use libc::{getuid, getgid};
                 let current_uid = unsafe { getuid() };
                 let current_gid = unsafe { getgid() };
-                (current_uid, current_gid)
+                (current_uid, current_gid, 0o700)
             } else {
-                (0, 0)
+                // root dir: owned by root user, world writable
+                (0, 0, 0o777)
             };
             let root = InodeAttributes {
                 inode: FUSE_ROOT_ID,
@@ -514,7 +516,7 @@ impl Filesystem for SimpleFS {
                 last_modified: time_now(),
                 last_metadata_changed: time_now(),
                 kind: FileKind::Directory,
-                mode: 0o777,
+                mode: init_mode,
                 hardlinks: 2,
                 uid: init_uid,
                 gid: init_gid,
@@ -561,7 +563,7 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn forget(&mut self, _req: RequestMeta, _target: ForgetMe) {}
+    fn forget(&mut self, _req: RequestMeta, _target: Forget) {}
 
     fn getattr(
         &mut self,
@@ -603,8 +605,8 @@ impl Filesystem for SimpleFS {
             }
         };
 
-        if let Some(mode_val) = mode_option {
-            debug!("chmod() called with {:?}, {:o}", inode, mode_val);
+        if let Some(mode) = mode_option {
+            debug!("chmod() called with {:?}, {:o}", inode, mode);
             if req.uid != 0 && req.uid != attrs.uid {
                 return Err(Errno::EPERM);
             }
@@ -614,9 +616,9 @@ impl Filesystem for SimpleFS {
             {
                 // If SGID is set and the file belongs to a group that the caller is not part of
                 // then the SGID bit is suppose to be cleared during chmod
-                attrs.mode = (mode_val & !libc::S_ISGID as u32) as u16;
+                attrs.mode = (mode & !libc::S_ISGID as u32) as u16;
             } else {
-                attrs.mode = mode_val as u16;
+                attrs.mode = mode as u16;
             }
             attrs.last_metadata_changed = time_now();
             self.write_inode(&attrs);
@@ -628,22 +630,22 @@ impl Filesystem for SimpleFS {
 
         if uid_option.is_some() || gid_option.is_some() {
             debug!("chown() called with {:?} {:?} {:?}", inode, uid_option, gid_option);
-            if let Some(gid_val) = gid_option {
+            if let Some(gid) = gid_option {
                 // Non-root users can only change gid to a group they're in
-                if req.uid != 0 && !get_groups(req.pid).contains(&gid_val) {
+                if req.uid != 0 && !get_groups(req.pid).contains(&gid) {
                     return Err(Errno::EPERM);
                 }
             }
-            if let Some(uid_val) = uid_option {
+            if let Some(uid) = uid_option {
                 if req.uid != 0
                     // but no-op changes by the owner are not an error
-                    && !(uid_val == attrs.uid && req.uid == attrs.uid)
+                    && !(uid == attrs.uid && req.uid == attrs.uid)
                 {
                     return Err(Errno::EPERM);
                 }
             }
             // Only owner may change the group
-            if gid_option.is_some() && req.uid != 0 && req.uid != attrs.uid { // Changed attrs.attr.uid to attrs.uid
+            if gid_option.is_some() && req.uid != 0 && req.uid != attrs.uid {
                 return Err(Errno::EPERM);
             }
 
@@ -652,13 +654,13 @@ impl Filesystem for SimpleFS {
                 clear_suid_sgid(&mut attrs);
             }
 
-            if let Some(uid_val) = uid_option {
-                attrs.uid = uid_val;
+            if let Some(uid) = uid_option {
+                attrs.uid = uid;
                 // Clear SETUID on owner change
                 attrs.mode &= !libc::S_ISUID as u16;
             }
-            if let Some(gid_val) = gid_option {
-                attrs.gid = gid_val;
+            if let Some(gid) = gid_option {
+                attrs.gid = gid;
                 // Clear SETGID unless user is root
                 if req.uid != 0 {
                     attrs.mode &= !libc::S_ISGID as u16;
@@ -669,16 +671,16 @@ impl Filesystem for SimpleFS {
             return Ok(Attr { attr: attrs.into(), ttl: Duration::new(0,0),  });
         }
 
-        if let Some(size_val) = size_option {
-            debug!("truncate() called with {:?} {:?}", inode, size_val);
+        if let Some(size) = size_option {
+            debug!("truncate() called with {:?} {:?}", inode, size);
             let truncated_attrs_result = if let Some(handle) = fh {
                 if self.check_file_handle_write(handle) {
-                    self.truncate(inode, size_val, 0, 0)
+                    self.truncate(inode, size, 0, 0)
                 } else {
                     return Err(Errno::EACCES);
                 }
             } else {
-                self.truncate(inode, size_val, req.uid, req.gid)
+                self.truncate(inode, size, req.uid, req.gid)
             };
     
             return match truncated_attrs_result {
@@ -686,13 +688,13 @@ impl Filesystem for SimpleFS {
                 Err(error_code) => Err(Errno::from_i32(error_code)),
             };
         }
-
+        // Note: If any of the above attributes were changed, the remaining part is not reached.
         let now = time_now();
-        let mut modified_in_utimens = false;
-        if let Some(atime_val) = atime_option {
-            debug!("utimens() called with {:?}, atime={:?}", inode, atime_val);
+        let mut modified_time_attr = false;
+        if let Some(atime) = atime_option {
+            debug!("utimens() called with {:?}, atime={:?}", inode, atime);
 
-            if attrs.uid != req.uid && req.uid != 0 && atime_val != Now { // Changed attrs.attr.uid to attrs.uid
+            if attrs.uid != req.uid && req.uid != 0 && atime != Now {
                 return Err(Errno::EPERM);
             }
 
@@ -709,18 +711,17 @@ impl Filesystem for SimpleFS {
                 return Err(Errno::EACCES);
             }
 
-            attrs.last_accessed = match atime_val {
+            attrs.last_accessed = match atime {
                 TimeOrNow::SpecificTime(time) => time_from_system_time(&time),
                 Now => now,
             };
             attrs.last_metadata_changed = now;
-            // self.write_inode(&attrs); // Defer write
-            modified_in_utimens = true;
+            modified_time_attr = true;
         }
-        if let Some(mtime_val) = mtime_option {
-            debug!("utimens() called with {:?}, mtime={:?}", inode, mtime_val);
+        if let Some(mtime) = mtime_option {
+            debug!("utimens() called with {:?}, mtime={:?}", inode, mtime);
 
-            if attrs.uid != req.uid && req.uid != 0 && mtime_val != Now { // Changed attrs.attr.uid to attrs.uid
+            if attrs.uid != req.uid && req.uid != 0 && mtime != Now {
                 return Err(Errno::EPERM);
             }
 
@@ -737,21 +738,19 @@ impl Filesystem for SimpleFS {
                 return Err(Errno::EACCES);
             }
 
-            attrs.last_modified = match mtime_val {
+            attrs.last_modified = match mtime {
                 TimeOrNow::SpecificTime(time) => time_from_system_time(&time),
                 Now => now,
             };
             attrs.last_metadata_changed = now;
-            // self.write_inode(&attrs); // Defer write
-            modified_in_utimens = true;
+            modified_time_attr = true;
         }
 
-        if modified_in_utimens {
+        if modified_time_attr {
             self.write_inode(&attrs);
         }
 
-        // If any attribute was changed and returned early, this part is not reached.
-        // If only atime/mtime were set, or if no attributes were set,
+        // If atime/mtime were set, or if no attributes were set,
         // we fetch the latest attributes and return them.
         let final_attrs = self.get_inode(inode).map_err(Errno::from_i32)?;
         Ok(Attr { attr: final_attrs.into(), ttl: Duration::new(0,0), })
@@ -781,9 +780,9 @@ impl Filesystem for SimpleFS {
         req: RequestMeta,
         parent: u64,
         name: OsString,
-        mut mode: u32,
-        #[allow(unused_variables)] _umask: u32,
-        #[allow(unused_variables)] _rdev: u32,
+        mode: u32,
+        _umask: u32,
+        _rdev: u32,
     ) -> Result<Entry, Errno> {
         let file_type = mode & libc::S_IFMT as u32;
 
@@ -821,9 +820,12 @@ impl Filesystem for SimpleFS {
         parent_attrs.last_metadata_changed = time_now();
         self.write_inode(&parent_attrs);
 
-        if req.uid != 0 {
-            mode &= !(libc::S_ISUID | libc::S_ISGID) as u32;
-        }
+        let new_mode = if req.uid != 0 {
+            // regular users may not set uid or set gid
+            mode & !(libc::S_ISUID | libc::S_ISGID) as u32
+        } else {
+            mode
+        };
 
         let inode = self.allocate_next_inode();
         let attrs = InodeAttributes {
@@ -833,8 +835,8 @@ impl Filesystem for SimpleFS {
             last_accessed: time_now(),
             last_modified: time_now(),
             last_metadata_changed: time_now(),
-            kind: as_file_kind(mode),
-            mode: self.creation_mode(mode),
+            kind: as_file_kind(new_mode),
+            mode: self.creation_mode(new_mode),
             hardlinks: 1,
             uid: req.uid,
             gid: creation_gid(&parent_attrs, req.gid),
@@ -843,7 +845,7 @@ impl Filesystem for SimpleFS {
         self.write_inode(&attrs);
         File::create(self.content_path(inode)).map_err(|_| Errno::EIO)?;
 
-        if as_file_kind(mode) == FileKind::Directory {
+        if as_file_kind(new_mode) == FileKind::Directory {
             let mut entries = BTreeMap::new();
             entries.insert(b".".to_vec(), (inode, FileKind::Directory));
             entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
@@ -854,7 +856,11 @@ impl Filesystem for SimpleFS {
         entries.insert(name.as_bytes().to_vec(), (inode, attrs.kind));
         self.write_directory_content(parent, entries);
 
-        Ok(Entry { attr: attrs.into(), ttl: Duration::new(0,0), generation: 0 })
+        Ok(Entry {
+            attr: attrs.into(),
+            ttl: Duration::new(0,0),
+            generation: 0,
+        })
     }
 
     fn mkdir(
@@ -862,7 +868,7 @@ impl Filesystem for SimpleFS {
         req: RequestMeta,
         parent: u64,
         name: OsString,
-        mut mode: u32,
+        mode: u32,
         #[allow(unused_variables)] _umask: u32,
     ) -> Result<Entry, Errno> {
         debug!("mkdir() called with {:?} {:?} {:o}", parent, name, mode);
@@ -890,13 +896,16 @@ impl Filesystem for SimpleFS {
         parent_attrs.last_modified = time_now();
         parent_attrs.last_metadata_changed = time_now();
         self.write_inode(&parent_attrs);
-
-        if req.uid != 0 {
-            mode &= !(libc::S_ISUID | libc::S_ISGID) as u32;
-        }
-        if parent_attrs.mode & libc::S_ISGID as u16 != 0 {
-            mode |= libc::S_ISGID as u32;
-        }
+    
+        let new_mode = if req.uid != 0 {
+            // regular users may not set uid or set gid
+            mode & !(libc::S_ISUID | libc::S_ISGID) as u32
+        } else if parent_attrs.mode & libc::S_ISGID as u16 != 0 {
+            // root user must set gid if the parent diretory does
+            mode | libc::S_ISGID as u32
+        } else {
+            mode
+        };
 
         let inode = self.allocate_next_inode();
         let attrs = InodeAttributes {
@@ -907,7 +916,7 @@ impl Filesystem for SimpleFS {
             last_modified: time_now(),
             last_metadata_changed: time_now(),
             kind: FileKind::Directory,
-            mode: self.creation_mode(mode),
+            mode: self.creation_mode(new_mode),
             hardlinks: 2, // Directories start with link count of 2, since they have a self link
             uid: req.uid,
             gid: creation_gid(&parent_attrs, req.gid),
@@ -924,7 +933,11 @@ impl Filesystem for SimpleFS {
         entries.insert(name.as_bytes().to_vec(), (inode, FileKind::Directory));
         self.write_directory_content(parent, entries);
 
-        Ok(Entry { attr: attrs.into(), ttl: Duration::new(0,0), generation: 0 })
+        Ok(Entry {
+            attr: attrs.into(),
+            ttl: Duration::new(0,0),
+            generation: 0,
+        })
     }
 
     fn unlink(&mut self, req: RequestMeta, parent: u64, name: OsString) -> Result<(), Errno> {
@@ -1104,7 +1117,11 @@ impl Filesystem for SimpleFS {
             .map_err(|_| Errno::EIO)?;
         file.write_all(target.as_os_str().as_bytes()).map_err(|_| Errno::EIO)?;
 
-        Ok(Entry { attr: attrs.into(), ttl: Duration::new(0,0), generation: 0 })
+        Ok(Entry {
+            attr: attrs.into(),
+            ttl: Duration::new(0,0),
+            generation: 0,
+        })
     }
 
     fn rename(
@@ -1329,7 +1346,7 @@ impl Filesystem for SimpleFS {
             return Ok(Entry{
                 ttl:Duration::new(0, 0), 
                 attr: attrs.into(), 
-                generation: 0
+                generation: 0,
             });
         }
     }
@@ -1421,7 +1438,7 @@ impl Filesystem for SimpleFS {
         inode: u64,
         fh: u64,
         offset: i64,
-        data: Vec<u8>, // Changed
+        data: Vec<u8>,
         _write_flags: u32,
         #[allow(unused_variables)] flags: i32,
         _lock_owner: Option<u64>,
@@ -1543,11 +1560,7 @@ impl Filesystem for SimpleFS {
                 kind: (*file_type).into(),
                 name: OsStr::from_bytes(name).to_owned(),
             });
-
-            // to-do: stop if enough bytes
-            // if bytes > MAX_DIRENTLIST_BYTES {
-            //     break;
-            // }
+            // TODO stop if bytes > _max_bytes
         }
         Ok(result)
     }
@@ -1981,7 +1994,7 @@ fn main() {
                 .help("Enable setuid support when run as root"),
         )
         .arg(
-            Arg::new( "user")
+            Arg::new("user")
                 .long("user")
                 .action(ArgAction::SetTrue)
                 .help("disable root-priviledge features"),

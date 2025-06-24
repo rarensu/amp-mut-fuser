@@ -8,7 +8,7 @@
 
 use std::{
     convert::TryInto,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     sync::{
         atomic::{AtomicU64, Ordering::SeqCst},
         Arc, Mutex,
@@ -17,14 +17,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-// libc imports likely not needed if Errno::NAME is used
-// use libc::{EACCES, EINVAL, EISDIR, ENOENT};
-
 use clap::Parser;
-use std::ffi::OsString;
 
 use fuser::{
-    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, ForgetMe, MountOption, Open, RequestMeta, FUSE_ROOT_ID
+    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption, Open, RequestMeta, FUSE_ROOT_ID
 };
 
 struct ClockFS<'a> {
@@ -76,15 +72,15 @@ impl<'a> Filesystem for ClockFS<'a> {
         self.lookup_cnt.fetch_add(1, SeqCst);
         match self.stat(ClockFS::FILE_INO) {
             Some(attr) => Ok(Entry {
-                ttl: Duration::MAX, // Effectively infinite TTL
-                attr,
-                generation: 0,
-            }),
+                    attr: attr,
+                    ttl: Duration::MAX, // Effectively infinite TTL
+                    generation: 0,
+                }),
             None => Err(Errno::EIO), // Should not happen
         }
     }
 
-    fn forget(&mut self, _req: RequestMeta, target: ForgetMe) {
+    fn forget(&mut self, _req: RequestMeta, target: Forget) {
         if target.ino == ClockFS::FILE_INO {
             let prev = self.lookup_cnt.fetch_sub(target.nlookup, SeqCst);
             assert!(prev >= target.nlookup);
@@ -96,8 +92,8 @@ impl<'a> Filesystem for ClockFS<'a> {
     fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match self.stat(ino) {
             Some(attr) => Ok(Attr {
+                attr: attr,
                 ttl: Duration::MAX, // Effectively infinite TTL
-                attr,
             }),
             None => Err(Errno::ENOENT),
         }
@@ -123,6 +119,7 @@ impl<'a> Filesystem for ClockFS<'a> {
                 name: OsString::from(Self::FILE_NAME),
             });
         }
+        // If offset is > 0, we've already returned the single entry, so return an empty vector.
         Ok(entries)
     }
 
