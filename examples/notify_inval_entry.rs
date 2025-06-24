@@ -23,7 +23,7 @@ use clap::Parser;
 use std::ffi::OsString;
 
 use fuser::{
-    Errno, FileAttr, FileType, Filesystem, MountOption, RequestMeta, Entry, Attr, DirEntry, FUSE_ROOT_ID
+    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, ForgetMe, MountOption, RequestMeta, FUSE_ROOT_ID
 };
 
 struct ClockFS<'a> {
@@ -84,12 +84,12 @@ impl<'a> Filesystem for ClockFS<'a> {
         }
     }
 
-    fn forget(&mut self, _req: RequestMeta, ino: u64, nlookup: u64) {
-        if ino == ClockFS::FILE_INO {
-            let prev = self.lookup_cnt.fetch_sub(nlookup, SeqCst);
-            assert!(prev >= nlookup);
+    fn forget(&mut self, _req: RequestMeta, target: ForgetMe) {
+        if target.ino == ClockFS::FILE_INO {
+            let prev = self.lookup_cnt.fetch_sub(target.nlookup, SeqCst);
+            assert!(prev >= target.nlookup);
         } else {
-            assert!(ino == FUSE_ROOT_ID);
+            assert!(target.ino == FUSE_ROOT_ID);
         }
     }
 
