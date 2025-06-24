@@ -138,12 +138,13 @@ pub struct FileAttr {
 }
 
 #[derive(Debug)]
-/// Target of a Forget operation
+/// Target of a `forget` or `batch_forget` operation.
 pub struct ForgetMe {
-    //TODO: double check these document comments
-    /// inode of the file to be forgotten
+    /// Inode of the file to be forgotten.
     pub ino: u64,
-    /// number of times the file has been looked up 
+    /// The number of times the file has been looked up (and not yet forgotten).
+    /// When a `forget` operation is received, the filesystem should typically
+    /// decrement its internal reference count for the inode by `nlookup`.
     pub nlookup: u64
 }
 
@@ -331,7 +332,8 @@ impl KernelConfig {
 pub trait Filesystem {
     /// Initialize filesystem.
     /// Called before any other filesystem method.
-    /// The kernel module connection can be configured using the KernelConfig object
+    /// The kernel module connection can be configured using the KernelConfig object.
+    /// The method should return `Ok(config)` to accept the connection, or `Err(errno)` to reject it.
     fn init(&mut self, #[allow(unused_variables)] req: RequestMeta, config: KernelConfig) -> Result<KernelConfig, Errno> {
         Ok(config)
     }
@@ -341,6 +343,7 @@ pub trait Filesystem {
     fn destroy(&mut self) {}
 
     /// Look up a directory entry by name and get its attributes.
+    /// The method should return `Ok(Entry)` if the entry is found, or `Err(errno)` otherwise.
     fn lookup(&mut self, #[allow(unused_variables)] req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         warn!(
             "[Not Implemented] lookup(parent: {:#x?}, name {:?})",
@@ -350,16 +353,16 @@ pub trait Filesystem {
     }
 
     /// Forget about an inode.
-    /// The nlookup parameter indicates the number of lookups previously performed on
+    /// The `_target.nlookup` parameter indicates the number of lookups previously performed on
     /// this inode. If the filesystem implements inode lifetimes, it is recommended that
-    /// inodes acquire a single reference on each lookup, and lose nlookup references on
+    /// inodes acquire a single reference on each lookup, and lose `_target.nlookup` references on
     /// each forget. The filesystem may ignore forget calls, if the inodes don't need to
     /// have a limited lifetime. On unmount it is not guaranteed, that all referenced
-    /// inodes will receive a forget message.
+    /// inodes will receive a forget message. This operation does not return a result.
     fn forget(&mut self, #[allow(unused_variables)] req: RequestMeta, _target: ForgetMe) {}
 
     /// Like forget, but take multiple forget requests at once for performance. The default
-    /// implementation will fallback to forget.
+    /// implementation will fallback to `forget` for each node. This operation does not return a result.
     #[cfg(feature = "abi-7-16")]
     fn batch_forget(&mut self, #[allow(unused_variables)] req: RequestMeta, nodes: Vec<ForgetMe>) {
         for node in nodes {
@@ -368,6 +371,7 @@ pub trait Filesystem {
     }
 
     /// Get file attributes.
+    /// The method should return `Ok(Attr)` with the file attributes, or `Err(errno)` otherwise.
     fn getattr(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, fh: Option<u64>) -> Result<Attr, Errno> {
         warn!(
             "[Not Implemented] getattr(ino: {:#x?}, fh: {:#x?})",
@@ -377,6 +381,7 @@ pub trait Filesystem {
     }
 
     /// Set file attributes.
+    /// The method should return `Ok(Attr)` with the updated file attributes, or `Err(errno)` otherwise.
     fn setattr(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -403,6 +408,7 @@ pub trait Filesystem {
     }
 
     /// Read symbolic link.
+    /// The method should return `Ok(Vec<u8>)` with the link target, or `Err(errno)` otherwise.
     fn readlink(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64) -> Result<Vec<u8>, Errno> {
         warn!("[Not Implemented] readlink(ino: {:#x?})", ino);
         Err(Errno::ENOSYS)
@@ -410,6 +416,7 @@ pub trait Filesystem {
 
     /// Create file node.
     /// Create a regular file, character device, block device, fifo or socket node.
+    /// The method should return `Ok(Entry)` with the new entry's attributes, or `Err(errno)` otherwise.
     fn mknod(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -428,6 +435,7 @@ pub trait Filesystem {
     }
 
     /// Create a directory.
+    /// The method should return `Ok(Entry)` with the new directory's attributes, or `Err(errno)` otherwise.
     fn mkdir(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -444,6 +452,7 @@ pub trait Filesystem {
     }
 
     /// Remove a file.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn unlink(&mut self, #[allow(unused_variables)] req: RequestMeta, parent: u64, name: OsString) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] unlink(parent: {:#x?}, name: {:?})",
@@ -453,6 +462,7 @@ pub trait Filesystem {
     }
 
     /// Remove a directory.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn rmdir(&mut self, #[allow(unused_variables)] req: RequestMeta, parent: u64, name: OsString) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] rmdir(parent: {:#x?}, name: {:?})",
@@ -462,6 +472,7 @@ pub trait Filesystem {
     }
 
     /// Create a symbolic link.
+    /// The method should return `Ok(Entry)` with the new link's attributes, or `Err(errno)` otherwise.
     fn symlink(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -477,6 +488,8 @@ pub trait Filesystem {
     }
 
     /// Rename a file.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
+    /// `flags` may be `RENAME_EXCHANGE` or `RENAME_NOREPLACE`.
     fn rename(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -495,6 +508,7 @@ pub trait Filesystem {
     }
 
     /// Create a hard link.
+    /// The method should return `Ok(Entry)` with the new link's attributes, or `Err(errno)` otherwise.
     fn link(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -511,27 +525,29 @@ pub trait Filesystem {
 
     /// Open a file.
     /// Open flags (with the exception of O_CREAT, O_EXCL, O_NOCTTY and O_TRUNC) are
-    /// available in flags. Filesystem may store an arbitrary file handle (pointer, index,
-    /// etc) in fh, and use this in other all other file operations (read, write, flush,
+    /// available in `flags`. Filesystem may store an arbitrary file handle (pointer, index,
+    /// etc) in `Open.fh`, and use this in other all other file operations (read, write, flush,
     /// release, fsync). Filesystem may also implement stateless file I/O and not store
-    /// anything in fh. There are also some flags (direct_io, keep_cache) which the
-    /// filesystem may set, to change the way the file is opened. See fuse_file_info
-    /// structure in <fuse_common.h> for more details.
+    /// anything in `Open.fh`. There are also some flags (direct_io, keep_cache) which the
+    /// filesystem may set in `Open.flags`, to change the way the file is opened. See fuse_file_info
+    /// structure in `<fuse_common.h>` for more details.
+    /// The method should return `Ok(Open)` on success, or `Err(errno)` otherwise.
     fn open(&mut self, #[allow(unused_variables)] req: RequestMeta, _ino: u64, _flags: i32) -> Result<Open, Errno> {
         warn!("[Not Implemented] open(ino: {:#x?}, flags: {})", _ino, _flags);
         Err(Errno::ENOSYS)
     }
 
     /// Read data.
-    /// Read should send exactly the number of bytes requested except on EOF or error,
+    /// Read should return exactly the number of bytes requested except on EOF or error,
     /// otherwise the rest of the data will be substituted with zeroes. An exception to
     /// this is when the file has been opened in 'direct_io' mode, in which case the
     /// return value of the read system call will reflect the return value of this
-    /// operation. fh will contain the value set by the open method, or will be undefined
+    /// operation. `fh` will contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
+    /// The method should return `Ok(Vec<u8>)` with the read data, or `Err(errno)` otherwise.
     ///
-    /// flags: these are the file flags, such as O_SYNC. Only supported with ABI >= 7.9
-    /// lock_owner: only supported with ABI >= 7.9
+    /// `flags`: these are the file flags, such as O_SYNC. Only supported with ABI >= 7.9
+    /// `lock_owner`: only supported with ABI >= 7.9
     fn read(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -554,14 +570,15 @@ pub trait Filesystem {
     /// Write should return exactly the number of bytes requested except on error. An
     /// exception to this is when the file has been opened in 'direct_io' mode, in
     /// which case the return value of the write system call will reflect the return
-    /// value of this operation. fh will contain the value set by the open method, or
+    /// value of this operation. `fh` will contain the value set by the open method, or
     /// will be undefined if the open method didn't set any value.
+    /// The method should return `Ok(u32)` with the number of bytes written, or `Err(errno)` otherwise.
     ///
-    /// write_flags: will contain FUSE_WRITE_CACHE, if this write is from the page cache. If set,
-    /// the pid, uid, gid, and fh may not match the value that would have been sent if write cachin
-    /// is disabled
-    /// flags: these are the file flags, such as O_SYNC. Only supported with ABI >= 7.9
-    /// lock_owner: only supported with ABI >= 7.9
+    /// `write_flags`: will contain `FUSE_WRITE_CACHE`, if this write is from the page cache. If set,
+    /// the pid, uid, gid, and fh may not match the value that would have been sent if write caching
+    /// is disabled.
+    /// `flags`: these are the file flags, such as O_SYNC. Only supported with ABI >= 7.9.
+    /// `lock_owner`: only supported with ABI >= 7.9.
     fn write(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -588,15 +605,16 @@ pub trait Filesystem {
     }
 
     /// Flush method.
-    /// This is called on each close() of the opened file. Since file descriptors can
+    /// This is called on each `close()` of the opened file. Since file descriptors can
     /// be duplicated (dup, dup2, fork), for one open call there may be many flush
     /// calls. Filesystems shouldn't assume that flush will always be called after some
-    /// writes, or that if will be called at all. fh will contain the value set by the
+    /// writes, or that it will be called at all. `fh` will contain the value set by the
     /// open method, or will be undefined if the open method didn't set any value.
     /// NOTE: the name of the method is misleading, since (unlike fsync) the filesystem
-    /// is not forced to flush pending writes. One reason to flush data, is if the
+    /// is not forced to flush pending writes. One reason to flush data is if the
     /// filesystem wants to return write errors. If the filesystem supports file locking
-    /// operations (setlk, getlk) it should remove all locks belonging to 'lock_owner'.
+    /// operations (setlk, getlk) it should remove all locks belonging to `lock_owner`.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn flush(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, fh: u64, lock_owner: u64) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] flush(ino: {:#x?}, fh: {}, lock_owner: {:?})",
@@ -608,11 +626,12 @@ pub trait Filesystem {
     /// Release an open file.
     /// Release is called when there are no more references to an open file: all file
     /// descriptors are closed and all memory mappings are unmapped. For every open
-    /// call there will be exactly one release call. The filesystem may reply with an
-    /// error, but error values are not returned to close() or munmap() which triggered
-    /// the release. fh will contain the value set by the open method, or will be undefined
-    /// if the open method didn't set any value. flags will contain the same flags as for
+    /// call there will be exactly one release call. The filesystem may return an
+    /// error, but error values are not returned to `close()` or `munmap()` which triggered
+    /// the release. `fh` will contain the value set by the open method, or will be undefined
+    /// if the open method didn't set any value. `flags` will contain the same flags as for
     /// open.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn release(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -626,8 +645,9 @@ pub trait Filesystem {
     }
 
     /// Synchronize file contents.
-    /// If the datasync parameter is non-zero, then only the user data should be flushed,
+    /// If the `datasync` parameter is non-zero, then only the user data should be flushed,
     /// not the meta data.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn fsync(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, fh: u64, datasync: bool) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] fsync(ino: {:#x?}, fh: {}, datasync: {})",
@@ -637,12 +657,13 @@ pub trait Filesystem {
     }
 
     /// Open a directory.
-    /// Filesystem may store an arbitrary file handle (pointer, index, etc) in fh, and
+    /// Filesystem may store an arbitrary file handle (pointer, index, etc) in `Open.fh`, and
     /// use this in other all other directory stream operations (readdir, releasedir,
     /// fsyncdir). Filesystem may also implement stateless directory I/O and not store
-    /// anything in fh, though that makes it impossible to implement standard conforming
+    /// anything in `Open.fh`, though that makes it impossible to implement standard conforming
     /// directory stream operations in case the contents of the directory can change
     /// between opendir and releasedir.
+    /// The method should return `Ok(Open)` on success, or `Err(errno)` otherwise.
     fn opendir(&mut self, #[allow(unused_variables)] req: RequestMeta, _ino: u64, _flags: i32) -> Result<Open, Errno> {
         warn!("[Not Implemented] open(ino: {:#x?}, flags: {})", _ino, _flags);
         Err(Errno::ENOSYS)
@@ -650,10 +671,11 @@ pub trait Filesystem {
     }
 
     /// Read directory.
-    /// Send a buffer filled with entries, with size not exceeding the
-    /// requested size. Send an empty buffer on end of stream. fh will contain the
-    /// value set by the opendir method, or will be undefined if the opendir method
-    /// didn't set any value.
+    /// The filesystem should return a buffer filled with directory entries. The buffer
+    /// must not exceed the `max_bytes` parameter. An empty buffer indicates the end of
+    /// the stream. `fh` will contain the value set by the opendir method, or will be
+    /// undefined if the opendir method didn't set any value.
+    /// The method should return `Ok(Vec<DirEntry>)` with the directory entries, or `Err(errno)` otherwise.
     fn readdir(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -670,10 +692,12 @@ pub trait Filesystem {
     }
 
     /// Read directory.
-    /// Send a buffer filled entries, with size not exceeding the
-    /// requested size. Send an empty buffer on end of stream. fh will contain the
-    /// value set by the opendir method, or will be undefined if the opendir method
-    /// didn't set any value.
+    /// Similar to `readdir`, but also returns the attributes of each directory entry.
+    /// The filesystem should return a buffer filled with directory entries and their attributes.
+    /// The buffer must not exceed the `max_bytes` parameter. An empty buffer indicates the end of
+    /// the stream. `fh` will contain the value set by the opendir method, or will be
+    /// undefined if the opendir method didn't set any value.
+    /// The method should return `Ok(Vec<(DirEntry, Entry)>)` with the directory entries and their attributes, or `Err(errno)` otherwise.
     #[cfg(feature = "abi-7-21")]
     fn readdirplus(
         &mut self,
@@ -691,9 +715,10 @@ pub trait Filesystem {
     }
 
     /// Release an open directory.
-    /// For every opendir call there will be exactly one releasedir call. fh will
+    /// For every opendir call there will be exactly one releasedir call. `fh` will
     /// contain the value set by the opendir method, or will be undefined if the
     /// opendir method didn't set any value.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn releasedir(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -705,9 +730,10 @@ pub trait Filesystem {
     }
 
     /// Synchronize directory contents.
-    /// If the datasync parameter is set, then only the directory contents should
-    /// be flushed, not the meta data. fh will contain the value set by the opendir
+    /// If the `datasync` parameter is set, then only the directory contents should
+    /// be flushed, not the meta data. `fh` will contain the value set by the opendir
     /// method, or will be undefined if the opendir method didn't set any value.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn fsyncdir(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -723,6 +749,7 @@ pub trait Filesystem {
     }
 
     /// Get file system statistics.
+    /// The method should return `Ok(Statfs)` with the filesystem statistics, or `Err(errno)` otherwise.
     fn statfs(&mut self, #[allow(unused_variables)] req: RequestMeta, _ino: u64) -> Result<Statfs, Errno> {
         warn!("[Not Implemented] statfs(ino: {:#x?})", _ino);
         Err(Errno::ENOSYS)
@@ -730,6 +757,7 @@ pub trait Filesystem {
     }
 
     /// Set an extended attribute.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn setxattr(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -747,9 +775,10 @@ pub trait Filesystem {
     }
 
     /// Get an extended attribute.
-    /// If `size` is 0, the size of the value should be sent with `Xattr::size()`.
-    /// If `size` is not 0, and the value fits, send it with `Xattr::data()`, or
-    /// `Err(Errno::ERANGE)` if it doesn't.
+    /// If `size` is 0, the size of the value should be returned in `Xattr::Size(u32)`.
+    /// If `size` is not 0, and the value fits, the value should be returned in `Xattr::Data(Vec<u8>)`.
+    /// If the value does not fit, `Err(Errno::ERANGE)` should be returned.
+    /// The method should return `Ok(Xattr)` on success, or `Err(errno)` otherwise.
     fn getxattr(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -765,9 +794,10 @@ pub trait Filesystem {
     }
 
     /// List extended attribute names.
-    /// If `size` is 0, the size of the value should be sent with `Xattr::size()`.
-    /// If `size` is not 0, and the value fits, send it with `Xattr::data()`, or
-    /// `Err(Errno::ERANGE)` if it doesn't.
+    /// If `size` is 0, the size of the names list should be returned in `Xattr::Size(u32)`.
+    /// If `size` is not 0, and the names list fits, it should be returned in `Xattr::Data(Vec<u8>)`.
+    /// If the list does not fit, `Err(Errno::ERANGE)` should be returned.
+    /// The method should return `Ok(Xattr)` on success, or `Err(errno)` otherwise.
     fn listxattr(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -782,6 +812,7 @@ pub trait Filesystem {
     }
 
     /// Remove an extended attribute.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn removexattr(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -796,9 +827,10 @@ pub trait Filesystem {
     }
 
     /// Check file access permissions.
-    /// This will be called for the access() system call. If the 'default_permissions'
+    /// This will be called for the `access()` system call. If the 'default_permissions'
     /// mount option is given, this method is not called. This method is not called
     /// under Linux kernel versions 2.4.x
+    /// The method should return `Ok(())` if access is allowed, or `Err(errno)` otherwise.
     fn access(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, mask: i32) -> Result<(), Errno> {
         warn!("[Not Implemented] access(ino: {:#x?}, mask: {})", ino, mask);
         Err(Errno::ENOSYS)
@@ -806,14 +838,15 @@ pub trait Filesystem {
 
     /// Create and open a file.
     /// If the file does not exist, first create it with the specified mode, and then
-    /// open it. You can use any open flags in the flags parameter except O_NOCTTY.
+    /// open it. You can use any open flags in the `flags` parameter except `O_NOCTTY`.
     /// The filesystem can store any type of file handle (such as a pointer or index)
-    /// in fh, which can then be used across all subsequent file operations including
+    /// in `Open.fh`, which can then be used across all subsequent file operations including
     /// read, write, flush, release, and fsync. Additionally, the filesystem may set
-    /// certain flags like direct_io and keep_cache to change the way the file is
-    /// opened. See fuse_file_info structure in <fuse_common.h> for more details. If
+    /// certain flags like `direct_io` and `keep_cache` in `Open.flags` to change the way the file is
+    /// opened. See `fuse_file_info` structure in `<fuse_common.h>` for more details. If
     /// this method is not implemented or under Linux kernel versions earlier than
-    /// 2.6.15, the mknod() and open() methods will be called instead.
+    /// 2.6.15, the `mknod()` and `open()` methods will be called instead.
+    /// The method should return `Ok((Entry, Open))` with the new entry's attributes and open file information, or `Err(errno)` otherwise.
     fn create(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -832,6 +865,7 @@ pub trait Filesystem {
     }
 
     /// Test for a POSIX file lock.
+    /// The method should return `Ok(Lock)` with the lock information, or `Err(errno)` otherwise.
     fn getlk(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -852,12 +886,13 @@ pub trait Filesystem {
     }
 
     /// Acquire, modify or release a POSIX file lock.
-    /// For POSIX threads (NPTL) there's a 1-1 relation between pid and owner, but
+    /// For POSIX threads (NPTL) there's a 1-1 relation between `pid` and `owner`, but
     /// otherwise this is not always the case.  For checking lock ownership,
-    /// 'fi->owner' must be used. The l_pid field in 'struct flock' should only be
-    /// used to fill in this field in getlk(). Note: if the locking methods are not
+    /// `fi->owner` must be used. The `l_pid` field in `struct flock` should only be
+    /// used to fill in this field in `getlk()`. Note: if the locking methods are not
     /// implemented, the kernel will still allow file locking to work locally.
     /// Hence these are only interesting for network filesystems and similar.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn setlk(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -880,7 +915,8 @@ pub trait Filesystem {
 
     /// Map block index within file to block index within device.
     /// Note: This makes sense only for block device backed filesystems mounted
-    /// with the 'blkdev' option
+    /// with the 'blkdev' option.
+    /// The method should return `Ok(u64)` with the device block index, or `Err(errno)` otherwise.
     fn bmap(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64, blocksize: u32, idx: u64) -> Result<u64, Errno> {
         warn!(
             "[Not Implemented] bmap(ino: {:#x?}, blocksize: {}, idx: {})",
@@ -889,7 +925,8 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 
-    /// control device
+    /// Control device.
+    /// The method should return `Ok(Ioctl)` with the ioctl result, or `Err(errno)` otherwise.
     #[cfg(feature = "abi-7-11")]
     fn ioctl(
         &mut self,
@@ -914,7 +951,8 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 
-    /// Poll for events
+    /// Poll for events.
+    /// The method should return `Ok(u32)` with the poll events, or `Err(errno)` otherwise.
     #[cfg(feature = "abi-7-11")]
     fn poll(
         &mut self,
@@ -932,7 +970,8 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 
-    /// Preallocate or deallocate space to a file
+    /// Preallocate or deallocate space to a file.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     fn fallocate(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -950,7 +989,8 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 
-    /// Reposition read/write file offset
+    /// Reposition read/write file offset.
+    /// The method should return `Ok(i64)` with the new offset, or `Err(errno)` otherwise.
     #[cfg(feature = "abi-7-24")]
     fn lseek(
         &mut self,
@@ -967,7 +1007,8 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 
-    /// Copy the specified range from the source inode to the destination inode
+    /// Copy the specified range from the source inode to the destination inode.
+    /// The method should return `Ok(u32)` with the number of bytes copied, or `Err(errno)` otherwise.
     fn copy_file_range(
         &mut self,
         #[allow(unused_variables)] req: RequestMeta,
@@ -989,15 +1030,17 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 
-    /// macOS only: Rename the volume. Set fuse_init_out.flags during init to
-    /// FUSE_VOL_RENAME to enable
+    /// macOS only: Rename the volume. Set `fuse_init_out.flags` during init to
+    /// `FUSE_VOL_RENAME` to enable.
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     #[cfg(target_os = "macos")]
     fn setvolname(&mut self, #[allow(unused_variables)] req: RequestMeta, name: OsStr) -> Result<(), Errno> {
         warn!("[Not Implemented] setvolname(name: {:?})", name);
         Err(Errno::ENOSYS);
     }
 
-    /// macOS only (undocumented)
+    /// macOS only (undocumented).
+    /// The method should return `Ok(())` on success, or `Err(errno)` otherwise.
     #[cfg(target_os = "macos")]
     fn exchange(
         &mut self,
@@ -1016,8 +1059,9 @@ pub trait Filesystem {
         Err(Errno::ENOSYS);
     }
 
-    /// macOS only: Query extended times (bkuptime and crtime). Set fuse_init_out.flags
-    /// during init to FUSE_XTIMES to enable
+    /// macOS only: Query extended times (bkuptime and crtime). Set `fuse_init_out.flags`
+    /// during init to `FUSE_XTIMES` to enable.
+    /// The method should return `Ok(XTimes)` with the extended times, or `Err(errno)` otherwise.
     #[cfg(target_os = "macos")]
     fn getxtimes(&mut self, #[allow(unused_variables)] req: RequestMeta, ino: u64) -> Result<XTimes, Errno> {
         warn!("[Not Implemented] getxtimes(ino: {:#x?})", ino);
@@ -1026,10 +1070,13 @@ pub trait Filesystem {
 }
 
 /// Mount the given filesystem to the given mountpoint. This function will
-/// not return until the filesystem is unmounted.
+/// block until the filesystem is unmounted.
 ///
-/// Note that you need to lead each option with a separate `"-o"` string.
-#[deprecated(note = "use mount2() instead")]
+/// `filesystem`: The filesystem implementation.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of mount options. Each option needs to be a separate string,
+/// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
+#[deprecated(note = "Use `mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity.")]
 pub fn mount<FS: Filesystem, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,
@@ -1040,9 +1087,13 @@ pub fn mount<FS: Filesystem, P: AsRef<Path>>(
 }
 
 /// Mount the given filesystem to the given mountpoint. This function will
-/// not return until the filesystem is unmounted.
+/// block until the filesystem is unmounted.
 ///
-/// NOTE: This will eventually replace mount(), once the API is stable
+/// `filesystem`: The filesystem implementation.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of `MountOption` enums specifying mount options.
+///
+/// This is the recommended way to mount a FUSE filesystem.
 pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,
@@ -1052,12 +1103,17 @@ pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
     Session::new(filesystem, mountpoint.as_ref(), options).and_then(|mut se| se.run())
 }
 
-/// Mount the given filesystem to the given mountpoint. This function spawns
-/// a background thread to handle filesystem operations while being mounted
-/// and therefore returns immediately. The returned handle should be stored
-/// to reference the mounted filesystem. If it's dropped, the filesystem will
+/// Mount the given filesystem to the given mountpoint in a background thread.
+/// This function spawns a new thread to handle filesystem operations and returns
+/// immediately. The returned `BackgroundSession` handle should be stored to
+/// keep the filesystem mounted. When the handle is dropped, the filesystem will
 /// be unmounted.
-#[deprecated(note = "use spawn_mount2() instead")]
+///
+/// `filesystem`: The filesystem implementation. Must be `Send + 'static`.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of mount options. Each option needs to be a separate string,
+/// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
+#[deprecated(note = "Use `spawn_mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity.")]
 pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,
@@ -1071,13 +1127,17 @@ pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     Session::new(filesystem, mountpoint.as_ref(), options.as_ref()).and_then(|se| se.spawn())
 }
 
-/// Mount the given filesystem to the given mountpoint. This function spawns
-/// a background thread to handle filesystem operations while being mounted
-/// and therefore returns immediately. The returned handle should be stored
-/// to reference the mounted filesystem. If it's dropped, the filesystem will
+/// Mount the given filesystem to the given mountpoint in a background thread.
+/// This function spawns a new thread to handle filesystem operations and returns
+/// immediately. The returned `BackgroundSession` handle should be stored to
+/// keep the filesystem mounted. When the handle is dropped, the filesystem will
 /// be unmounted.
 ///
-/// NOTE: This is the corresponding function to mount2.
+/// `filesystem`: The filesystem implementation. Must be `Send + 'static`.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of `MountOption` enums specifying mount options.
+///
+/// This is the recommended way to mount a FUSE filesystem in the background.
 pub fn spawn_mount2<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,

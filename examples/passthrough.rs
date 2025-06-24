@@ -180,17 +180,18 @@ impl Filesystem for PassthroughFs {
         let (fh, id) = self
             .backing_cache
             .get_or(ino, || {
-                let file = File::open("/etc/os-release")?;
-                // TODO
-                // reply.open_backing(file)
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "TODO"))
+                let _file = File::open("/etc/os-release")?;
+                // TODO: Implement opening the backing file and returning appropriate
+                // information, possibly including a BackingId within the Open struct,
+                // or handle it through other means if fd-passthrough is intended here.
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "TODO: passthrough open not fully implemented"))
             })
             .unwrap();
 
         eprintln!("  -> opened_passthrough({fh:?}, 0, {id:?});\n");
-        // TODO
-        // reply.opened_passthrough(fh, 0, &id);
-        // TODO: implement flags
+        // TODO: Ensure fd-passthrough is correctly set up if intended.
+        // The Open struct would carry necessary info.
+        // TODO: implement flags for Open struct
         Ok(Open{fh: fh, flags: 0 })
     }
 
