@@ -17,7 +17,7 @@ use crate::reply::{ReplyHandler, ReplySender};
 use crate::session::{Session, SessionACL};
 use crate::Filesystem;
 #[cfg(feature = "abi-7-11")]
-use crate::notify::PollHandle;
+use crate::PollHandle;
 use crate::{ll, KernelConfig, Forget};
 
 /// Request data structure

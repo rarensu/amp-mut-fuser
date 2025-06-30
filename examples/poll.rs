@@ -23,7 +23,7 @@ use std::{
 
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
-    FileAttr, FileType, MountOption, PollHandle, RequestMeta, Entry, Attr, DirEntry, Open, Errno, FUSE_ROOT_ID,
+    FileAttr, FileType, MountOption, RequestMeta, Entry, Attr, DirEntry, Open, Errno, FUSE_ROOT_ID,
 };
 
 const NUMFILES: u8 = 16;
@@ -339,7 +339,7 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use fuser::{Filesystem, RequestMeta, PollHandle, Errno};
+    use fuser::{Filesystem, RequestMeta, Errno};
     use std::sync::{Arc, Mutex};
 
     fn setup_test_fs() -> FSelFS {
