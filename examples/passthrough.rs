@@ -4,8 +4,8 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    consts, BackingId, FileAttr, FileType, Filesystem, KernelConfig, MountOption, Attr, DirEntry,
-    Entry, Open, Errno, RequestMeta,
+    consts, BackingId, DirEntryBox, FileAttr, FileType, Filesystem, KernelConfig, MountOption,
+    Attr, DirEntry, Entry, Open, Errno, RequestMeta,
 };
 use std::collections::HashMap;
 use std::ffi::{OsString};
@@ -207,35 +207,34 @@ impl Filesystem for PassthroughFs {
         Ok(())
     }
 
-    fn readdir(
+    fn readdir<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
 
-        let entries = vec![
+        let entries_data = [
             (1, FileType::Directory, "."),
             (1, FileType::Directory, ".."),
             (2, FileType::RegularFile, "passthrough"),
         ];
-        let mut result=Vec::new();
 
-        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-            // i + 1 means the index of the next entry
-            result.push(DirEntry {
-                ino: entry.0,
-                offset: i as i64 + 1,
-                kind: entry.1,
-                name: OsString::from(entry.2),
+        let mut result_vec = Vec::new();
+        for (idx, &(ino_val, kind_val, name_val)) in entries_data.iter().enumerate().skip(offset as usize) {
+            result_vec.push(DirEntry {
+                ino: ino_val,
+                offset: (idx + 1) as i64, // offset is 1-based index of next entry
+                kind: kind_val,
+                name: OsString::from(name_val),
             });
         }
-        Ok(result)
+        Ok(DirEntryBox::from(result_vec))
     }
 }
 

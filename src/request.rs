@@ -266,7 +266,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(data)=> {
-                        self.replyhandler.data(&data)
+                        self.replyhandler.data(data.as_ref())
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
@@ -415,7 +415,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(data)=> {
-                        self.replyhandler.data(&data)
+                        self.replyhandler.data(data.as_ref())
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
@@ -517,7 +517,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(entries)=> {
-                        self.replyhandler.dir(entries, x.size() as usize)
+                        self.replyhandler.dir(entries.as_ref(), x.size() as usize)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
@@ -832,7 +832,7 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(entries)=> {
-                        self.replyhandler.dirplus(entries, x.size() as usize)
+                        self.replyhandler.dirplus(entries.as_ref(), x.size() as usize)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)

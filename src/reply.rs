@@ -114,7 +114,7 @@ pub struct Attr {
     pub ttl: Duration
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// File entry response data
 pub struct Entry {
     /// Describes a file
@@ -125,7 +125,7 @@ pub struct Entry {
     pub generation: u64
 }
 
-#[derive(Debug)] //TODO #[derive(Copy)]
+#[derive(Debug, Clone)] //TODO #[derive(Copy)]
 /// Open file handle response data
 pub struct Open {
     /// File handle for the opened file
@@ -166,7 +166,7 @@ pub struct Statfs {
     pub frsize: u32
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// Directory listing response data
 pub struct DirEntry {
     /// file inode number
@@ -194,13 +194,19 @@ pub struct Lock {
     pub pid: u32, 
 }
 
+use crate::ByteBox;
+
+/// `Xattr` represents the response for extended attribute operations (`getxattr`, `listxattr`).
+/// It can either indicate the size of the attribute data or provide the data itself
+/// using `ByteBox` for flexible ownership.
 #[derive(Debug)]
-/// Extended attribute response data
-pub enum Xattr{
-    /// Reply to a request with the size of the xattr.
+pub enum Xattr<'a> {
+    /// Indicates the size of the extended attribute data. Used when the caller
+    /// provides a zero-sized buffer to query the required buffer size.
     Size(u32),
-    /// Reply to a request with the data in the xattr.
-    Data(Vec<u8>)
+    /// Contains the extended attribute data. `ByteBox` allows this data to be
+    /// returned via a zero-copy borrow or an owned allocation.
+    Data(ByteBox<'a>),
 }
 
 #[cfg(feature = "abi-7-11")]
@@ -362,16 +368,16 @@ impl ReplyHandler {
     /// Reply to a request with a filled directory buffer
     pub fn dir(
         self,
-        entries: Vec<DirEntry>,
+        entries: &[DirEntry],
         size: usize
     ) {
         let mut buf = DirEntList::new(size);
-        for item in entries.into_iter() {
+        for item in entries.iter() { // Iterate over slice
             let full= buf.push(&ll_DirEntry::new(
                 INodeNo(item.ino),
                 DirEntOffset(item.offset),
                 item.kind,
-                item.name
+                item.name.clone()
             ));
             if full {
                 break;
@@ -384,16 +390,16 @@ impl ReplyHandler {
     // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
         self,
-        entries: Vec<(DirEntry, Entry)>,
+        entries: &[(DirEntry, Entry)], // Accept a slice
         size: usize
     ) {
         let mut buf = DirEntPlusList::new(size);
-        for (item, plus) in entries.into_iter() {
+        for (item, plus) in entries.iter() { // Iterate over slice
             let full = buf.push(&DirEntryPlus::new(
                 INodeNo(item.ino),
                 Generation(plus.generation),
                 DirEntOffset(item.offset),
-                item.name,
+                item.name.clone(),
                 plus.ttl,
                 plus.attr.into(),
                 plus.ttl,
@@ -406,11 +412,11 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with extended attributes.
-    pub fn xattr(self, reply: Xattr){
-        match reply{
-            Xattr::Size(s)=>self.xattr_size(s),
-            Xattr::Data(d)=>self.xattr_data(d)
-        };
+    pub fn xattr(self, reply: Xattr<'_>) {
+        match reply {
+            Xattr::Size(s) => self.xattr_size(s),
+            Xattr::Data(d) => self.xattr_data(d),
+        }
     }
 
     /// Reply to a request with the size of an xattr result.
@@ -419,8 +425,8 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with the data in an xattr result.
-    pub fn xattr_data(self, data: Vec<u8>) {
-        self.send_ll(&ll::Response::new_slice(&data))
+    pub fn xattr_data(self, data: ByteBox<'_>) {
+        self.send_ll(&ll::Response::new_slice(data.as_ref()))
     }
 
     #[cfg(feature = "abi-7-24")]
@@ -879,7 +885,7 @@ mod test {
                 name: OsString::from("world.rs"),
             }
         );
-        replyhandler.dir(entries, std::mem::size_of::<u8>()*128);
+        replyhandler.dir(&entries, std::mem::size_of::<u8>()*128);
     }
 
 
@@ -904,7 +910,8 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.xattr(Xattr::Data([0x11, 0x22, 0x33, 0x44].to_vec()));
+        let data_vec = vec![0x11, 0x22, 0x33, 0x44];
+        replyhandler.xattr(Xattr::Data(ByteBox::from(data_vec)));
     }
 
     impl super::ReplySender for SyncSender<()> {

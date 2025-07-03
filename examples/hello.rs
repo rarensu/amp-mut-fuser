@@ -1,6 +1,6 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    Filesystem, MountOption, Attr, DirEntry,
+    ByteBox, DirEntryBox, Filesystem, MountOption, Attr, DirEntry,
     Entry, Errno, RequestMeta, FileType, FileAttr
 };
 use std::ffi::{OsStr, OsString};
@@ -70,7 +70,7 @@ impl Filesystem for HelloFS {
         }
     }
 
-    fn read(
+    fn read<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -79,22 +79,31 @@ impl Filesystem for HelloFS {
         _size: u32,
         _flags: i32,
         _lock: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         if ino == 2 {
-            Ok(HELLO_TXT_CONTENT.as_bytes()[offset as usize..].to_vec())
+            // HELLO_TXT_CONTENT is &'static str, so its bytes are &'static [u8]
+            // We can borrow this directly.
+            let bytes = HELLO_TXT_CONTENT.as_bytes();
+            let slice_len = bytes.len();
+            let offset = offset as usize;
+            if offset >= slice_len {
+                Ok(ByteBox::Borrowed(&[]))
+            } else {
+                Ok(ByteBox::Borrowed(&bytes[offset..]))
+            }
         } else {
             Err(Errno::ENOENT)
         }
     }
 
-    fn readdir(
+    fn readdir<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
@@ -110,7 +119,7 @@ impl Filesystem for HelloFS {
             // example loop where additional logic could be inserted
             result.push(entry);
         }
-        Ok(result)
+        Ok(DirEntryBox::from(result)) // Convert Vec<DirEntry> to DirEntryBox
     }
 }
 
