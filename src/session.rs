@@ -68,9 +68,12 @@ pub struct Session<FS: Filesystem> {
     pub(crate) initialized: bool,
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: bool,
-    /// Receiver for poll events from the filesystem, if channel-based polling is active.
+    /// Sender for poll events to the filesystem (cloned and passed to Filesystem).
     #[cfg(feature = "abi-7-11")]
-    pub(crate) poll_event_receiver: Option<Receiver<(u64, u32)>>,
+    pub(crate) poll_event_sender: Sender<(u64, u32)>,
+    /// Receiver for poll events from the filesystem.
+    #[cfg(feature = "abi-7-11")]
+    pub(crate) poll_event_receiver: Receiver<(u64, u32)>,
 }
 
 impl<FS: Filesystem> AsFd for Session<FS> {
@@ -112,6 +115,8 @@ impl<FS: Filesystem> Session<FS> {
             SessionACL::Owner
         };
 
+        // Make new_session mutable only if abi-7-11 is enabled, as fields are set later.
+        #[cfg(not(feature = "abi-7-11"))]
         let new_session = Session {
             filesystem,
             ch,
@@ -122,26 +127,34 @@ impl<FS: Filesystem> Session<FS> {
             proto_minor: 0,
             initialized: false,
             destroyed: false,
+        };
+        #[cfg(feature = "abi-7-11")]
+        let mut new_session = Session {
+            filesystem,
+            ch,
+            mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
+            allowed,
+            session_owner: geteuid().as_raw(),
+            proto_major: 0,
+            proto_minor: 0,
+            initialized: false,
+            destroyed: false,
+            // For abi-7-11, these fields need a value. We create a new channel
+            // and assign its sender and receiver parts.
             #[cfg(feature = "abi-7-11")]
-            poll_event_receiver: None, // Will be initialized below if applicable
+            poll_event_sender: crossbeam_channel::unbounded().0,
+            #[cfg(feature = "abi-7-11")]
+            poll_event_receiver: crossbeam_channel::unbounded().1,
         };
 
         #[cfg(feature = "abi-7-11")]
         {
-            if let Some(poll_data_arc) = new_session.filesystem.poll_data() {
-                let (tx, rx) = crossbeam_channel::unbounded();
-                match poll_data_arc.lock() {
-                    Ok(mut poll_data) => {
-                        poll_data.set_ready_events_sender(tx);
-                        new_session.poll_event_receiver = Some(rx);
-                        info!("Session initialized with channel-based poll mechanism.");
-                    }
-                    Err(e) => {
-                        error!("Failed to lock PollData during session setup: {}. Channel-based polling will be disabled.", e);
-                    }
-                }
-            }
+            // Ensure sender and receiver are from the *same* channel.
+            let (tx, rx) = crossbeam_channel::unbounded();
+            new_session.poll_event_sender = tx;
+            new_session.poll_event_receiver = rx;
         }
+        // The call to filesystem.init_poll_sender will be done in BackgroundSession::new or Session::run
 
         Ok(new_session)
     }
@@ -150,6 +163,8 @@ impl<FS: Filesystem> Session<FS> {
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
         let ch = Channel::new(Arc::new(fd.into()));
+
+        #[cfg(not(feature = "abi-7-11"))]
         let new_session = Session {
             filesystem,
             ch,
@@ -160,26 +175,31 @@ impl<FS: Filesystem> Session<FS> {
             proto_minor: 0,
             initialized: false,
             destroyed: false,
-            #[cfg(feature = "abi-7-11")]
-            poll_event_receiver: None, // Initialized below
+        };
+
+        #[cfg(feature = "abi-7-11")]
+        let mut new_session = Session {
+            filesystem,
+            ch,
+            mount: Arc::new(Mutex::new(None)),
+            allowed: acl,
+            session_owner: geteuid().as_raw(),
+            proto_major: 0,
+            proto_minor: 0,
+            initialized: false,
+            destroyed: false,
+            poll_event_sender: crossbeam_channel::unbounded().0, // Placeholder
+            poll_event_receiver: crossbeam_channel::unbounded().1, // Placeholder
         };
 
         #[cfg(feature = "abi-7-11")]
         {
-            if let Some(poll_data_arc) = new_session.filesystem.poll_data() {
-                let (tx, rx) = crossbeam_channel::unbounded();
-                match poll_data_arc.lock() {
-                    Ok(mut poll_data) => {
-                        poll_data.set_ready_events_sender(tx);
-                        new_session.poll_event_receiver = Some(rx);
-                        info!("Session (from_fd) initialized with channel-based poll mechanism.");
-                    }
-                    Err(e) => {
-                        error!("Failed to lock PollData during session (from_fd) setup: {}. Channel-based polling will be disabled.", e);
-                    }
-                }
-            }
+            // Ensure sender and receiver are from the *same* channel.
+            let (tx, rx) = crossbeam_channel::unbounded();
+            new_session.poll_event_sender = tx;
+            new_session.poll_event_receiver = rx;
         }
+        // The call to filesystem.init_poll_sender will be done in BackgroundSession::new or Session::run
         new_session
     }
 
@@ -304,30 +324,43 @@ impl BackgroundSession {
     /// the filesystem is unmounted and the given session ends.
     pub fn new<FS: Filesystem + Send + 'static>(mut se: Session<FS>) -> io::Result<BackgroundSession> {
         #[cfg(feature = "abi-7-11")]
-        let channel_sender = se.ch.sender();
+        {
+            // Pass the sender to the filesystem.
+            if let Err(e) = se.filesystem.init_poll_sender(se.poll_event_sender.clone()) {
+                // Log an error if the filesystem explicitely states it does not support polling.
+                // ENOSYS is the default from the trait if not implemented.
+                if e.raw_os_error() != Some(libc::ENOSYS) {
+                    warn!("Filesystem failed to initialize poll sender: {:?}. Channel-based polling might not work as expected.", e);
+                } else {
+                    info!("Filesystem does not implement init_poll_sender (ENOSYS). Assuming no channel-based poll support or uses legacy poll.");
+                }
+                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
+                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
+                // but it might not receive anything if FS doesn't use the sender.
+            }
+        }
+
         #[cfg(feature = "abi-7-11")]
-        let poll_event_receiver = se.poll_event_receiver.take(); // Take the receiver
+        let poll_event_receiver_for_loop = se.poll_event_receiver; // Receiver is moved into the poll_event_loop_guard's thread
 
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
 
+        // The main session (se) is moved into this thread.
         let main_loop_guard = thread::spawn(move || {
             se.run()
         });
 
         #[cfg(feature = "abi-7-11")]
-        let poll_event_loop_guard = if let Some(receiver) = poll_event_receiver {
-            let notifier = Notifier::new(channel_sender.clone());
+        let poll_event_loop_guard = {
+            // Note: se.ch.sender() is used for the notifier, se.poll_event_receiver for this loop.
+            let notifier = Notifier::new(se.ch.sender().clone()); // Notifier needs its own sender clone
             info!("Spawning poll event notification thread.");
             Some(thread::spawn(move || {
                 loop {
-                    match receiver.recv() {
+                    match poll_event_receiver_for_loop.recv() { // uses moved receiver
                         Ok((ph, _events)) => {
-                            // _events could be used in the future if fuse_notify_poll_wakeup_with_events is available/used
-                            // For now, Notifier::poll just takes ph.
                             if let Err(e) = notifier.poll(ph) {
-                                error!("Failed to send poll notification for ph {}: {}", ph, e);
-                                // Depending on the error, we might want to break or attempt to re-establish.
-                                // For now, just log and continue.
+                                log::error!("Failed to send poll notification for ph {}: {}", ph, e);
                                 if e.kind() == io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(libc::ENODEV) {
                                     warn!("Poll notification channel broken, exiting poll event loop.");
                                     break;
@@ -337,23 +370,21 @@ impl BackgroundSession {
                             }
                         }
                         Err(e) => {
-                            // Channel disconnected
                             info!("Poll event channel disconnected: {}. Exiting poll event loop.", e);
                             break;
                         }
                     }
                 }
             }))
-        } else {
-            None
         };
+        // No explicit poll_event_loop_guard = None for the else case, as the field itself is conditional in BackgroundSession
 
         Ok(BackgroundSession {
             main_loop_guard,
             #[cfg(feature = "abi-7-11")]
             poll_event_loop_guard,
             #[cfg(feature = "abi-7-11")]
-            sender: channel_sender,
+            sender: se.ch.sender(), // This sender is for the Notifier on BackgroundSession
             _mount: mount,
         })
     }
@@ -363,7 +394,7 @@ impl BackgroundSession {
             main_loop_guard,
             #[cfg(feature = "abi-7-11")]
             poll_event_loop_guard,
-            #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "abi-7-11")] // sender is conditionally present
             sender: _,
             _mount,
         } = self;
@@ -389,9 +420,10 @@ impl fmt::Debug for BackgroundSession {
         let mut builder = f.debug_struct("BackgroundSession");
         builder.field("main_loop_guard", &self.main_loop_guard);
         #[cfg(feature = "abi-7-11")]
-        builder.field("poll_event_loop_guard", &self.poll_event_loop_guard);
-        #[cfg(feature = "abi-7-11")]
-        builder.field("sender", &self.sender);
+        {
+            builder.field("poll_event_loop_guard", &self.poll_event_loop_guard);
+            builder.field("sender", &self.sender);
+        }
         builder.field("_mount", &self._mount);
         builder.finish()
     }

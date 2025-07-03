@@ -8,36 +8,23 @@ use crossbeam_channel::Sender;
 pub struct PollData {
     /// Sender part of the MPMC channel for (poll_handle, events_bitmask).
     /// This is used by the filesystem logic to send readiness events.
-    pub ready_events_sender: Option<Sender<(u64, u32)>>, // Made public for tests if needed, though primarily set via methods
+    pub ready_events_sender: Option<Sender<(u64, u32)>>,
     /// Stores registered poll handles.
     /// Maps a kernel poll handle (`u64`) to a tuple of (inode, requested_events).
     /// This allows us to know which inode and which events a poll handle is interested in.
-    #[cfg(test)] // Or make it fully public if tests are in a different crate/module setup
     pub registered_poll_handles: HashMap<u64, (u64, u32)>,
-    #[cfg(not(test))]
-    registered_poll_handles: HashMap<u64, (u64, u32)>,
     /// Stores active poll handles for a given inode.
     /// Maps an inode (`u64`) to a set of kernel poll handles (`u64`).
     /// This is useful to quickly find all poll handles interested in a particular inode
     /// when that inode's state changes.
-    #[cfg(test)]
     pub inode_poll_handles: HashMap<u64, HashSet<u64>>,
-    #[cfg(not(test))]
-    inode_poll_handles: HashMap<u64, HashSet<u64>>,
     /// Tracks inodes that are currently ready for I/O (e.g., POLLIN).
     /// This set is updated by filesystem operations.
-    #[cfg(test)]
     pub ready_inodes: HashSet<u64>,
-    #[cfg(not(test))]
-    ready_inodes: HashSet<u64>,
 }
 
 impl PollData {
-    /// Creates a new `PollData`.
-    ///
-    /// # Arguments
-    ///
-    /// * `sender`: The sender end of the MPMC channel to notify the session about ready events.
+    /// Creates a new `PollData` instance, optionally with an initial sender.
     pub fn new(sender: Option<Sender<(u64, u32)>>) -> Self {
         PollData {
             ready_events_sender: sender,
@@ -45,6 +32,12 @@ impl PollData {
             inode_poll_handles: HashMap::new(),
             ready_inodes: HashSet::new(),
         }
+    }
+
+    /// Sets or updates the sender for ready events.
+    /// This is typically called by the `Filesystem` implementation when the `Session` provides the sender.
+    pub fn set_sender(&mut self, new_sender: Sender<(u64, u32)>) {
+        self.ready_events_sender = Some(new_sender);
     }
 
     /// Registers a new poll request.

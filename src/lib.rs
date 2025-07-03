@@ -982,8 +982,8 @@ pub trait Filesystem {
     /// implements the new channel-based poll mechanism.
     /// The default implementation returns None, indicating non-support or use of legacy poll.
     #[cfg(feature = "abi-7-11")]
-    fn poll_data(&self) -> Option<SharedPollData> {
-        None
+    fn init_poll_sender(&mut self, _sender: crossbeam_channel::Sender<(u64, u32)>) -> Result<(), Errno> {
+        Err(Errno::ENOSYS) // Default: not supported
     }
 
     /// Preallocate or deallocate space to a file.
@@ -1085,22 +1085,21 @@ pub trait Filesystem {
     }
 }
 
-// Conceptual example of a Filesystem implementation using SharedPollData:
+// Conceptual example of a Filesystem implementation owning PollData:
 //
-// use std::sync::{Arc, Mutex};
 // use crossbeam_channel::Sender;
-// use fuser::{FileType, FileAttr, RequestMeta, Entry, Open, Errno, Filesystem, SharedPollData, PollData};
+// use fuser::{FileType, FileAttr, RequestMeta, Entry, Open, Errno, Filesystem, PollData};
 // use std::time::{Duration, UNIX_EPOCH};
 //
 // struct MyPollableFs {
-//     poll_data_arc: SharedPollData,
-//     // Other FS-specific data, e.g., a map of inodes to their content or state
+//     poll_data: PollData, // Owns PollData directly
+//     // Other FS-specific data
 // }
 //
 // impl MyPollableFs {
-//     fn new(sender: Option<Sender<(u64, u32)>>) -> Self {
+//     fn new() -> Self {
 //         Self {
-//             poll_data_arc: Arc::new(Mutex::new(PollData::new(sender))),
+//             poll_data: PollData::new(None), // Sender will be provided by Session via init_poll_sender
 //             // Initialize other data
 //         }
 //     }
@@ -1110,8 +1109,9 @@ pub trait Filesystem {
 //     // ... other Filesystem methods (init, lookup, getattr, etc.) ...
 //
 //     #[cfg(feature = "abi-7-11")]
-//     fn poll_data(&self) -> Option<SharedPollData> {
-//         Some(Arc::clone(&self.poll_data_arc))
+//     fn init_poll_sender(&mut self, sender: Sender<(u64, u32)>) -> Result<(), Errno> {
+//         self.poll_data.set_sender(sender);
+//         Ok(())
 //     }
 //
 //     #[cfg(feature = "abi-7-11")]
@@ -1124,16 +1124,11 @@ pub trait Filesystem {
 //         events: u32,
 //         _flags: u32,
 //     ) -> Result<u32, Errno> {
-//         let mut poll_data_guard = self.poll_data_arc.lock().map_err(|_| Errno::EIO)?;
-//         // Register the poll handle.
-//         // The `register_poll_handle` method in `PollData` will check if the
-//         // file is already ready and send an immediate notification if necessary.
-//         // It returns an Option<u32> for an initial event mask.
-//         if let Some(initial_events) = poll_data_guard.register_poll_handle(ph, ino, events) {
-//             // If an initial event mask is returned, use it.
+//         // Now poll_data is accessed directly, no Arc<Mutex> lock needed from FS side.
+//         // The PollData methods themselves are responsible for internal consistency if shared (but here it's owned).
+//         if let Some(initial_events) = self.poll_data.register_poll_handle(ph, ino, events) {
 //             Ok(initial_events)
 //         } else {
-//             // Otherwise, signify that no events are immediately ready, and async notification will follow.
 //             Ok(0)
 //         }
 //     }
@@ -1152,17 +1147,13 @@ pub trait Filesystem {
 //         // Actual write logic for `ino`...
 //         let bytes_written = data.len() as u32;
 //
-//         // After writing data, the file might become readable.
-//         // Mark it as ready in PollData. This will trigger notifications.
 //         if bytes_written > 0 {
-//             let mut poll_data_guard = self.poll_data_arc.lock().map_err(|_| Errno::EIO)?;
-//             poll_data_guard.mark_inode_ready(ino, libc::POLLIN as u32);
+//             self.poll_data.mark_inode_ready(ino, libc::POLLIN as u32);
 //         }
 //         Ok(bytes_written)
 //     }
 //
-//     // Similarly, other operations like `read` (if it consumes data and makes file not ready for POLLIN)
-//     // or internal events would call `mark_inode_ready` or `mark_inode_not_ready`.
+//     // ...
 // }
 
 /// Mount the given filesystem to the given mountpoint. This function will
