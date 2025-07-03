@@ -4,7 +4,8 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, RequestMeta, Entry, Attr, Ioctl, Errno, DirEntry,
+    ByteBox, DirEntryBox, FileAttr, FileType, Filesystem, MountOption, RequestMeta, Entry, Attr,
+    Ioctl, Errno, DirEntry,
 };
 use log::debug;
 use std::ffi::{OsStr, OsString};
@@ -88,31 +89,39 @@ impl Filesystem for FiocFS {
         }
     }
 
-    fn read(
+    fn read<'a>( // Use the generic lifetime 'a from the trait
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
-        _size: u32,
+        _size: u32, // _size is available from the request if needed
         _flags: i32,
         _lock: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         if ino == 2 {
-            Ok(self.content[offset as usize..].to_vec())
+            let offset = offset as usize;
+            if offset >= self.content.len() {
+                // Return owned empty ByteBox, 'a is not tied to self here
+                Ok(ByteBox::from(Vec::new()))
+            } else {
+                // Create a Vec from the slice and return an owned ByteBox
+                // This satisfies 'a as it's effectively 'static w.r.t. self's borrow
+                Ok(ByteBox::from(self.content[offset..].to_vec()))
+            }
         } else {
             Err(Errno::ENOENT)
         }
     }
 
-    fn readdir(
+    fn readdir<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
@@ -128,7 +137,7 @@ impl Filesystem for FiocFS {
             // example loop where additional logic could be inserted
             result.push(entry);
         }
-        Ok(result)
+        Ok(DirEntryBox::from(result))
     }
 
     #[cfg(feature = "abi-7-11")]

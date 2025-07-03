@@ -20,7 +20,8 @@ use std::{
 use clap::Parser;
 
 use fuser::{
-    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption, RequestMeta, FUSE_ROOT_ID
+    Attr, DirEntry, DirEntryBox, Entry, Errno, FileAttr, FileType, Filesystem, Forget,
+    MountOption, RequestMeta, FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
@@ -100,20 +101,20 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn readdir(
+    fn readdir<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
-        let mut entries = Vec::new();
+        let mut entries_vec = Vec::new();
         if offset == 0 {
-            entries.push(DirEntry {
+            entries_vec.push(DirEntry {
                 ino: ClockFS::FILE_INO,
                 offset: 1, // Next offset is 1
                 kind: FileType::RegularFile,
@@ -121,7 +122,7 @@ impl Filesystem for ClockFS<'_> {
             });
         }
         // If offset is > 0, we've already returned the single entry, so return an empty vector.
-        Ok(entries)
+        Ok(DirEntryBox::from(entries_vec))
     }
 }
 

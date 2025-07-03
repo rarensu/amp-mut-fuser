@@ -20,7 +20,8 @@ use std::{
 use clap::Parser;
 
 use fuser::{
-    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption, Open, RequestMeta, FUSE_ROOT_ID
+    consts, Attr, ByteBox, DirEntry, DirEntryBox, Entry, Errno, FileAttr, FileType, Filesystem,
+    Forget, MountOption, Open, RequestMeta, FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
@@ -99,20 +100,20 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn readdir(
+    fn readdir<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
-        let mut entries = Vec::new();
+        let mut entries_vec = Vec::new();
         if offset == 0 {
-            entries.push(DirEntry {
+            entries_vec.push(DirEntry {
                 ino: ClockFS::FILE_INO,
                 offset: 1, // Next offset
                 kind: FileType::RegularFile,
@@ -120,7 +121,7 @@ impl Filesystem for ClockFS<'_> {
             });
         }
         // If offset is > 0, we've already returned the single entry, so return an empty vector.
-        Ok(entries)
+        Ok(DirEntryBox::from(entries_vec))
     }
 
     fn open(&mut self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
@@ -139,7 +140,7 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn read(
+    fn read<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -148,33 +149,34 @@ impl Filesystem for ClockFS<'_> {
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         assert!(ino == Self::FILE_INO);
         if offset < 0 {
             return Err(Errno::EINVAL);
         }
-        let file = self.file_contents.lock().unwrap();
-        let filedata = file.as_bytes();
+        let file_guard = self.file_contents.lock().unwrap();
+        let filedata = file_guard.as_bytes();
         let dlen: i64 = filedata.len().try_into().map_err(|_| Errno::EIO)?; // EIO if size doesn't fit i64
 
         let start_offset: usize = offset.try_into().map_err(|_| Errno::EINVAL)?;
-        if start_offset > filedata.len() {
-             return Ok(Vec::new()); // Read past EOF
-        }
 
-        let end_offset: usize = (offset + i64::from(size))
-            .min(dlen) // cap at file length
-            .try_into()
-            .map_err(|_| Errno::EINVAL)?; // Should not fail if dlen fits usize
-
-        let actual_end = std::cmp::min(end_offset, filedata.len());
+        let data_to_return = if start_offset > filedata.len() {
+            Vec::new() // Read past EOF
+        } else {
+            let end_offset: usize = (offset + i64::from(size))
+                .min(dlen) // cap at file length
+                .try_into()
+                .map_err(|_| Errno::EINVAL)?; // Should not fail if dlen fits usize
+            let actual_end = std::cmp::min(end_offset, filedata.len());
+            filedata[start_offset..actual_end].to_vec()
+        };
 
         eprintln!(
             "read returning {} bytes at offset {}",
-            actual_end.saturating_sub(start_offset),
+            data_to_return.len(),
             offset
         );
-        Ok(filedata[start_offset..actual_end].to_vec())
+        Ok(ByteBox::from(data_to_return))
     }
 }
 

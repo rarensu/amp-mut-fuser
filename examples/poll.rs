@@ -23,7 +23,8 @@ use std::{
 
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
-    FileAttr, FileType, MountOption, RequestMeta, Entry, Attr, DirEntry, Open, Errno, FUSE_ROOT_ID,
+    Attr, ByteBox, DirEntry, DirEntryBox, Entry, Errno, FileAttr, FileType,
+    MountOption, Open, RequestMeta, FUSE_ROOT_ID, // Removed Filesystem import
 };
 
 const NUMFILES: u8 = 16;
@@ -135,14 +136,14 @@ impl fuser::Filesystem for FSelFS {
         }
     }
 
-    fn readdir(
+    fn readdir<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
@@ -151,7 +152,7 @@ impl fuser::Filesystem for FSelFS {
             return Err(Errno::EINVAL);
         };
 
-        let mut entries = Vec::new();
+        let mut entries_vec = Vec::new();
         for idx in start_offset..NUMFILES {
             let ascii_char_val = match idx {
                 0..=9 => b'0' + idx,
@@ -160,7 +161,7 @@ impl fuser::Filesystem for FSelFS {
             };
             let name_bytes = vec![ascii_char_val]; // Byte vector (but just one byte)
             let name = OsString::from_vec(name_bytes);
-            entries.push(DirEntry {
+            entries_vec.push(DirEntry {
                 ino: FSelData::idx_to_ino(idx),
                 offset: (idx + 1).into(),
                 kind: FileType::RegularFile,
@@ -168,7 +169,7 @@ impl fuser::Filesystem for FSelFS {
             });
             // TODO: compare to _max_bytes; stop if full.
         }
-        Ok(entries)
+        Ok(DirEntryBox::from(entries_vec))
     }
 
     fn open(&mut self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
@@ -213,7 +214,7 @@ impl fuser::Filesystem for FSelFS {
         Ok(())
     }
 
-    fn read(
+    fn read<'a>(
         &mut self,
         _req: RequestMeta,
         _ino: u64,
@@ -222,7 +223,7 @@ impl fuser::Filesystem for FSelFS {
         max_size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         let Ok(idx): Result<u8, _> = fh.try_into() else {
             return Err(Errno::EINVAL);
         };
@@ -238,8 +239,8 @@ impl fuser::Filesystem for FSelFS {
             10..=15 => b'A' + idx - 10, // Corrected range
             _ => panic!("idx out of range for NUMFILES"),
         };
-        let data = vec![elt; size.try_into().unwrap()];
-        Ok(data)
+        let data_vec = vec![elt; size.try_into().unwrap()];
+        Ok(ByteBox::from(data_vec))
     }
 
     #[cfg(feature = "abi-7-11")]

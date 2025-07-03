@@ -9,7 +9,8 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Attr, DirEntry, Entry, Errno, Filesystem, Forget, KernelConfig, MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr, FUSE_ROOT_ID
+    Attr, ByteBox, DirEntry, DirEntryBox, Entry, Errno, Filesystem, Forget, KernelConfig,
+    MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr, FUSE_ROOT_ID,
 };
 #[cfg(feature = "abi-7-26")]
 use log::info;
@@ -754,7 +755,7 @@ impl Filesystem for SimpleFS {
         Ok(Attr { attr: final_attrs.into(), ttl: Duration::new(0,0), })
     }
 
-    fn readlink(&mut self, _req: RequestMeta, inode: u64) -> Result<Vec<u8>, Errno> {
+    fn readlink<'a>(&mut self, _req: RequestMeta, inode: u64) -> Result<ByteBox<'a>, Errno> {
         debug!("readlink() called on {:?}", inode);
         let path = self.content_path(inode);
         match File::open(path) {
@@ -765,7 +766,7 @@ impl Filesystem for SimpleFS {
                 };
                 let mut buffer = vec![0; file_size as usize];
                 match file.read_exact(&mut buffer) {
-                    Ok(_) => Ok(buffer),
+                    Ok(_) => Ok(ByteBox::from(buffer)),
                     Err(_) => Err(Errno::EIO), // Or some other appropriate error
                 }
             }
@@ -1397,7 +1398,7 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn read(
+    fn read<'a>(
         &mut self,
         _req: RequestMeta,
         inode: u64,
@@ -1406,7 +1407,7 @@ impl Filesystem for SimpleFS {
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         debug!(
             "read() called on {:?} offset={:?} size={:?}",
             inode, offset, size
@@ -1424,7 +1425,7 @@ impl Filesystem for SimpleFS {
 
             let mut buffer = vec![0; read_size as usize];
             file.read_exact_at(&mut buffer, offset as u64).unwrap();
-            Ok(buffer)
+            Ok(ByteBox::from(buffer))
         } else {
             Err(Errno::ENOENT)
         }
@@ -1531,14 +1532,14 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn readdir(
+    fn readdir<'a>(
         &mut self,
         _req: RequestMeta,
         inode: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
         debug!("readdir() called with {:?}", inode);
         assert!(offset >= 0);
         let entries = match self.get_directory_content(inode) {
@@ -1547,12 +1548,12 @@ impl Filesystem for SimpleFS {
                 return Err(Errno::from_i32(error_code));
             }
         };
-        let mut result=Vec::new();
+        let mut result_vec =Vec::new();
 
         for (index, entry) in entries.iter().skip(offset as usize).enumerate() {
             let (name, (inode, file_type)) = entry;
 
-            result.push(DirEntry {
+            result_vec.push(DirEntry {
                 ino: *inode,
                 offset: offset + index as i64 + 1,
                 kind: (*file_type).into(),
@@ -1560,7 +1561,7 @@ impl Filesystem for SimpleFS {
             });
             // TODO stop if bytes > _max_bytes
         }
-        Ok(result)
+        Ok(DirEntryBox::from(result_vec))
     }
 
     fn releasedir(
@@ -1614,13 +1615,13 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn getxattr(
+    fn getxattr<'a>(
         &mut self,
         request: RequestMeta,
         inode: u64,
         key: OsString,
         size: u32,
-    ) -> Result<Xattr, Errno> {
+    ) -> Result<Xattr<'a>, Errno> {
         if let Ok(attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::R_OK, &attrs, request) {
                 return Err(Errno::from_i32(error));
@@ -1630,7 +1631,8 @@ impl Filesystem for SimpleFS {
                 if size == 0 {
                     return Ok(Xattr::Size(data.len() as u32));
                 } else if data.len() <= size as usize {
-                    return Ok(Xattr::Data(data.to_owned()));
+                    // data is &Vec<u8>, so data.to_owned() is Vec<u8>
+                    return Ok(Xattr::Data(ByteBox::from(data.to_owned())));
                 } else {
                     return Err(Errno::ERANGE);
                 }
@@ -1645,7 +1647,7 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn listxattr(&mut self, _req: RequestMeta, inode: u64, size: u32) -> Result<Xattr, Errno> {
+    fn listxattr<'a>(&mut self, _req: RequestMeta, inode: u64, size: u32) -> Result<Xattr<'a>, Errno> {
         if let Ok(attrs) = self.get_inode(inode) {
             let mut bytes = vec![];
             // Convert to concatenated null-terminated strings
@@ -1656,7 +1658,7 @@ impl Filesystem for SimpleFS {
             if size == 0 {
                 return Ok(Xattr::Size(bytes.len() as u32));
             } else if bytes.len() <= size as usize {
-                return Ok(Xattr::Data(bytes));
+                return Ok(Xattr::Data(ByteBox::from(bytes)));
             } else {
                 return Err(Errno::ERANGE);
             }
@@ -2073,12 +2075,12 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use fuser::{Filesystem, RequestMeta, Errno, TimeOrNow};
+    use fuser::{Filesystem, RequestMeta, Errno}; // Removed TimeOrNow
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::collections::BTreeMap;
     use std::fs::File;
-    use std::io::Write;
+    // Removed std::io::Write
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta { unique: 0, uid: 1000, gid: 1000, pid: 2000 }
@@ -2170,7 +2172,7 @@ mod test {
             let readlink_result = fs.readlink(req, entry.attr.ino);
             assert!(readlink_result.is_ok(), "Readlink should succeed");
             if let Ok(target_data) = readlink_result {
-                assert_eq!(target_data, target.as_os_str().as_bytes(), "Readlink should return the correct target");
+                assert_eq!(target_data.as_ref(), target.as_os_str().as_bytes(), "Readlink should return the correct target");
             }
         }
     }
