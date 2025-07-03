@@ -6,7 +6,9 @@
 //! for filesystem operations under its mount point.
 
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
-use log::{info, warn}; // Removed error, debug
+use log::{info, warn};
+#[cfg(feature = "abi-7-11")]
+use log::{error, debug};
 use nix::unistd::geteuid;
 use std::fmt;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -19,11 +21,11 @@ use crate::ll::fuse_abi as abi;
 use crate::request::Request;
 use crate::Filesystem;
 use crate::MountOption;
-use crate::{channel::Channel, mnt::Mount}; // Removed poll::SharedPollData
+use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::{channel::ChannelSender, notify::Notifier, PollHandle};
 #[cfg(feature = "abi-7-11")]
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Sender, Receiver};
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
@@ -68,7 +70,7 @@ pub struct Session<FS: Filesystem> {
     pub(crate) initialized: bool,
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: bool,
-    /// Sender for poll events to the filesystem (cloned and passed to Filesystem).
+    /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
     #[cfg(feature = "abi-7-11")]
     pub(crate) poll_event_sender: Sender<(u64, u32)>,
     /// Receiver for poll events from the filesystem.
@@ -105,7 +107,7 @@ impl<FS: Filesystem> Session<FS> {
         } else {
             Mount::new(mountpoint, options)?
         };
-
+        // Create the channel for fuse messages
         let ch = Channel::new(file);
         let allowed = if options.contains(&MountOption::AllowRoot) {
             SessionACL::RootAndOwner
@@ -114,9 +116,9 @@ impl<FS: Filesystem> Session<FS> {
         } else {
             SessionACL::Owner
         };
-
-        // Make new_session mutable only if abi-7-11 is enabled, as fields are set later.
-        #[cfg(not(feature = "abi-7-11"))]
+        #[cfg(feature = "abi-7-11")]
+        // Create the channel for poll events.
+        let (pxs, pxr) = crossbeam_channel::unbounded();
         let new_session = Session {
             filesystem,
             ch,
@@ -127,44 +129,22 @@ impl<FS: Filesystem> Session<FS> {
             proto_minor: 0,
             initialized: false,
             destroyed: false,
-        };
-        #[cfg(feature = "abi-7-11")]
-        let mut new_session = Session {
-            filesystem,
-            ch,
-            mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
-            allowed,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
-            // For abi-7-11, these fields need a value. We create a new channel
-            // and assign its sender and receiver parts.
             #[cfg(feature = "abi-7-11")]
-            poll_event_sender: crossbeam_channel::unbounded().0,
+            poll_event_sender: pxs,
             #[cfg(feature = "abi-7-11")]
-            poll_event_receiver: crossbeam_channel::unbounded().1,
+            poll_event_receiver: pxr,
         };
-
-        #[cfg(feature = "abi-7-11")]
-        {
-            // Ensure sender and receiver are from the *same* channel.
-            let (tx, rx) = crossbeam_channel::unbounded();
-            new_session.poll_event_sender = tx;
-            new_session.poll_event_receiver = rx;
-        }
-        // The call to filesystem.init_poll_sender will be done in BackgroundSession::new or Session::run
-
         Ok(new_session)
     }
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
+        // Create the channel for fuse messages
         let ch = Channel::new(Arc::new(fd.into()));
-
-        #[cfg(not(feature = "abi-7-11"))]
+        #[cfg(feature = "abi-7-11")]
+        // Create the channel for poll events.
+        let (pxs, pxr) = crossbeam_channel::unbounded();
         let new_session = Session {
             filesystem,
             ch,
@@ -175,31 +155,11 @@ impl<FS: Filesystem> Session<FS> {
             proto_minor: 0,
             initialized: false,
             destroyed: false,
+            #[cfg(feature = "abi-7-11")]
+            poll_event_sender: pxs,
+            #[cfg(feature = "abi-7-11")]
+            poll_event_receiver: pxr,
         };
-
-        #[cfg(feature = "abi-7-11")]
-        let mut new_session = Session {
-            filesystem,
-            ch,
-            mount: Arc::new(Mutex::new(None)),
-            allowed: acl,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
-            poll_event_sender: crossbeam_channel::unbounded().0, // Placeholder
-            poll_event_receiver: crossbeam_channel::unbounded().1, // Placeholder
-        };
-
-        #[cfg(feature = "abi-7-11")]
-        {
-            // Ensure sender and receiver are from the *same* channel.
-            let (tx, rx) = crossbeam_channel::unbounded();
-            new_session.poll_event_sender = tx;
-            new_session.poll_event_receiver = rx;
-        }
-        // The call to filesystem.init_poll_sender will be done in BackgroundSession::new or Session::run
         new_session
     }
 
@@ -258,6 +218,12 @@ impl<FS: Filesystem> Session<FS> {
     #[cfg(feature = "abi-7-11")]
     pub fn notifier(&self) -> Notifier {
         Notifier::new(self.ch.sender())
+    }
+
+    /// Returns an object that can be used to send poll event notifications
+    #[cfg(feature = "abi-7-11")]
+    pub fn get_poll_sender(&self) -> Sender<(u64, u32)> {
+        self.poll_event_sender.clone()
     }
 }
 
@@ -329,7 +295,7 @@ impl BackgroundSession {
             if let Err(e) = se.filesystem.init_poll_sender(se.poll_event_sender.clone()) {
                 // Log an error if the filesystem explicitely states it does not support polling.
                 // ENOSYS is the default from the trait if not implemented.
-                if e.raw_os_error() != Some(libc::ENOSYS) {
+                if e != crate::Errno::ENOSYS {
                     warn!("Filesystem failed to initialize poll sender: {:?}. Channel-based polling might not work as expected.", e);
                 } else {
                     info!("Filesystem does not implement init_poll_sender (ENOSYS). Assuming no channel-based poll support or uses legacy poll.");
@@ -341,7 +307,11 @@ impl BackgroundSession {
         }
 
         #[cfg(feature = "abi-7-11")]
-        let poll_event_receiver_for_loop = se.poll_event_receiver; // Receiver is moved into the poll_event_loop_guard's thread
+        let poll_event_receiver_for_loop = se.poll_event_receiver.clone(); // Receiver is copied into the poll_event_loop_guard's thread
+        #[cfg(feature = "abi-7-11")]
+        let notifier_for_poll_loop = Notifier::new(se.ch.sender().clone()); // Notifier needs its own sender clone
+        #[cfg(feature = "abi-7-11")]
+        let extra_sender_clone = se.ch.sender().clone();
 
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
 
@@ -353,13 +323,12 @@ impl BackgroundSession {
         #[cfg(feature = "abi-7-11")]
         let poll_event_loop_guard = {
             // Note: se.ch.sender() is used for the notifier, se.poll_event_receiver for this loop.
-            let notifier = Notifier::new(se.ch.sender().clone()); // Notifier needs its own sender clone
             info!("Spawning poll event notification thread.");
             Some(thread::spawn(move || {
                 loop {
-                    match poll_event_receiver_for_loop.recv() { // uses moved receiver
+                    match poll_event_receiver_for_loop.recv() { // uses clone of receiver
                         Ok((ph, _events)) => {
-                            if let Err(e) = notifier.poll(ph) {
+                            if let Err(e) = notifier_for_poll_loop.poll(ph) {
                                 log::error!("Failed to send poll notification for ph {}: {}", ph, e);
                                 if e.kind() == io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(libc::ENODEV) {
                                     warn!("Poll notification channel broken, exiting poll event loop.");
@@ -384,7 +353,7 @@ impl BackgroundSession {
             #[cfg(feature = "abi-7-11")]
             poll_event_loop_guard,
             #[cfg(feature = "abi-7-11")]
-            sender: se.ch.sender(), // This sender is for the Notifier on BackgroundSession
+            sender: extra_sender_clone, // This sender is for the Notifier method on BackgroundSession
             _mount: mount,
         })
     }
