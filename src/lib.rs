@@ -33,6 +33,7 @@ pub use passthrough::BackingId;
 #[cfg(target_os = "macos")]
 pub use reply::XTimes;
 pub use reply::{Entry, Attr, DirEntry, Open, Statfs, Xattr, Lock};
+pub use poll::{PollData, SharedPollData};
 pub use ll::Errno;
 pub use request::RequestMeta;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
@@ -51,6 +52,7 @@ mod passthrough;
 mod reply;
 mod request;
 mod session;
+mod poll;
 
 /// We generally support async reads
 #[cfg(all(not(target_os = "macos"), not(feature = "abi-7-10")))]
@@ -955,6 +957,10 @@ pub trait Filesystem {
 
     /// Poll for events.
     /// The method should return `Ok(u32)` with the poll events, or `Err(Errno)` otherwise.
+    /// With the channel-based polling mechanism, this method is expected to register
+    /// the poll handle (`ph`) with the filesystem's `PollData`.
+    /// It might return an initial set of events if the file is already ready, or 0 otherwise.
+    /// Asynchronous notifications will be sent via the channel.
     #[cfg(feature = "abi-7-11")]
     fn poll(
         &mut self,
@@ -970,6 +976,14 @@ pub trait Filesystem {
             ino, fh, ph, events, flags
         );
         Err(Errno::ENOSYS)
+    }
+
+    /// Returns a shared handle to the PollData structure, if this filesystem
+    /// implements the new channel-based poll mechanism.
+    /// The default implementation returns None, indicating non-support or use of legacy poll.
+    #[cfg(feature = "abi-7-11")]
+    fn poll_data(&self) -> Option<SharedPollData> {
+        None
     }
 
     /// Preallocate or deallocate space to a file.
@@ -1070,6 +1084,86 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 }
+
+// Conceptual example of a Filesystem implementation using SharedPollData:
+//
+// use std::sync::{Arc, Mutex};
+// use crossbeam_channel::Sender;
+// use fuser::{FileType, FileAttr, RequestMeta, Entry, Open, Errno, Filesystem, SharedPollData, PollData};
+// use std::time::{Duration, UNIX_EPOCH};
+//
+// struct MyPollableFs {
+//     poll_data_arc: SharedPollData,
+//     // Other FS-specific data, e.g., a map of inodes to their content or state
+// }
+//
+// impl MyPollableFs {
+//     fn new(sender: Option<Sender<(u64, u32)>>) -> Self {
+//         Self {
+//             poll_data_arc: Arc::new(Mutex::new(PollData::new(sender))),
+//             // Initialize other data
+//         }
+//     }
+// }
+//
+// impl Filesystem for MyPollableFs {
+//     // ... other Filesystem methods (init, lookup, getattr, etc.) ...
+//
+//     #[cfg(feature = "abi-7-11")]
+//     fn poll_data(&self) -> Option<SharedPollData> {
+//         Some(Arc::clone(&self.poll_data_arc))
+//     }
+//
+//     #[cfg(feature = "abi-7-11")]
+//     fn poll(
+//         &mut self,
+//         _req: RequestMeta,
+//         ino: u64,
+//         _fh: u64,
+//         ph: u64,
+//         events: u32,
+//         _flags: u32,
+//     ) -> Result<u32, Errno> {
+//         let mut poll_data_guard = self.poll_data_arc.lock().map_err(|_| Errno::EIO)?;
+//         // Register the poll handle.
+//         // The `register_poll_handle` method in `PollData` will check if the
+//         // file is already ready and send an immediate notification if necessary.
+//         // It returns an Option<u32> for an initial event mask.
+//         if let Some(initial_events) = poll_data_guard.register_poll_handle(ph, ino, events) {
+//             // If an initial event mask is returned, use it.
+//             Ok(initial_events)
+//         } else {
+//             // Otherwise, signify that no events are immediately ready, and async notification will follow.
+//             Ok(0)
+//         }
+//     }
+//
+//     fn write(
+//         &mut self,
+//         _req: RequestMeta,
+//         ino: u64,
+//         _fh: u64,
+//         _offset: i64,
+//         data: Vec<u8>,
+//         _write_flags: u32,
+//         _flags: i32,
+//         _lock_owner: Option<u64>,
+//     ) -> Result<u32, Errno> {
+//         // Actual write logic for `ino`...
+//         let bytes_written = data.len() as u32;
+//
+//         // After writing data, the file might become readable.
+//         // Mark it as ready in PollData. This will trigger notifications.
+//         if bytes_written > 0 {
+//             let mut poll_data_guard = self.poll_data_arc.lock().map_err(|_| Errno::EIO)?;
+//             poll_data_guard.mark_inode_ready(ino, libc::POLLIN as u32);
+//         }
+//         Ok(bytes_written)
+//     }
+//
+//     // Similarly, other operations like `read` (if it consumes data and makes file not ready for POLLIN)
+//     // or internal events would call `mark_inode_ready` or `mark_inode_not_ready`.
+// }
 
 /// Mount the given filesystem to the given mountpoint. This function will
 /// block until the filesystem is unmounted.

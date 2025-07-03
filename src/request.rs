@@ -772,26 +772,26 @@ impl<'a> Request<'a> {
             }
             #[cfg(feature = "abi-7-11")]
             ll::Operation::Poll(x) => {
-                let ph = PollHandle::new(se.ch.sender(), x.kernel_handle());
+                // The Filesystem::poll method is now responsible for registering x.kernel_handle()
+                // with its PollData structure.
+                // It may return an initial event mask if the file is already ready.
                 let response = se.filesystem.poll(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    ph.into(),
+                    x.kernel_handle(), // Pass the raw kernel poll handle
                     x.events(),
                     x.flags()
                 );
                 match response {
-                    Ok(revents)=> {
-                        self.replyhandler.poll(revents)
+                    Ok(initial_revents)=> {
+                        // Reply with any initial events. Asynchronous notifications will follow.
+                        self.replyhandler.poll(initial_revents)
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
                     }
                 }
-                // TODO: register the poll handler
-                // TODO: receive poll data from the application
-                // TODO: use the poll handler to send the data
             }
             #[cfg(feature = "abi-7-15")]
             ll::Operation::NotifyReply(_) => {
