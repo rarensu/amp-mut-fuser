@@ -27,7 +27,7 @@ use fuser::{
     PollData, SharedPollData, Filesystem, // Added PollData, SharedPollData, Filesystem
 };
 #[cfg(feature = "abi-7-11")]
-use crossbeam_channel::Sender; // For PollData initialization
+use crossbeam_channel::{Sender, Receiver}; // For PollData initialization and test setup
 
 const NUMFILES: u8 = 16;
 const MAXBYTES: u64 = 10;
