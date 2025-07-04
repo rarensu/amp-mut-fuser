@@ -450,7 +450,7 @@ mod test {
         let events = libc::POLLIN as u32;
 
         fs.get_data().bytecnt[idx as usize] = 0;
-        fs.get_poll_handler().mark_inode_not_ready(ino); // Ensure PollData also knows it's not ready
+        fs.get_poll_handler().mark_inode_not_ready(ino, libc::POLLIN as u32); // Ensure PollData also knows it's not ready
 
         let result = fs.poll(req, ino, fh, ph, events, 0);
         log::debug!("test_fs_poll_registers_handle_no_initial_event: poll result = {:?}", result);

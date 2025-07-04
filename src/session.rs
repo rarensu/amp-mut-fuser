@@ -73,6 +73,9 @@ pub struct Session<FS: Filesystem> {
     pub(crate) initialized: bool,
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: bool,
+    #[cfg(feature = "abi-7-11")]
+    /// Whether this session currently has poll support
+    pub(crate) poll_enabled: bool,
     /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
     #[cfg(feature = "abi-7-11")]
     pub(crate) poll_event_sender: Sender<(u64, u32)>,
@@ -399,6 +402,26 @@ impl<FS: Filesystem> Session<FS> {
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (pxs, pxr) = crossbeam_channel::unbounded();
+        #[cfg(feature = "abi-7-11")]
+        let mut filesystem = filesystem;
+        // Pass the sender to the filesystem.
+        #[cfg(feature = "abi-7-11")]
+        let poll_enabled = match filesystem.init_poll_sender(pxs.clone()) {
+            Err(e) => {
+                // Log an error if the filesystem explicitely states it does not support polling.
+                // ENOSYS is the default from the trait if not implemented.
+                if e != crate::Errno::ENOSYS {
+                    warn!("Filesystem failed to initialize poll sender: {:?}. Channel-based polling might not work as expected.", e);
+                } else {
+                    info!("Filesystem does not implement init_poll_sender (ENOSYS). Assuming no channel-based poll support or uses legacy poll.");
+                }
+                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
+                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
+                // but it might not receive anything if FS doesn't use the sender.
+                false
+            },
+            Ok(()) => true
+        };
         let new_session = Session {
             filesystem,
             ch,
@@ -409,6 +432,8 @@ impl<FS: Filesystem> Session<FS> {
             proto_minor: 0,
             initialized: false,
             destroyed: false,
+            #[cfg(feature = "abi-7-11")]
+            poll_enabled,
             #[cfg(feature = "abi-7-11")]
             poll_event_sender: pxs,
             #[cfg(feature = "abi-7-11")]
@@ -425,6 +450,25 @@ impl<FS: Filesystem> Session<FS> {
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (pxs, pxr) = crossbeam_channel::unbounded();
+        #[cfg(feature = "abi-7-11")]
+        let mut filesystem = filesystem;
+        #[cfg(feature = "abi-7-11")]
+        let poll_enabled = match filesystem.init_poll_sender(pxs.clone()) {
+            Err(e) => {
+                // Log an error if the filesystem explicitely states it does not support polling.
+                // ENOSYS is the default from the trait if not implemented.
+                if e != crate::Errno::ENOSYS {
+                    warn!("Filesystem failed to initialize poll sender: {:?}. Channel-based polling might not work as expected.", e);
+                } else {
+                    info!("Filesystem does not implement init_poll_sender (ENOSYS). Assuming no channel-based poll support or uses legacy poll.");
+                }
+                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
+                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
+                // but it might not receive anything if FS doesn't use the sender.
+                false
+            },
+            Ok(()) => true
+        };
         Session {
             filesystem,
             ch,
@@ -435,6 +479,8 @@ impl<FS: Filesystem> Session<FS> {
             proto_minor: 0,
             initialized: false,
             destroyed: false,
+            #[cfg(feature = "abi-7-11")]
+            poll_enabled,
             #[cfg(feature = "abi-7-11")]
             poll_event_sender: pxs,
             #[cfg(feature = "abi-7-11")]
@@ -582,34 +628,36 @@ impl<FS: Filesystem> Session<FS> {
 
         loop {
             // 1. Check for and process pending poll events (non-blocking)
-            match self.poll_event_receiver.try_recv() {
-                Ok((kh, events)) => {
-                    // Note: Original plan mentioned calling self.notifier().poll(kh).
-                    // The existing poll loop in BackgroundSession directly calls notifier.poll(ph).
-                    // We'll replicate that behavior.
-                    // The `events` variable from `poll_event_receiver` is not directly used by `Notifier::poll`,
-                    // as `Notifier::poll` only takes `kh`. This matches existing behavior.
-                    debug!("Processing poll event for kh: {}, events: {:x}", kh, events);
-                    if let Err(e) = self.notifier().poll(kh) {
-                        error!("Failed to send poll notification for kh {}: {}", kh, e);
-                        // Decide if error is fatal. ENODEV might mean unmounted.
-                        if e.raw_os_error() == Some(libc::ENODEV) {
-                            warn!("FUSE device not available for poll notification, likely unmounted. Exiting.");
-                            break;
+            if self.poll_enabled {
+                match self.poll_event_receiver.try_recv() {
+                    Ok((kh, events)) => {
+                        // Note: Original plan mentioned calling self.notifier().poll(kh).
+                        // The existing poll loop in BackgroundSession directly calls notifier.poll(ph).
+                        // We'll replicate that behavior.
+                        // The `events` variable from `poll_event_receiver` is not directly used by `Notifier::poll`,
+                        // as `Notifier::poll` only takes `kh`. This matches existing behavior.
+                        debug!("Processing poll event for kh: {}, events: {:x}", kh, events);
+                        if let Err(e) = self.notifier().poll(kh) {
+                            error!("Failed to send poll notification for kh {}: {}", kh, e);
+                            // Decide if error is fatal. ENODEV might mean unmounted.
+                            if e.raw_os_error() == Some(libc::ENODEV) {
+                                warn!("FUSE device not available for poll notification, likely unmounted. Exiting.");
+                                break;
+                            }
                         }
+                        // Continue immediately to prioritize processing all available internal events
+                        continue;
                     }
-                    // Continue immediately to prioritize processing all available internal events
-                    continue;
-                }
-                Err(crossbeam_channel::TryRecvError::Empty) => {
-                    // No poll events pending, proceed to check FUSE FD
-                }
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    // Filesystem's poll event sender side dropped.
-                    // This is not necessarily a fatal error for the session itself,
-                    // as FUSE requests can still be processed.
-                    warn!("Poll event channel disconnected by sender. No more poll events will be processed.");
-                    // We could choose to break or continue; for now, let FUSE requests continue.
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        // No poll events pending, proceed to check FUSE FD
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        // Filesystem's poll event sender side dropped.
+                        // This is not necessarily a fatal error for the session itself,
+                        // as FUSE requests can still be processed.
+                        warn!("Poll event channel disconnected by sender. No more poll events will be processed.");
+                        // We could choose to break or continue; for now, let FUSE requests continue.
+                    }
                 }
             }
 
@@ -631,7 +679,7 @@ impl<FS: Filesystem> Session<FS> {
                     // Timeout with no events on FUSE FD.
                     // And no poll notifications were pending (checked above).
                     // Sleep briefly to yield CPU.
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
                 _ => { // ret > 0, FUSE FD has events
                     if (pollfds[0].revents & libc::POLLIN) != 0 {
@@ -748,23 +796,6 @@ impl BackgroundSession {
     /// the filesystem is unmounted and the given session ends.
     pub fn new<FS: Filesystem + Send + 'static>(mut se: Session<FS>) -> io::Result<BackgroundSession> {
         #[cfg(feature = "abi-7-11")]
-        {
-            // Pass the sender to the filesystem.
-            if let Err(e) = se.filesystem.init_poll_sender(se.get_poll_sender()) {
-                // Log an error if the filesystem explicitely states it does not support polling.
-                // ENOSYS is the default from the trait if not implemented.
-                if e != crate::Errno::ENOSYS {
-                    warn!("Filesystem failed to initialize poll sender: {:?}. Channel-based polling might not work as expected.", e);
-                } else {
-                    info!("Filesystem does not implement init_poll_sender (ENOSYS). Assuming no channel-based poll support or uses legacy poll.");
-                }
-                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
-                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
-                // but it might not receive anything if FS doesn't use the sender.
-            }
-        }
-
-        #[cfg(feature = "abi-7-11")]
         let poll_event_receiver_for_loop = se.poll_event_receiver.clone(); // Receiver is copied into the poll_event_loop_guard's thread
         #[cfg(feature = "abi-7-11")]
         let notifier_for_poll_loop = Notifier::new(se.ch.sender().clone()); // Notifier needs its own sender clone
@@ -773,9 +804,14 @@ impl BackgroundSession {
 
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
 
+        #[cfg(not(feature = "abi-7-11"))]
         // The main session (se) is moved into this thread.
         let main_loop_guard = thread::spawn(move || {
             se.run()
+        });
+        #[cfg(feature = "abi-7-11")]
+        let main_loop_guard = thread::spawn(move || {
+            se.run_single_threaded()
         });
 
         #[cfg(feature = "abi-7-11")]
