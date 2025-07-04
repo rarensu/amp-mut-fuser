@@ -26,6 +26,7 @@ pub struct PollData {
 impl PollData {
     /// Creates a new `PollData` instance, optionally with an initial sender.
     pub fn new(sender: Option<Sender<(u64, u32)>>) -> Self {
+        log::debug!("PollData::new() called, sender is_some: {}", sender.is_some());
         PollData {
             ready_events_sender: sender,
             registered_poll_handles: HashMap::new(),
@@ -37,6 +38,7 @@ impl PollData {
     /// Sets or updates the sender for ready events.
     /// This is typically called by the `Filesystem` implementation when the `Session` provides the sender.
     pub fn set_sender(&mut self, new_sender: Sender<(u64, u32)>) {
+        log::info!("PollData::set_sender() called");
         self.ready_events_sender = Some(new_sender);
     }
 
@@ -57,6 +59,10 @@ impl PollData {
     /// * `Option<u32>`: An initial event mask if the file is already ready, otherwise `None`.
     ///                  This helps in providing an immediate response to the poll syscall if appropriate.
     pub fn register_poll_handle(&mut self, ph: u64, ino: u64, events_requested: u32) -> Option<u32> {
+        log::info!(
+            "PollData::register_poll_handle() called: ph={}, ino={}, events_requested={:#x}",
+            ph, ino, events_requested
+        );
         self.registered_poll_handles.insert(ph, (ino, events_requested));
         self.inode_poll_handles.entry(ino).or_default().insert(ph);
 
@@ -68,16 +74,17 @@ impl PollData {
                 // TODO: Determine actual_events based on file state and events_requested.
                 // For now, just signaling with POLLIN if requested.
                 // TODO: Determine actual_events based on file state and events_requested more accurately.
+                #[cfg(feature = "abi-7-21")]
                 let actual_events = events_requested & libc::POLLIN as u32; // Example: only care about POLLIN
+                #[cfg(not(feature = "abi-7-21"))]
+                let actual_events = libc::POLLIN as u32; // Before abi-7-21, requested events is meaningless
                 if actual_events != 0 {
+                    log::debug!(
+                        "PollData::register_poll_handle() sending initial event: ph={}, actual_events={:#x}",
+                        ph, actual_events
+                    );
                     if sender.send((ph, actual_events)).is_err() {
                         log::warn!("PollData: Failed to send initial poll readiness event for ph {}. Channel might be disconnected.", ph);
-                        // If send fails, it implies the receiver is dropped.
-                        // We could set self.ready_events_sender = None here,
-                        // but a single failure might not warrant it if it's a temporary issue
-                        // or if re-establishment is handled elsewhere.
-                        // For now, just log. A more robust implementation would clear the sender.
-                        // self.ready_events_sender = None; // Optional: aggressively clear sender
                     }
                     return Some(actual_events);
                 }
@@ -95,6 +102,7 @@ impl PollData {
     ///
     /// * `ph`: The kernel poll handle to unregister.
     pub fn unregister_poll_handle(&mut self, ph: u64) {
+        log::info!("PollData::unregister_poll_handle() called: ph={}", ph);
         if let Some((ino, _)) = self.registered_poll_handles.remove(&ph) {
             if let Some(handles) = self.inode_poll_handles.get_mut(&ino) {
                 handles.remove(&ph);
@@ -108,6 +116,7 @@ impl PollData {
     /// Sets or updates the sender for ready events.
     /// Allows for dynamic re-establishment of the communication channel.
     pub fn set_ready_events_sender(&mut self, new_sender: Sender<(u64, u32)>) {
+        log::info!("PollData::set_ready_events_sender() called");
         self.ready_events_sender = Some(new_sender);
     }
 
@@ -118,21 +127,26 @@ impl PollData {
     /// * `ino`: The inode number that has become ready.
     /// * `ready_events`: The bitmask of events that are now active for the inode (e.g., `libc::POLLIN`).
     pub fn mark_inode_ready(&mut self, ino: u64, ready_events_mask: u32) {
+        log::info!(
+            "PollData::mark_inode_ready() called: ino={}, ready_events_mask={:#x}",
+            ino, ready_events_mask
+        );
         self.ready_inodes.insert(ino);
         if let Some(sender) = &self.ready_events_sender {
             if let Some(poll_handles) = self.inode_poll_handles.get(&ino) {
                 for &ph in poll_handles {
-                    if let Some((_ino_of_ph, requested_events)) = self.registered_poll_handles.get(&ph) {
-                        // Check if the newly ready events match what the handle is interested in.
-                        let actual_events = ready_events_mask & requested_events;
-                        if actual_events != 0 { // Only send if there's an overlap
+                    if let Some((_ino_of_ph, _requested_events)) = self.registered_poll_handles.get(&ph) {
+                        #[cfg(feature = "abi-7-21")]
+                        let actual_events = _requested_events & libc::POLLIN as u32; // Example: only care about POLLIN
+                        #[cfg(not(feature = "abi-7-21"))]
+                        let actual_events = libc::POLLIN as u32; // Before abi-7-21, requested events is meaningless
+                        if actual_events != 0 {
+                            log::debug!(
+                                "PollData::mark_inode_ready() sending event: ino={}, ph={}, actual_events={:#x}",
+                                ino, ph, actual_events
+                            );
                             if sender.send((ph, actual_events)).is_err() {
                                 log::warn!("PollData: Failed to send poll readiness event for ino {}, ph {}. Channel might be disconnected.", ino, ph);
-                                // If send fails, it implies the receiver is dropped.
-                                // Consider setting self.ready_events_sender = None to stop further attempts
-                                // if the channel is confirmed broken (e.g., specific error kinds).
-                                // For this iteration, we'll just log. A more robust solution would clear it:
-                                // self.ready_events_sender = None;
                             }
                         }
                     }
@@ -147,6 +161,7 @@ impl PollData {
     ///
     /// * `ino`: The inode number that is no longer ready.
     pub fn mark_inode_not_ready(&mut self, ino: u64) {
+        log::info!("PollData::mark_inode_not_ready() called: ino={}", ino);
         self.ready_inodes.remove(&ino);
         // Note: FUSE usually doesn't have explicit "not ready anymore" notifications for poll,
         // other than timeout. Applications will re-poll if needed.

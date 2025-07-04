@@ -82,6 +82,7 @@ impl FSelFS {
         self.data.lock().unwrap()
     }
     fn get_poll_handler(&self) -> std::sync::MutexGuard<'_, PollData> {
+        log::debug!("Accessing poll handler (PollData)");
         self.poll_handler.lock().unwrap()
     }
 }
@@ -239,6 +240,10 @@ impl Filesystem for FSelFS {
         let size = (*cnt).min(max_size.into());
         println!("READ   {:X} transferred={} cnt={}", idx, size, *cnt);
         *cnt -= size;
+        // if cnt is now equal to zero, mark the node as not ready. 
+        if *cnt == 0 {
+            self.get_poll_handler().mark_inode_not_ready(FSelData::idx_to_ino(idx));
+        }
         let elt = match idx {
             0..=9 => b'0' + idx,
             10..=15 => b'A' + idx - 10, // Corrected range
@@ -256,19 +261,22 @@ impl Filesystem for FSelFS {
         fh: u64,
         ph: u64,
         _events: u32,
-        _flags: u32, // flags (like FUSE_POLL_SCHEDULE_NOTIFY) are handled by PollData registration logic implicitly if needed
+        _flags: u32,
     ) -> Result<u32, Errno> {
+        log::info!("poll() called: fh={fh}, ph={ph}, events={_events}");
         let ino = FSelData::idx_to_ino(fh.try_into().expect("fh should be a valid index"));
-        // Access self.poll_data directly (it's owned, not Arc<Mutex>)
         if let Some(initial_events) = self.get_poll_handler().register_poll_handle(ph, ino, _events) {
+            log::debug!("poll(): Registered poll handle {ph} for ino {ino}, initial_events={initial_events}");
             Ok(initial_events)
         } else {
-            Ok(0) // No initial events, async notification will follow if/when ready
+            log::debug!("poll(): Registered poll handle {ph} for ino {ino}, no initial events");
+            Ok(0)
         }
     }
 
     #[cfg(feature = "abi-7-11")]
     fn init_poll_sender(&mut self, sender: Sender<(u64, u32)>) -> Result<(), Errno> {
+        log::info!("init_poll_sender() called");
         self.get_poll_handler().set_sender(sender);
         Ok(())
     }
@@ -290,8 +298,7 @@ impl Filesystem for FSelFS {
 // Plan: Producer will take direct mutable access to FSelFS.poll_data for simplicity of change.
 // This is not ideal for true concurrency but matches the spirit of the example's direct manipulation.
 // A better way: producer takes Arc<Mutex<PollData>> if PollData were shared.
-// Since FSelFS owns PollData, and producer is a separate thread, producer must get PollData through FSelFS instance.
-// This means FSelFS needs to be Arc<Mutex<FSelFS>> or producer needs Arc<Mutex<PollData>> obtained from FSelFS.
+// Since FSelFS owns PollData, and producer is a separate thread, producer must get PollData through FSelFS.
 
 // Let's refine: Producer will take direct mutable access to FSelFS's poll_data.
 // This means FSelFS itself needs to be shareable, e.g. Arc<Mutex<FSelFS>>.
@@ -318,12 +325,12 @@ fn producer(fsel_data_arc: Arc<Mutex<FSelData>>, poll_handler_arc: Arc<Mutex<Pol
                 let tidx = t as usize;
                 if fsel_data_guard.bytecnt[tidx] < MAXBYTES {
                     fsel_data_guard.bytecnt[tidx] += 1;
-                    println!("PRODUCER: Increased bytecnt for file {:X} to {}", t, fsel_data_guard.bytecnt[tidx]);
+                    log::info!("PRODUCER: Increased bytecnt for file {:X} to {}", t, fsel_data_guard.bytecnt[tidx]);
                     {
-                        // Mark ready using poll_handler_guard
                         let mut poll_handler_guard = poll_handler_arc.lock().unwrap();
+                        log::debug!("PRODUCER: Marking ino {} as ready via poll handler", FSelData::idx_to_ino(t));
                         poll_handler_guard.mark_inode_ready(FSelData::idx_to_ino(t), libc::POLLIN as u32);
-                        println!("PRODUCER: Marked ino {} as ready", FSelData::idx_to_ino(t));
+                        log::info!("PRODUCER: Marked ino {} as ready", FSelData::idx_to_ino(t));
                     }
                 }
                 t = (t + NUMFILES / nr) % NUMFILES;
@@ -339,7 +346,8 @@ fn producer(fsel_data_arc: Arc<Mutex<FSelData>>, poll_handler_arc: Arc<Mutex<Pol
 
 fn main() {
     let options = vec![MountOption::RO, MountOption::FSName("fsel_chan".to_string())];
-
+    env_logger::init();
+    log::info!("Starting fsel_chan example with poll support");
     let data_arc = Arc::new(Mutex::new(FSelData { // For byte counts
         bytecnt: [0; NUMFILES as usize],
         open_mask: 0,
@@ -405,6 +413,7 @@ mod test {
 
     // Helper to create FSelFS and a channel pair for its PollData for tests
     fn setup_test_fs_with_channel() -> (FSelFS, Sender<(u64, u32)>, Receiver<(u64,u32)>) {
+        log::debug!("Setting up test FS with poll channel");
         let (tx, rx) = unbounded();
         let fsel_data_arc = Arc::new(Mutex::new(FSelData {
             bytecnt: [0; NUMFILES as usize],
@@ -423,6 +432,7 @@ mod test {
 
     #[test]
     fn test_fs_poll_registers_handle_no_initial_event() {
+        log::info!("test_fs_poll_registers_handle_no_initial_event: starting");
         let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         fs.init_poll_sender(tx_to_fs).unwrap(); // Link FS's PollData to our test sender
 
@@ -437,6 +447,7 @@ mod test {
         fs.get_poll_handler().mark_inode_not_ready(ino); // Ensure PollData also knows it's not ready
 
         let result = fs.poll(req, ino, fh, ph, events, 0);
+        log::debug!("test_fs_poll_registers_handle_no_initial_event: poll result = {:?}", result);
         assert!(result.is_ok(), "FS poll method should succeed");
         assert_eq!(result.unwrap(), 0, "Should return 0 as no initial event is expected");
 
@@ -449,6 +460,7 @@ mod test {
 
     #[test]
     fn test_fs_poll_registers_handle_with_initial_event() {
+        log::info!("test_fs_poll_registers_handle_with_initial_event: starting");
         let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         fs.init_poll_sender(tx_to_fs).unwrap();
 
@@ -464,6 +476,7 @@ mod test {
         while rx_from_fs.try_recv().is_ok() {}
 
         let result = fs.poll(req, ino, fh, ph, events, 0);
+        log::debug!("test_fs_poll_registers_handle_with_initial_event: poll result = {:?}", result);
         assert!(result.is_ok(), "FS poll method should succeed");
         assert_eq!(result.unwrap(), libc::POLLIN as u32, "Should return POLLIN as an initial event");
 
@@ -480,6 +493,7 @@ mod test {
 
     #[test]
     fn test_producer_marks_inode_ready_triggers_event() {
+        log::info!("test_producer_marks_inode_ready_triggers_event: starting");
         // For this test, we need an Arc<Mutex<FSelFS>> because producer runs in a separate thread.
         let (mut fs_instance, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         fs_instance.init_poll_sender(tx_to_fs).unwrap();
@@ -496,6 +510,7 @@ mod test {
         // Manually simulate one iteration of the producer logic for a specific file
         fs_instance.get_data().bytecnt[idx_to_test as usize] = 1;
         fs_instance.get_poll_handler().mark_inode_ready(ino_to_test, libc::POLLIN as u32);
+        log::debug!("test_producer_marks_inode_ready_triggers_event: marked inode ready");
 
         match rx_from_fs.try_recv() {
             Ok((ph_recv, ev_recv)) => {
