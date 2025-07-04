@@ -82,14 +82,8 @@ impl Filesystem for FiocFS {
 
     fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match ino {
-            1 => Ok(Attr {
-                attr: self.root_attr,
-                ttl: TTL,
-            }),
-            2 => Ok(Attr {
-                attr: self.fioc_file_attr,
-                ttl: TTL,
-            }),
+            1 => Ok(Attr { attr: self.root_attr, ttl: TTL,}),
+            2 => Ok(Attr { attr: self.fioc_file_attr, ttl: TTL,}),
             _ => Err(Errno::ENOENT),
         }
     }
@@ -124,24 +118,9 @@ impl Filesystem for FiocFS {
         }
 
         let entries = vec![
-            DirEntry {
-                ino: 1,
-                offset: 1,
-                kind: FileType::Directory,
-                name: OsString::from("."),
-            },
-            DirEntry {
-                ino: 1,
-                offset: 2,
-                kind: FileType::Directory,
-                name: OsString::from(".."),
-            },
-            DirEntry {
-                ino: 2,
-                offset: 3,
-                kind: FileType::RegularFile,
-                name: OsString::from("fioc"),
-            },
+            DirEntry { ino: 1, offset: 1, kind: FileType::Directory, name: OsString::from(".") },
+            DirEntry { ino: 1, offset: 2, kind: FileType::Directory, name: OsString::from("..") },
+            DirEntry { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsString::from("fioc") },
         ];
 
         let mut result = Vec::new();

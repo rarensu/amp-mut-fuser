@@ -46,7 +46,7 @@ pub struct RequestMeta {
     /// The gid of this request
     pub gid: u32,
     /// The pid of this request
-    pub pid: u32,
+    pub pid: u32
 }
 
 impl<'a> Request<'a> {
@@ -64,16 +64,10 @@ impl<'a> Request<'a> {
             unique: request.unique().into(),
             uid: request.uid(),
             gid: request.gid(),
-            pid: request.pid(),
+            pid: request.pid()
         };
         let replyhandler = ReplyHandler::new(request.unique().into(), ch.clone());
-        Some(Self {
-            ch,
-            data,
-            request,
-            meta,
-            replyhandler,
-        })
+        Some(Self { ch, data, request, meta, replyhandler })
     }
 
     /// Dispatch request to the given filesystem.
@@ -137,7 +131,7 @@ impl<'a> Request<'a> {
                 se.proto_minor = v.minor();
 
                 let config = KernelConfig::new(x.capabilities(), x.max_readahead());
-                // Call filesystem init method and give it a chance to
+                // Call filesystem init method and give it a chance to 
                 // propose a different config or return an error
                 let config = match se.filesystem.init(self.meta, config) {
                     Ok(config) => config,

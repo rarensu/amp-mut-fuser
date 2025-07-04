@@ -78,16 +78,17 @@ impl PollData {
                 // TODO: Determine actual_events based on file state and events_requested.
                 // For now, just signaling with POLLIN if requested.
                 // TODO: Determine actual_events based on file state and events_requested more accurately.
+                #[cfg(feature = "abi-7-21")]
                 let actual_events = events_requested & libc::POLLIN as u32; // Example: only care about POLLIN
+                #[cfg(not(feature = "abi-7-21"))]
+                let actual_events = libc::POLLIN as u32; // Before abi-7-21, requested events is meaningless
                 if actual_events != 0 {
+                    log::debug!(
+                        "PollData::register_poll_handle() sending initial event: ph={}, actual_events={:#x}",
+                        ph, actual_events
+                    );
                     if sender.send((ph, actual_events)).is_err() {
                         log::warn!("PollData: Failed to send initial poll readiness event for ph {}. Channel might be disconnected.", ph);
-                        // If send fails, it implies the receiver is dropped.
-                        // We could set self.ready_events_sender = None here,
-                        // but a single failure might not warrant it if it's a temporary issue
-                        // or if re-establishment is handled elsewhere.
-                        // For now, just log. A more robust implementation would clear the sender.
-                        // self.ready_events_sender = None; // Optional: aggressively clear sender
                     }
                     return Some(actual_events);
                 }
@@ -124,50 +125,31 @@ impl PollData {
     /// * `ino`: The inode number that has become ready.
     /// * `ready_events`: The bitmask of events that are now active for the inode (e.g., `libc::POLLIN`).
     pub fn mark_inode_ready(&mut self, ino: u64, ready_events_mask: u32) {
-        log::debug!(
-            "POLL_DATA: mark_inode_ready for ino {}, events_mask {}",
-            ino,
-            ready_events_mask
+        log::info!(
+            "PollData::mark_inode_ready() called: ino={}, ready_events_mask={:#x}",
+            ino, ready_events_mask
         );
         self.ready_inodes.insert(ino);
         if let Some(sender) = &self.ready_events_sender {
             if let Some(poll_handles) = self.inode_poll_handles.get(&ino) {
-                if poll_handles.is_empty() {
-                    log::debug!("POLL_DATA: No poll handles registered for ino {}", ino);
-                    return;
-                }
                 for &ph in poll_handles {
-                    if let Some((_ino_of_ph, requested_events)) =
-                        self.registered_poll_handles.get(&ph)
-                    {
-                        let actual_events = ready_events_mask & requested_events;
+                    if let Some((_ino_of_ph, _requested_events)) = self.registered_poll_handles.get(&ph) {
+                        #[cfg(feature = "abi-7-21")]
+                        let actual_events = _requested_events & libc::POLLIN as u32; // Example: only care about POLLIN
+                        #[cfg(not(feature = "abi-7-21"))]
+                        let actual_events = libc::POLLIN as u32; // Before abi-7-21, requested events is meaningless
                         if actual_events != 0 {
                             log::debug!(
-                                "POLL_DATA: Sending event for ino {}, ph {}, actual_events {}",
-                                ino,
-                                ph,
-                                actual_events
+                                "PollData::mark_inode_ready() sending event: ino={}, ph={}, actual_events={:#x}",
+                                ino, ph, actual_events
                             );
-                            if let Err(e) = sender.send((ph, actual_events)) {
-                                log::warn!("POLL_DATA: Failed to send poll readiness event for ino {}, ph {}: {}. Channel might be disconnected.", ino, ph, e);
-                                // If send fails due to a disconnected receiver, we might want to clear the sender.
-                                // if e.is_disconnected() { self.ready_events_sender = None; } // crossbeam_channel::SendError doesn't have is_disconnected directly
+                            if sender.send((ph, actual_events)).is_err() {
+                                log::warn!("PollData: Failed to send poll readiness event for ino {}, ph {}. Channel might be disconnected.", ino, ph);
                             }
-                        } else {
-                            log::debug!("POLL_DATA: For ino {}, ph {}, ready_events_mask {} did not match requested_events {}", ino, ph, ready_events_mask, requested_events);
                         }
-                    } else {
-                        log::warn!("POLL_DATA: For ino {}, ph {} found in inode_poll_handles but not in registered_poll_handles. Inconsistent state.", ino, ph);
                     }
                 }
-            } else {
-                log::debug!("POLL_DATA: No poll_handles set found for ino {}", ino);
             }
-        } else {
-            log::warn!(
-                "POLL_DATA: mark_inode_ready called for ino {} but ready_events_sender is None.",
-                ino
-            );
         }
     }
 
@@ -184,15 +166,37 @@ impl PollData {
     }
 }
 
-// Note: The SharedPollData type alias and associated example comments have been removed
-// as PollData is now intended to be directly owned by Filesystem implementations,
-// not shared via Arc<Mutex<...>> from the Session.
+/// A convenience type alias for shared, mutable access to `PollData`.
+pub type SharedPollData = Arc<Mutex<PollData>>;
+
+// Example of how it might be integrated into a Filesystem struct
+//
+// pub struct MyFs {
+//     poll_data: SharedPollData,
+//     // other fs data
+// }
+//
+// impl MyFs {
+//     pub fn new(poll_data_sender: Option<Sender<(u64, u32)>>) -> Self {
+//         Self {
+//             poll_data: Arc::new(Mutex::new(PollData::new(poll_data_sender))),
+//             // ...
+//         }
+//     }
+// }
+//
+// // In the Filesystem::poll implementation:
+// // let mut poll_data_guard = self.poll_data.lock().unwrap();
+// // poll_data_guard.register_poll_handle(ph, ino, events);
+//
+// // In an operation that makes a file ready (e.g., write):
+// // let mut poll_data_guard = self.poll_data.lock().unwrap();
+// // poll_data_guard.mark_inode_ready(ino, libc::POLLIN as u32);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
-    use std::sync::{Arc, Mutex}; // Add imports for tests
 
     #[test]
     fn test_poll_data_new() {
@@ -216,18 +220,8 @@ mod tests {
             let mut poll_data = poll_data_arc.lock().unwrap();
             poll_data.register_poll_handle(ph1, ino1, events1);
 
-            assert_eq!(
-                poll_data.registered_poll_handles.get(&ph1),
-                Some(&(ino1, events1))
-            );
-            assert_eq!(
-                poll_data
-                    .inode_poll_handles
-                    .get(&ino1)
-                    .unwrap()
-                    .contains(&ph1),
-                true
-            );
+            assert_eq!(poll_data.registered_poll_handles.get(&ph1), Some(&(ino1, events1)));
+            assert_eq!(poll_data.inode_poll_handles.get(&ino1).unwrap().contains(&ph1), true);
         }
 
         {
@@ -287,10 +281,7 @@ mod tests {
             // Mark inode ready for POLLOUT. ph1 should not be notified.
             poll_data.mark_inode_ready(ino1, libc::POLLOUT as u32);
         }
-        assert!(
-            rx.try_recv().is_err(),
-            "Should not receive event if not requested"
-        );
+        assert!(rx.try_recv().is_err(), "Should not receive event if not requested");
 
         {
             let mut poll_data = poll_data_arc.lock().unwrap();
@@ -331,21 +322,14 @@ mod tests {
             initial_event_mask = poll_data.register_poll_handle(ph1, ino1, events1);
         }
 
-        assert_eq!(
-            initial_event_mask,
-            Some(libc::POLLIN as u32),
-            "Initial event mask should be POLLIN"
-        );
+        assert_eq!(initial_event_mask, Some(libc::POLLIN as u32), "Initial event mask should be POLLIN");
 
         match rx.try_recv() {
             Ok((ph_recv, events_recv)) => {
                 assert_eq!(ph_recv, ph1);
                 assert_eq!(events_recv, libc::POLLIN as u32);
             }
-            Err(e) => panic!(
-                "Expected to receive an initial poll event, but got error: {}",
-                e
-            ),
+            Err(e) => panic!("Expected to receive an initial poll event, but got error: {}", e),
         }
     }
 

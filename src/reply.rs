@@ -1,19 +1,19 @@
 //! Filesystem operation reply
 //!
 //! A reply handler object is created to guarantee that each fuse request receives a reponse exactly once.
-//! Either the request logic will call the one of the reply handler's self-destructive methods,
-//! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
+//! Either the request logic will call the one of the reply handler's self-destructive methods, 
+//! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response. 
 
+use crate::ll::{
+    self,
+    reply::{DirEntList, DirEntOffset},
+    reply::DirEntry as ll_DirEntry,
+    INodeNo,
+};
 #[cfg(feature = "abi-7-21")]
 use crate::ll::reply::{DirEntPlusList, DirEntryPlus};
 #[cfg(feature = "abi-7-21")]
 use crate::ll::Generation;
-use crate::ll::{
-    self,
-    reply::DirEntry as ll_DirEntry,
-    reply::{DirEntList, DirEntOffset},
-    INodeNo,
-};
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
 use log::{error, warn};
@@ -23,9 +23,9 @@ use std::io::IoSlice;
 #[cfg(feature = "abi-7-40")]
 use std::os::fd::BorrowedFd;
 use std::time::Duration;
+use zerocopy::IntoBytes;
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
-use zerocopy::IntoBytes;
 
 use crate::{FileAttr, FileType, KernelConfig};
 
@@ -46,7 +46,7 @@ impl fmt::Debug for Box<dyn ReplySender> {
 
 /// ReplyHander is a struct which holds the unique identifiers needed to reply
 /// to a specific request. Traits are implemented on the struct so that ownership
-/// of the struct determines whether the identifiers have ever been used.
+/// of the struct determines whether the identifiers have ever been used. 
 /// This guarantees that a reply is send at most once per request.
 #[derive(Debug)]
 pub(crate) struct ReplyHandler {
@@ -79,13 +79,14 @@ impl ReplyHandler {
     }
     /// Reply to a request with a formatted reponse. May be called
     /// only once (the `mut self`` argument consumes `self`).
-    /// Use this variant for general replies.
+    /// Use this variant for general replies. 
     fn send_ll(mut self, response: &ll::Response<'_>) {
         self.send_ll_mut(response)
     }
+
 }
 
-/// Drop is implemented on ReplyHandler so that if the program logic fails
+/// Drop is implemented on ReplyHandler so that if the program logic fails 
 /// (for example, due to an interrupt or a panic),
 /// a reply will be sent when the Reply Handler falls out of scope.
 impl Drop for ReplyHandler {
@@ -102,7 +103,7 @@ impl Drop for ReplyHandler {
 
 //
 // Structs for managing response data
-//
+// 
 
 #[derive(Debug)]
 /// File attribute response data
@@ -110,7 +111,7 @@ pub struct Attr {
     /// Describes a file
     pub attr: FileAttr,
     /// Time to live for the attribute
-    pub ttl: Duration,
+    pub ttl: Duration
 }
 
 #[derive(Debug)]
@@ -121,17 +122,18 @@ pub struct Entry {
     /// Time to live for the entry
     pub ttl: Duration,
     /// The generation of the entry
-    pub generation: u64,
+    pub generation: u64
 }
 
 #[derive(Debug)] //TODO #[derive(Copy)]
 /// Open file handle response data
 pub struct Open {
     /// File handle for the opened file
-    pub fh: u64,
+    pub fh: u64, 
     /// Flags for the opened file
-    pub flags: u32,
+    pub flags: u32
 }
+
 
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
@@ -140,7 +142,7 @@ pub struct XTimes {
     /// Backup time
     pub bkuptime: SystemTime,
     /// Creation time
-    pub crtime: SystemTime,
+    pub crtime: SystemTime
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -161,7 +163,7 @@ pub struct Statfs {
     /// Maximum filename length
     pub namelen: u32,
     /// Fundamental file system block size
-    pub frsize: u32,
+    pub frsize: u32
 }
 
 #[derive(Debug)]
@@ -172,9 +174,9 @@ pub struct DirEntry {
     /// entry number in directory
     pub offset: i64,
     /// kind of file
-    pub kind: FileType,
+    pub kind: FileType, 
     /// name of file
-    pub name: OsString,
+    pub name: OsString
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -186,19 +188,19 @@ pub struct Lock {
     pub end: u64,
     // NOTE: lock field is defined as u32 in fuse_kernel.h in libfuse. However, it is treated as signed
     // TODO enum {F_RDLCK, F_WRLCK, F_UNLCK}
-    /// kind of lock (read and/or write)
+    /// kind of lock (read and/or write) 
     pub typ: i32,
     /// PID of process blocking our lock
-    pub pid: u32,
+    pub pid: u32, 
 }
 
 #[derive(Debug)]
 /// Extended attribute response data
-pub enum Xattr {
+pub enum Xattr{
     /// Reply to a request with the size of the xattr.
     Size(u32),
     /// Reply to a request with the data in the xattr.
-    Data(Vec<u8>),
+    Data(Vec<u8>)
 }
 
 #[cfg(feature = "abi-7-11")]
@@ -208,7 +210,7 @@ pub struct Ioctl {
     /// Result of the ioctl operation
     pub result: i32,
     /// Data to be returned with the ioctl operation
-    pub data: Vec<u8>,
+    pub data: Vec<u8>
 }
 
 //
@@ -298,11 +300,7 @@ impl ReplyHandler {
     pub fn opened(self, open: Open) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(open.flags & FOPEN_PASSTHROUGH, 0);
-        self.send_ll(&ll::Response::new_open(
-            ll::FileHandle(open.fh),
-            open.flags,
-            0,
-        ))
+        self.send_ll(&ll::Response::new_open(ll::FileHandle(open.fh), open.flags, 0))
     }
 
     /// Reply to a request with the number of bytes written
@@ -340,7 +338,7 @@ impl ReplyHandler {
 
     /// Reply to a request with a file lock
     pub fn locked(self, lock: Lock) {
-        self.send_ll(&ll::Response::new_lock(&ll::Lock {
+        self.send_ll(&ll::Response::new_lock(&ll::Lock{
             range: (lock.start, lock.end),
             typ: lock.typ,
             pid: lock.pid,
@@ -355,10 +353,7 @@ impl ReplyHandler {
     #[cfg(feature = "abi-7-11")]
     /// Reply to a request with an ioctl
     pub fn ioctl(self, ioctl: Ioctl) {
-        self.send_ll(&ll::Response::new_ioctl(
-            ioctl.result,
-            &[IoSlice::new(ioctl.data.as_ref())],
-        ));
+        self.send_ll(&ll::Response::new_ioctl(ioctl.result, &[IoSlice::new(ioctl.data.as_ref())]));
     }
 
     #[cfg(feature = "abi-7-11")]
@@ -368,14 +363,18 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with a filled directory buffer
-    pub fn dir(self, entries: Vec<DirEntry>, size: usize) {
+    pub fn dir(
+        self,
+        entries: Vec<DirEntry>,
+        size: usize
+    ) {
         let mut buf = DirEntList::new(size);
         for item in entries.into_iter() {
-            let full = buf.push(&ll_DirEntry::new(
+            let full= buf.push(&ll_DirEntry::new(
                 INodeNo(item.ino),
                 DirEntOffset(item.offset),
                 item.kind,
-                item.name,
+                item.name
             ));
             if full {
                 break;
@@ -386,7 +385,11 @@ impl ReplyHandler {
 
     #[cfg(feature = "abi-7-21")]
     // Reply to a request with a filled directory plus buffer
-    pub fn dirplus(self, entries: Vec<(DirEntry, Entry)>, size: usize) {
+    pub fn dirplus(
+        self,
+        entries: Vec<(DirEntry, Entry)>,
+        size: usize
+    ) {
         let mut buf = DirEntPlusList::new(size);
         for (item, plus) in entries.into_iter() {
             let full = buf.push(&DirEntryPlus::new(
@@ -804,14 +807,14 @@ mod test {
         };
         replyhandler.created(
             Entry {
-                attr: attr,
+                attr: attr, 
                 ttl: ttl,
-                generation: 0xaa,
+                generation: 0xaa
             },
             Open {
                 fh: 0xbb,
-                flags: 0x0f,
-            },
+                flags: 0x0f
+            }
         );
     }
 
@@ -858,22 +861,23 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        let entries = vec![
+        let entries = vec!(
             DirEntry {
                 ino: 0xaabb,
                 offset: 1,
                 kind: FileType::Directory,
                 name: OsString::from("hello"),
-            },
+            }, 
             DirEntry {
                 ino: 0xccdd,
                 offset: 2,
                 kind: FileType::RegularFile,
                 name: OsString::from("world.rs"),
-            },
-        ];
-        replyhandler.dir(entries, std::mem::size_of::<u8>() * 128);
+            }
+        );
+        replyhandler.dir(entries, std::mem::size_of::<u8>()*128);
     }
+
 
     #[test]
     fn reply_xattr_size() {

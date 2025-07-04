@@ -148,7 +148,7 @@ pub struct Forget {
     /// The number of times the file has been looked up (and not yet forgotten).
     /// When a `forget` operation is received, the filesystem should typically
     /// decrement its internal reference count for the inode by `nlookup`.
-    pub nlookup: u64,
+    pub nlookup: u64
 }
 
 /// Configuration of the fuse kernel module connection
@@ -401,7 +401,7 @@ pub trait Filesystem {
         crtime: Option<SystemTime>,
         chgtime: Option<SystemTime>,
         bkuptime: Option<SystemTime>,
-        flags: Option<u32>,
+        flags: Option<u32>
     ) -> Result<Attr, Errno> {
         warn!(
             "[Not Implemented] setattr(ino: {:#x?}, mode: {:?}, uid: {:?}, \
@@ -686,7 +686,7 @@ pub trait Filesystem {
         ino: u64,
         fh: u64,
         offset: i64,
-        max_bytes: u32,
+        max_bytes: u32
     ) -> Result<Vec<DirEntry>, Errno> {
         warn!(
             "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
@@ -710,7 +710,7 @@ pub trait Filesystem {
         fh: u64,
         offset: i64,
         max_bytes: u32,
-    ) -> Result<Vec<(DirEntry, Entry)>, Errno> {
+    ) -> Result<Vec<(DirEntry, Entry)>, Errno>{
         warn!(
             "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
@@ -723,7 +723,13 @@ pub trait Filesystem {
     /// contain the value set by the opendir method, or will be undefined if the
     /// opendir method didn't set any value.
     /// The method should return `Ok(())` on success, or `Err(Errno)` otherwise.
-    fn releasedir(&mut self, req: RequestMeta, ino: u64, fh: u64, flags: i32) -> Result<(), Errno> {
+    fn releasedir(
+        &mut self,
+        req: RequestMeta,
+        ino: u64,
+        fh: u64,
+        flags: i32,
+    ) -> Result<(), Errno> {
         Ok(())
     }
 
@@ -761,7 +767,7 @@ pub trait Filesystem {
         req: RequestMeta,
         ino: u64,
         name: OsString,
-        value: Vec<u8>,
+        value: Vec<u8>, 
         flags: i32,
         position: u32,
     ) -> Result<(), Errno> {
@@ -796,7 +802,12 @@ pub trait Filesystem {
     /// If `size` is not 0, and the names list fits, it should be returned in `Xattr::Data(Vec<u8>)`.
     /// If the list does not fit, `Err(Errno::ERANGE)` should be returned.
     /// The method should return `Ok(Xattr)` on success, or `Err(Errno)` otherwise.
-    fn listxattr(&mut self, req: RequestMeta, ino: u64, size: u32) -> Result<Xattr, Errno> {
+    fn listxattr(
+        &mut self,
+        req: RequestMeta,
+        ino: u64,
+        size: u32,
+    ) -> Result<Xattr, Errno> {
         warn!(
             "[Not Implemented] listxattr(ino: {:#x?}, size: {})",
             ino, size
@@ -806,7 +817,12 @@ pub trait Filesystem {
 
     /// Remove an extended attribute.
     /// The method should return `Ok(())` on success, or `Err(Errno)` otherwise.
-    fn removexattr(&mut self, req: RequestMeta, ino: u64, name: OsString) -> Result<(), Errno> {
+    fn removexattr(
+        &mut self,
+        req: RequestMeta,
+        ino: u64,
+        name: OsString,
+    ) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] removexattr(ino: {:#x?}, name: {:?})",
             ino, name
@@ -843,7 +859,7 @@ pub trait Filesystem {
         mode: u32,
         umask: u32,
         flags: i32,
-    ) -> Result<(Entry, Open), Errno> {
+    ) -> Result<(Entry,Open), Errno> {
         warn!(
             "[Not Implemented] create(parent: {:#x?}, name: {:?}, mode: {}, umask: {:#x?}, \
             flags: {:#x?})",
@@ -1055,7 +1071,7 @@ pub trait Filesystem {
         name: OsString,
         newparent: u64,
         newname: OsString,
-        options: u64,
+        options: u64
     ) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] exchange(parent: {:#x?}, name: {:?}, newparent: {:#x?}, \
@@ -1153,9 +1169,7 @@ pub trait Filesystem {
 /// `mountpoint`: The path to the mountpoint.
 /// `options`: A slice of mount options. Each option needs to be a separate string,
 /// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
-#[deprecated(
-    note = "Use `mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity."
-)]
+#[deprecated(note = "Use `mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity.")]
 pub fn mount<FS: Filesystem, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,
@@ -1192,9 +1206,7 @@ pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
 /// `mountpoint`: The path to the mountpoint.
 /// `options`: A slice of mount options. Each option needs to be a separate string,
 /// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
-#[deprecated(
-    note = "Use `spawn_mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity."
-)]
+#[deprecated(note = "Use `spawn_mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity.")]
 pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,

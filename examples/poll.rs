@@ -45,13 +45,13 @@ const MAXBYTES: u64 = 10;
 struct FSelData {
     bytecnt: [u64; NUMFILES as usize],
     open_mask: u16,
-    // notify_mask: u16, // No longer used, PollData handles notification logic
-    // poll_handles: [u64; NUMFILES as usize], // No longer used, PollData stores handles
+    notify_mask: u16,
+    poll_handles: [u64; NUMFILES as usize],
 }
 
 struct FSelFS {
     data: Arc<Mutex<FSelData>>, // This remains for original example's byte counting logic
-    poll_data: PollData,        // Owns PollData directly
+    poll_handler: Arc<Mutex<PollData>>, //  Helper functions for handling polls
 }
 
 impl FSelData {
@@ -92,10 +92,13 @@ impl FSelFS {
     fn get_data(&self) -> std::sync::MutexGuard<'_, FSelData> {
         self.data.lock().unwrap()
     }
+    fn get_poll_handler(&self) -> std::sync::MutexGuard<'_, PollData> {
+        log::debug!("Accessing poll handler (PollData)");
+        self.poll_handler.lock().unwrap()
+    }
 }
 
-impl Filesystem for FSelFS {
-    // Changed from fuser::Filesystem to just Filesystem to pick up local trait
+impl Filesystem for FSelFS { 
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name.len() != 1 {
             return Err(Errno::ENOENT);
@@ -137,10 +140,7 @@ impl Filesystem for FSelFS {
                 flags: 0,
                 blksize: 0,
             };
-            return Ok(Attr {
-                ttl: Duration::ZERO,
-                attr: a,
-            });
+            return Ok(Attr { ttl: Duration::ZERO, attr: a });
         }
         let idx = FSelData::ino_to_idx(ino);
         if idx < NUMFILES {
@@ -251,6 +251,10 @@ impl Filesystem for FSelFS {
         let size = (*cnt).min(max_size.into());
         println!("READ   {:X} transferred={} cnt={}", idx, size, *cnt);
         *cnt -= size;
+        // if cnt is now equal to zero, mark the node as not ready. 
+        if *cnt == 0 {
+            self.get_poll_handler().mark_inode_not_ready(FSelData::idx_to_ino(idx));
+        }
         let elt = match idx {
             0..=9 => b'0' + idx,
             10..=15 => b'A' + idx - 10, // Corrected range
@@ -268,20 +272,23 @@ impl Filesystem for FSelFS {
         fh: u64,
         ph: u64,
         _events: u32,
-        _flags: u32, // flags (like FUSE_POLL_SCHEDULE_NOTIFY) are handled by PollData registration logic implicitly if needed
+        _flags: u32,
     ) -> Result<u32, Errno> {
+        log::info!("poll() called: fh={fh}, ph={ph}, events={_events}");
         let ino = FSelData::idx_to_ino(fh.try_into().expect("fh should be a valid index"));
-        // Access self.poll_data directly (it's owned, not Arc<Mutex>)
-        if let Some(initial_events) = self.poll_data.register_poll_handle(ph, ino, _events) {
+        if let Some(initial_events) = self.get_poll_handler().register_poll_handle(ph, ino, _events) {
+            log::debug!("poll(): Registered poll handle {ph} for ino {ino}, initial_events={initial_events}");
             Ok(initial_events)
         } else {
-            Ok(0) // No initial events, async notification will follow if/when ready
+            log::debug!("poll(): Registered poll handle {ph} for ino {ino}, no initial events");
+            Ok(0)
         }
     }
 
     #[cfg(feature = "abi-7-11")]
     fn init_poll_sender(&mut self, sender: Sender<(u64, u32)>) -> Result<(), Errno> {
-        self.poll_data.set_sender(sender);
+        log::info!("init_poll_sender() called");
+        self.get_poll_handler().set_sender(sender);
         Ok(())
     }
 }
@@ -302,8 +309,7 @@ impl Filesystem for FSelFS {
 // Plan: Producer will take direct mutable access to FSelFS.poll_data for simplicity of change.
 // This is not ideal for true concurrency but matches the spirit of the example's direct manipulation.
 // A better way: producer takes Arc<Mutex<PollData>> if PollData were shared.
-// Since FSelFS owns PollData, and producer is a separate thread, producer must get PollData through FSelFS instance.
-// This means FSelFS needs to be Arc<Mutex<FSelFS>> or producer needs Arc<Mutex<PollData>> obtained from FSelFS.
+// Since FSelFS owns PollData, and producer is a separate thread, producer must get PollData through FSelFS.
 
 // Let's refine: Producer will take direct mutable access to FSelFS's poll_data.
 // This means FSelFS itself needs to be shareable, e.g. Arc<Mutex<FSelFS>>.
@@ -317,38 +323,26 @@ impl Filesystem for FSelFS {
 // The `poll_data_arc: SharedPollData` argument for producer is removed.
 // It will now operate on `fsel_fs_arc: Arc<Mutex<FSelFS>>`.
 
-fn producer(fsel_fs_arc: Arc<Mutex<FSelFS>>) {
+fn producer(fsel_data_arc: Arc<Mutex<FSelData>>, poll_handler_arc: Arc<Mutex<PollData>>) {
     let mut current_file_idx_producer: u8 = 0;
     let mut nr = 1;
     loop {
         {
-            let mut fsel_fs_guard = fsel_fs_arc.lock().unwrap();
             // fsel_data_guard is for the byte counts
-            let mut fsel_data_guard = fsel_fs_guard.data.lock().unwrap();
-            // poll_data is now directly on fsel_fs_guard (it's &mut fsel_fs_guard.poll_data)
-
+            let mut fsel_data_guard = fsel_data_arc.lock().unwrap();
+            
             let mut t = current_file_idx_producer;
             for _ in 0..nr {
                 let tidx = t as usize;
                 if fsel_data_guard.bytecnt[tidx] < MAXBYTES {
                     fsel_data_guard.bytecnt[tidx] += 1;
-                    println!(
-                        "PRODUCER: Increased bytecnt for file {:X} to {}",
-                        t, fsel_data_guard.bytecnt[tidx]
-                    );
-                    // Mark ready using fsel_fs_guard.poll_data
-                    let ino_to_mark = FSelData::idx_to_ino(t);
-                    let events_to_mark = libc::POLLIN as u32;
-                    log::debug!(
-                        "POLL_EXAMPLE: Producer attempting to mark ino {} ready with events {}",
-                        ino_to_mark,
-                        events_to_mark
-                    );
-                    fsel_fs_guard
-                        .poll_data
-                        .mark_inode_ready(ino_to_mark, events_to_mark);
-                    println!("PRODUCER: Marked ino {} as ready", FSelData::idx_to_ino(t));
-                    // Original println
+                    log::info!("PRODUCER: Increased bytecnt for file {:X} to {}", t, fsel_data_guard.bytecnt[tidx]);
+                    {
+                        let mut poll_handler_guard = poll_handler_arc.lock().unwrap();
+                        log::debug!("PRODUCER: Marking ino {} as ready via poll handler", FSelData::idx_to_ino(t));
+                        poll_handler_guard.mark_inode_ready(FSelData::idx_to_ino(t), libc::POLLIN as u32);
+                        log::info!("PRODUCER: Marked ino {} as ready", FSelData::idx_to_ino(t));
+                    }
                 }
                 t = (t + NUMFILES / nr) % NUMFILES;
             }
@@ -362,41 +356,30 @@ fn producer(fsel_fs_arc: Arc<Mutex<FSelFS>>) {
 }
 
 fn main() {
-    let options = vec![
-        MountOption::RO,
-        MountOption::FSName("fsel_chan".to_string()),
-    ];
-
-    let fsel_data_arc = Arc::new(Mutex::new(FSelData {
-        // For byte counts
+    let options = vec![MountOption::RO, MountOption::FSName("fsel_chan".to_string())];
+    env_logger::init();
+    log::info!("Starting fsel_chan example with poll support");
+    let data_arc = Arc::new(Mutex::new(FSelData { // For byte counts
         bytecnt: [0; NUMFILES as usize],
         open_mask: 0,
-        // notify_mask and poll_handles removed
+        notify_mask: 0,
+        poll_handles: [0; NUMFILES as usize],
     }));
+    let poll_handler_arc = Arc::new(Mutex::new(PollData::new(None)));
 
     // FSelFS now creates its own PollData. Sender will be set by Session.
     let fsel_fs = FSelFS {
-        data: Arc::clone(&fsel_data_arc),
-        poll_data: PollData::new(None), // PollData owned directly, sender is initially None
+        data: Arc::clone(&data_arc),
+        poll_handler: Arc::clone(&poll_handler_arc), 
     };
 
-    // For the producer thread, FSelFS needs to be shareable and mutable.
-    let fsel_fs_arc = Arc::new(Mutex::new(fsel_fs));
+    let mntpt = std::env::args().nth(1).expect("Expected mountpoint argument");
 
-    let mntpt = std::env::args()
-        .nth(1)
-        .expect("Expected mountpoint argument");
-
-    // Pass a clone of the Arc for FSelFS to Session::new.
-    // Session::new takes FS by value. BackgroundSession::new will call init_poll_sender.
-    let session_fsel_fs_clone = Arc::clone(&fsel_fs_arc);
     let session = fuser::Session::new(
-        Arc::try_unwrap(session_fsel_fs_clone)
-            .expect("FSelFS Arc should be unique for Session::new"),
+        fsel_fs,
         &mntpt,
-        &options,
-    )
-    .unwrap_or_else(|e| {
+        &options
+    ).unwrap_or_else(|e| {
         panic!("Failed to create FUSE session on {}: {}", mntpt, e);
     });
 
@@ -404,19 +387,15 @@ fn main() {
         panic!("Failed to spawn FUSE session: {}", e);
     });
 
-    // Producer thread also uses the Arc<Mutex<FSelFS>>
-    let producer_fsel_fs_arc = Arc::clone(&fsel_fs_arc);
+
     thread::spawn(move || {
-        producer(producer_fsel_fs_arc);
+        producer(data_arc, poll_handler_arc);
     });
 
     // Keep the main thread alive to keep the filesystem mounted.
     // bg.join() would block until unmount.
     // For an example that runs indefinitely:
-    println!(
-        "FUSE filesystem 'fsel_chan' mounted on {}. Press Ctrl-C to unmount.",
-        mntpt
-    );
+    println!("FUSE filesystem 'fsel_chan' mounted on {}. Press Ctrl-C to unmount.", mntpt);
     let (_tx_shutdown, rx_shutdown) = crossbeam_channel::bounded::<()>(1);
     ctrlc::set_handler(move || {
         println!("\nCtrl-C pressed, shutting down...");
@@ -425,8 +404,7 @@ fn main() {
         // For this example, allowing main to exit will drop bg.
         // tx_shutdown.send(()).unwrap(); // Signal main to exit if it were waiting on rx_shutdown
         std::process::exit(0); // Exit directly for simplicity in example
-    })
-    .expect("Error setting Ctrl-C handler");
+    }).expect("Error setting Ctrl-C handler");
 
     // Wait indefinitely, or until Ctrl-C handler exits.
     // rx_shutdown.recv().unwrap(); // Would wait for signal if not exiting directly
@@ -436,103 +414,84 @@ fn main() {
     }
 }
 
+
 #[cfg(test)]
 mod test {
     use super::*;
-    use crossbeam_channel::unbounded;
-    use fuser::{Errno, Filesystem, PollData, RequestMeta}; // Ensure PollData is in scope
+    use fuser::{Filesystem, RequestMeta, Errno, PollData}; // Ensure PollData is in scope
     use std::sync::{Arc, Mutex};
+    use crossbeam_channel::unbounded;
 
     // Helper to create FSelFS and a channel pair for its PollData for tests
-    fn setup_test_fs_with_channel() -> (FSelFS, Sender<(u64, u32)>, Receiver<(u64, u32)>) {
+    fn setup_test_fs_with_channel() -> (FSelFS, Sender<(u64, u32)>, Receiver<(u64,u32)>) {
+        log::debug!("Setting up test FS with poll channel");
         let (tx, rx) = unbounded();
         let fsel_data_arc = Arc::new(Mutex::new(FSelData {
             bytecnt: [0; NUMFILES as usize],
             open_mask: 0,
-            // notify_mask and poll_handles removed
+            notify_mask: 0,
+            poll_handles: [0; NUMFILES as usize],
         }));
-        // FSelFS initializes its PollData with None sender.
-        // The test will call init_poll_sender with the tx.
+        // PollData with None sender.
+        let poll_handler_arc = Arc::new(Mutex::new(PollData::new(None)));
         let fs = FSelFS {
             data: fsel_data_arc,
-            poll_data: PollData::new(None),
+            poll_handler: poll_handler_arc,
         };
         (fs, tx, rx)
     }
 
     #[test]
     fn test_fs_poll_registers_handle_no_initial_event() {
+        log::info!("test_fs_poll_registers_handle_no_initial_event: starting");
         let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         fs.init_poll_sender(tx_to_fs).unwrap(); // Link FS's PollData to our test sender
 
-        let req = RequestMeta {
-            unique: 0,
-            uid: 0,
-            gid: 0,
-            pid: 0,
-        };
+        let req = RequestMeta { unique: 0, uid: 0, gid: 0, pid: 0 };
         let idx: u8 = 0;
         let fh = idx as u64;
         let ino = FSelData::idx_to_ino(idx);
         let ph: u64 = 12345;
         let events = libc::POLLIN as u32;
 
-        fs.data.lock().unwrap().bytecnt[idx as usize] = 0;
-        fs.poll_data.mark_inode_not_ready(ino); // Ensure PollData also knows it's not ready
+        fs.get_data().bytecnt[idx as usize] = 0;
+        fs.get_poll_handler().mark_inode_not_ready(ino); // Ensure PollData also knows it's not ready
 
         let result = fs.poll(req, ino, fh, ph, events, 0);
+        log::debug!("test_fs_poll_registers_handle_no_initial_event: poll result = {:?}", result);
         assert!(result.is_ok(), "FS poll method should succeed");
-        assert_eq!(
-            result.unwrap(),
-            0,
-            "Should return 0 as no initial event is expected"
-        );
+        assert_eq!(result.unwrap(), 0, "Should return 0 as no initial event is expected");
 
-        assert!(fs.poll_data.registered_poll_handles.contains_key(&ph));
-        assert_eq!(
-            fs.poll_data.registered_poll_handles.get(&ph),
-            Some(&(ino, events))
-        );
-        assert!(fs
-            .poll_data
-            .inode_poll_handles
-            .get(&ino)
-            .unwrap()
-            .contains(&ph));
+        assert!(fs.get_poll_handler().registered_poll_handles.contains_key(&ph));
+        assert_eq!(fs.get_poll_handler().registered_poll_handles.get(&ph), Some(&(ino, events)));
+        assert!(fs.get_poll_handler().inode_poll_handles.get(&ino).unwrap().contains(&ph));
 
         assert!(rx_from_fs.try_recv().is_err());
     }
 
     #[test]
     fn test_fs_poll_registers_handle_with_initial_event() {
+        log::info!("test_fs_poll_registers_handle_with_initial_event: starting");
         let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         fs.init_poll_sender(tx_to_fs).unwrap();
 
-        let req = RequestMeta {
-            unique: 0,
-            uid: 0,
-            gid: 0,
-            pid: 0,
-        };
+        let req = RequestMeta { unique: 0, uid: 0, gid: 0, pid: 0 };
         let idx: u8 = 1;
         let fh = idx as u64;
         let ino = FSelData::idx_to_ino(idx);
         let ph: u64 = 54321;
         let events = libc::POLLIN as u32;
 
-        fs.poll_data.mark_inode_ready(ino, libc::POLLIN as u32);
+        fs.get_poll_handler().mark_inode_ready(ino, libc::POLLIN as u32);
         // Clear the channel from the mark_inode_ready call if any (no handle registered yet, so it shouldn't send)
         while rx_from_fs.try_recv().is_ok() {}
 
         let result = fs.poll(req, ino, fh, ph, events, 0);
+        log::debug!("test_fs_poll_registers_handle_with_initial_event: poll result = {:?}", result);
         assert!(result.is_ok(), "FS poll method should succeed");
-        assert_eq!(
-            result.unwrap(),
-            libc::POLLIN as u32,
-            "Should return POLLIN as an initial event"
-        );
+        assert_eq!(result.unwrap(), libc::POLLIN as u32, "Should return POLLIN as an initial event");
 
-        assert!(fs.poll_data.registered_poll_handles.contains_key(&ph));
+        assert!(fs.get_poll_handler().registered_poll_handles.contains_key(&ph));
 
         match rx_from_fs.try_recv() {
             Ok((ph_recv, ev_recv)) => {
@@ -545,11 +504,10 @@ mod test {
 
     #[test]
     fn test_producer_marks_inode_ready_triggers_event() {
+        log::info!("test_producer_marks_inode_ready_triggers_event: starting");
         // For this test, we need an Arc<Mutex<FSelFS>> because producer runs in a separate thread.
         let (mut fs_instance, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         fs_instance.init_poll_sender(tx_to_fs).unwrap();
-
-        let fsel_fs_arc = Arc::new(Mutex::new(fs_instance));
 
         let idx_to_test: u8 = 2;
         let ino_to_test = FSelData::idx_to_ino(idx_to_test);
@@ -557,32 +515,20 @@ mod test {
         let events_to_test = libc::POLLIN as u32;
 
         // Simulate a poll request being registered by directly accessing PollData via the Arc
-        fsel_fs_arc.lock().unwrap().poll_data.register_poll_handle(
-            ph_to_test,
-            ino_to_test,
-            events_to_test,
-        );
+        fs_instance.get_poll_handler().register_poll_handle(ph_to_test, ino_to_test, events_to_test);
         while rx_from_fs.try_recv().is_ok() {} // Clear channel
 
         // Manually simulate one iteration of the producer logic for a specific file
-        // Get a new Arc clone for the "producer"
-        let producer_arc_clone = Arc::clone(&fsel_fs_arc);
-        {
-            let mut fs_guard = producer_arc_clone.lock().unwrap();
-            fs_guard.data.lock().unwrap().bytecnt[idx_to_test as usize] = 1;
-            fs_guard
-                .poll_data
-                .mark_inode_ready(ino_to_test, libc::POLLIN as u32);
-        }
+        fs_instance.get_data().bytecnt[idx_to_test as usize] = 1;
+        fs_instance.get_poll_handler().mark_inode_ready(ino_to_test, libc::POLLIN as u32);
+        log::debug!("test_producer_marks_inode_ready_triggers_event: marked inode ready");
 
         match rx_from_fs.try_recv() {
             Ok((ph_recv, ev_recv)) => {
                 assert_eq!(ph_recv, ph_to_test);
                 assert_eq!(ev_recv, libc::POLLIN as u32);
             }
-            Err(_) => {
-                panic!("Producer marking inode ready should have triggered an event on the channel")
-            }
+            Err(_) => panic!("Producer marking inode ready should have triggered an event on the channel"),
         }
     }
 }

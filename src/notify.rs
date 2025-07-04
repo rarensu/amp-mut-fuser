@@ -59,19 +59,8 @@ impl Notifier {
     /// Notify poll clients of I/O readiness
     #[cfg(feature = "abi-7-11")]
     pub fn poll(&self, kh: u64) -> io::Result<()> {
-        log::debug!("NOTIFIER: poll(kh={}): Creating Notification::new_poll", kh);
         let notif = Notification::new_poll(kh);
-        log::debug!("NOTIFIER: poll(kh={}): Calling self.send for FUSE_POLL", kh);
-        let result = self.send(notify_code::FUSE_POLL, &notif);
-        if let Err(e) = &result {
-            log::error!("NOTIFIER: poll(kh={}): self.send failed: {}", kh, e);
-        } else {
-            log::debug!(
-                "NOTIFIER: poll(kh={}): self.send for FUSE_POLL successful",
-                kh
-            );
-        }
-        result
+        self.send(notify_code::FUSE_POLL, &notif)
     }
 
     /// Invalidate the kernel cache for a given directory entry
@@ -118,36 +107,9 @@ impl Notifier {
     }
 
     fn send(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
-        log::debug!(
-            "NOTIFIER: send(code={:?}): Calling notification.with_iovec",
-            code
-        );
-        let result = notification.with_iovec(code, |iov| {
-            log::debug!(
-                "NOTIFIER: send(code={:?}): Sending IoSlice parts via self.0.send. Parts: {}",
-                code,
-                iov.len()
-            );
-            self.0.send(iov)
-        });
-
-        match &result {
-            Ok(Ok(_)) => log::debug!(
-                "NOTIFIER: send(code={:?}): Successfully sent notification to kernel channel.",
-                code
-            ),
-            Ok(Err(e)) => log::error!(
-                "NOTIFIER: send(code={:?}): self.0.send (sending to channel) failed: {}",
-                code,
-                e
-            ),
-            Err(e) => log::error!(
-                "NOTIFIER: send(code={:?}): notification.with_iovec failed (e.g. data too big): {}",
-                code,
-                e
-            ),
-        }
-        result.map_err(Self::too_big_err)?
+        notification
+            .with_iovec(code, |iov| self.0.send(iov))
+            .map_err(Self::too_big_err)?
     }
 
     /// Create an error for indicating when a notification message
