@@ -133,7 +133,7 @@ impl Filesystem for FSelFS {
 
     fn readdir(
         &mut self, _req: RequestMeta, ino: u64, _fh: u64, offset: i64,
-        _reply: fuser::ReplyDirectory, // Kept for signature, but not used like in poll.rs due to simplified return
+        _max_bytes: u32, // Added missing parameter to match trait
     ) -> Result<Vec<DirEntry>, Errno> {
         if ino != FUSE_ROOT_ID { return Err(Errno::ENOTDIR); }
         let Ok(start_offset): Result<u8, _> = offset.try_into() else { return Err(Errno::EINVAL); };
