@@ -16,7 +16,8 @@ use crate::ll::reply::{DirEntPlusList, DirEntryPlus};
 use crate::ll::Generation;
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
-use log::{error, warn};
+#[allow(unused_imports)]
+use log::{debug, info, warn, error};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::IoSlice;

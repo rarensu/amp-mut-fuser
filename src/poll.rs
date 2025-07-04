@@ -166,13 +166,10 @@ impl PollData {
     }
 }
 
-/// A convenience type alias for shared, mutable access to `PollData`.
-pub type SharedPollData = Arc<Mutex<PollData>>;
-
 // Example of how it might be integrated into a Filesystem struct
 //
 // pub struct MyFs {
-//     poll_data: SharedPollData,
+//     poll_data: Arc<Mutex<PollData>>,
 //     // other fs data
 // }
 //
@@ -197,6 +194,7 @@ pub type SharedPollData = Arc<Mutex<PollData>>;
 mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_poll_data_new() {

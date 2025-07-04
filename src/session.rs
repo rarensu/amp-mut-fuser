@@ -6,7 +6,8 @@
 //! for filesystem operations under its mount point.
 
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
-use log::{info, warn}; // Removed error, debug
+#[allow(unused_imports)]
+use log::{debug, info, warn, error};
 use nix::unistd::geteuid;
 use std::fmt;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -21,7 +22,7 @@ use crate::Filesystem;
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::{channel::ChannelSender, notify::Notifier, PollHandle};
+use crate::{channel::ChannelSender, notify::Notifier};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{Sender, Receiver};
 

@@ -6,7 +6,8 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use log::warn;
+#[allow(unused_imports)]
+use log::{debug, info, warn, error};
 use mnt::mount_options::parse_options_from_args;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ use crate::session::MAX_WRITE_SIZE;
 pub use ll::Errno;
 pub use mnt::mount_options::MountOption;
 #[cfg(feature = "abi-7-11")]
-pub use notify::{Notifier, PollHandle};
+pub use notify::Notifier;
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
 pub use poll::PollData; // Removed SharedPollData

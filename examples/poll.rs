@@ -45,8 +45,6 @@ const MAXBYTES: u64 = 10;
 struct FSelData {
     bytecnt: [u64; NUMFILES as usize],
     open_mask: u16,
-    notify_mask: u16,
-    poll_handles: [u64; NUMFILES as usize],
 }
 
 struct FSelFS {
@@ -362,8 +360,6 @@ fn main() {
     let data_arc = Arc::new(Mutex::new(FSelData { // For byte counts
         bytecnt: [0; NUMFILES as usize],
         open_mask: 0,
-        notify_mask: 0,
-        poll_handles: [0; NUMFILES as usize],
     }));
     let poll_handler_arc = Arc::new(Mutex::new(PollData::new(None)));
 
@@ -418,7 +414,7 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use fuser::{Filesystem, RequestMeta, Errno, PollData}; // Ensure PollData is in scope
+    use fuser::{Filesystem, RequestMeta, PollData}; // Ensure PollData is in scope
     use std::sync::{Arc, Mutex};
     use crossbeam_channel::unbounded;
 
@@ -429,8 +425,6 @@ mod test {
         let fsel_data_arc = Arc::new(Mutex::new(FSelData {
             bytecnt: [0; NUMFILES as usize],
             open_mask: 0,
-            notify_mask: 0,
-            poll_handles: [0; NUMFILES as usize],
         }));
         // PollData with None sender.
         let poll_handler_arc = Arc::new(Mutex::new(PollData::new(None)));

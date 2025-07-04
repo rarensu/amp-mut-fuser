@@ -6,7 +6,8 @@
 //! TODO: This module is meant to go away soon in favor of `ll::Request`.
 
 use crate::ll::{fuse_abi as abi, Errno};
-use log::{debug, error, warn};
+#[allow(unused_imports)]
+use log::{debug, info, warn, error};
 use std::convert::TryFrom;
 #[cfg(feature = "abi-7-28")]
 use std::convert::TryInto;
@@ -16,8 +17,6 @@ use crate::ll::Request as _;
 use crate::reply::{ReplyHandler, ReplySender};
 use crate::session::{Session, SessionACL};
 use crate::Filesystem;
-#[cfg(feature = "abi-7-11")]
-use crate::PollHandle;
 use crate::{ll, Forget, KernelConfig};
 
 /// Request data structure
