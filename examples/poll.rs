@@ -251,7 +251,8 @@ impl Filesystem for FSelFS {
         *cnt -= size;
         // if cnt is now equal to zero, mark the node as not ready. 
         if *cnt == 0 {
-            self.get_poll_handler().mark_inode_not_ready(FSelData::idx_to_ino(idx));
+            // Mark the inode as no longer ready for POLLIN events specifically
+            self.get_poll_handler().mark_inode_not_ready(FSelData::idx_to_ino(idx), libc::POLLIN as u32);
         }
         let elt = match idx {
             0..=9 => b'0' + idx,

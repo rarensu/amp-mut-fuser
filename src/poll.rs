@@ -24,7 +24,8 @@ pub struct PollData {
     pub inode_poll_handles: HashMap<u64, HashSet<u64>>,
     /// Tracks inodes that are currently ready for I/O (e.g., POLLIN).
     /// This set is updated by filesystem operations.
-    pub ready_inodes: HashSet<u64>,
+    /// Stores the actual current readiness mask for each inode.
+    pub ready_inodes: HashMap<u64, u32>,
 }
 
 impl PollData {
@@ -34,7 +35,7 @@ impl PollData {
             ready_events_sender: sender,
             registered_poll_handles: HashMap::new(),
             inode_poll_handles: HashMap::new(),
-            ready_inodes: HashSet::new(),
+            ready_inodes: HashMap::new(),
         }
     }
 
@@ -69,28 +70,21 @@ impl PollData {
             .insert(ph, (ino, events_requested));
         self.inode_poll_handles.entry(ino).or_default().insert(ph);
 
-        // Check if the file is already ready and send an initial notification if so.
-        // We assume POLLIN for now as the primary readiness event.
-        // More sophisticated event matching could be added here.
-        if self.ready_inodes.contains(&ino) {
-            if let Some(sender) = &self.ready_events_sender {
-                // TODO: Determine actual_events based on file state and events_requested.
-                // For now, just signaling with POLLIN if requested.
-                // TODO: Determine actual_events based on file state and events_requested more accurately.
-                #[cfg(feature = "abi-7-21")]
-                let actual_events = events_requested & libc::POLLIN as u32; // Example: only care about POLLIN
-                #[cfg(not(feature = "abi-7-21"))]
-                let actual_events = libc::POLLIN as u32; // Before abi-7-21, requested events is meaningless
-                if actual_events != 0 {
+        // Check if the file is already ready for any of the requested events.
+        if let Some(current_readiness_mask) = self.ready_inodes.get(&ino) {
+            let initial_events_to_send = events_requested & *current_readiness_mask;
+            if initial_events_to_send != 0 {
+                if let Some(sender) = &self.ready_events_sender {
                     log::debug!(
-                        "PollData::register_poll_handle() sending initial event: ph={}, actual_events={:#x}",
-                        ph, actual_events
+                        "PollData::register_poll_handle() sending initial event: ph={}, initial_events_to_send={:#x}",
+                        ph, initial_events_to_send
                     );
-                    if sender.send((ph, actual_events)).is_err() {
+                    if sender.send((ph, initial_events_to_send)).is_err() {
                         log::warn!("PollData: Failed to send initial poll readiness event for ph {}. Channel might be disconnected.", ph);
                     }
-                    return Some(actual_events);
                 }
+                // Return the subset of requested events that are currently ready.
+                return Some(initial_events_to_send);
             }
         }
         None
@@ -128,21 +122,24 @@ impl PollData {
             "PollData::mark_inode_ready() called: ino={}, ready_events_mask={:#x}",
             ino, ready_events_mask
         );
-        self.ready_inodes.insert(ino);
+        // Update the readiness state for the inode or insert it if new.
+        // If an inode becomes ready for POLLIN, then later for POLLOUT,
+        // its readiness mask should reflect both (POLLIN | POLLOUT).
+        let current_mask = self.ready_inodes.entry(ino).or_insert(0);
+        *current_mask |= ready_events_mask;
+
         if let Some(sender) = &self.ready_events_sender {
             if let Some(poll_handles) = self.inode_poll_handles.get(&ino) {
                 for &ph in poll_handles {
-                    if let Some((_ino_of_ph, _requested_events)) = self.registered_poll_handles.get(&ph) {
-                        #[cfg(feature = "abi-7-21")]
-                        let actual_events = _requested_events & libc::POLLIN as u32; // Example: only care about POLLIN
-                        #[cfg(not(feature = "abi-7-21"))]
-                        let actual_events = libc::POLLIN as u32; // Before abi-7-21, requested events is meaningless
-                        if actual_events != 0 {
+                    if let Some((_ino_of_ph, requested_events_for_ph)) = self.registered_poll_handles.get(&ph) {
+                        // Notify if any of the newly ready events are requested by this handle.
+                        let events_to_send = *requested_events_for_ph & ready_events_mask;
+                        if events_to_send != 0 {
                             log::debug!(
-                                "PollData::mark_inode_ready() sending event: ino={}, ph={}, actual_events={:#x}",
-                                ino, ph, actual_events
+                                "PollData::mark_inode_ready() sending event: ino={}, ph={}, events_to_send={:#x}",
+                                ino, ph, events_to_send
                             );
-                            if sender.send((ph, actual_events)).is_err() {
+                            if sender.send((ph, events_to_send)).is_err() {
                                 log::warn!("PollData: Failed to send poll readiness event for ino {}, ph {}. Channel might be disconnected.", ino, ph);
                             }
                         }
@@ -152,16 +149,27 @@ impl PollData {
         }
     }
 
-    /// Marks an inode as no longer ready for I/O.
+    /// Marks an inode as no longer ready for specific I/O events.
+    ///
+    /// This function clears the specified event bits from the inode's readiness mask.
+    /// If the resulting readiness mask is zero, the inode is removed from the set of
+    /// ready inodes.
     ///
     /// # Arguments
     ///
-    /// * `ino`: The inode number that is no longer ready.
-    pub fn mark_inode_not_ready(&mut self, ino: u64) {
-        self.ready_inodes.remove(&ino);
+    /// * `ino`: The inode number.
+    /// * `no_longer_ready_events_mask`: A bitmask of events that are no longer ready for the inode.
+    pub fn mark_inode_not_ready(&mut self, ino: u64, no_longer_ready_events_mask: u32) {
+        if let Some(current_mask) = self.ready_inodes.get_mut(&ino) {
+            *current_mask &= !no_longer_ready_events_mask; // Clear the bits
+            if *current_mask == 0 {
+                self.ready_inodes.remove(&ino);
+            }
+        }
         // Note: FUSE usually doesn't have explicit "not ready anymore" notifications for poll,
         // other than timeout. Applications will re-poll if needed.
-        // However, clearing the state is important for subsequent poll registrations.
+        // However, managing this state internally is important for subsequent poll registrations
+        // and for correctly reporting initial readiness.
     }
 }
 
@@ -334,17 +342,30 @@ mod tests {
     fn test_mark_inode_not_ready() {
         let poll_data_arc = Arc::new(Mutex::new(PollData::new(None)));
         let ino1: u64 = 5;
+        let poll_in_event = libc::POLLIN as u32;
+        let poll_out_event = libc::POLLOUT as u32;
 
         {
             let mut poll_data = poll_data_arc.lock().unwrap();
-            poll_data.mark_inode_ready(ino1, libc::POLLIN as u32);
-            assert!(poll_data.ready_inodes.contains(&ino1));
+            // Mark ready for POLLIN and POLLOUT
+            poll_data.mark_inode_ready(ino1, poll_in_event | poll_out_event);
+            assert_eq!(poll_data.ready_inodes.get(&ino1), Some(&(poll_in_event | poll_out_event)));
         }
 
         {
             let mut poll_data = poll_data_arc.lock().unwrap();
-            poll_data.mark_inode_not_ready(ino1);
-            assert!(!poll_data.ready_inodes.contains(&ino1));
+            // Mark no longer ready for POLLIN
+            poll_data.mark_inode_not_ready(ino1, poll_in_event);
+            // Should still be ready for POLLOUT
+            assert_eq!(poll_data.ready_inodes.get(&ino1), Some(&poll_out_event));
+        }
+
+        {
+            let mut poll_data = poll_data_arc.lock().unwrap();
+            // Mark no longer ready for POLLOUT
+            poll_data.mark_inode_not_ready(ino1, poll_out_event);
+            // Should not be ready for anything, so removed from map
+            assert!(!poll_data.ready_inodes.contains_key(&ino1));
         }
     }
 

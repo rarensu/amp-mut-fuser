@@ -74,6 +74,10 @@ name = "poll"
 required-features = ["abi-7-11"]
 
 [[example]]
+name = "poll_single_threaded"
+required-features = ["abi-7-11"]
+
+[[example]]
 name = "poll_client"
 required-features = ["abi-7-11"]
 
