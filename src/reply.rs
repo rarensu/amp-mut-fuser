@@ -605,8 +605,8 @@ mod test {
             blksize: 0xbb,
         };
         replyhandler.entry(Entry {
-            attr: attr,
-            ttl: ttl,
+            attr,
+            ttl,
             generation: 0xaa,
         });
     }
@@ -666,8 +666,8 @@ mod test {
             blksize: 0xbb,
         };
         replyhandler.attr(Attr {
-            attr: attr,
-            ttl: ttl,
+            attr,
+            ttl,
         });
     }
 
@@ -808,8 +808,8 @@ mod test {
         };
         replyhandler.created(
             Entry {
-                attr: attr, 
-                ttl: ttl,
+                attr, 
+                ttl,
                 generation: 0xaa
             },
             Open {

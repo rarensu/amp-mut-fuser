@@ -59,7 +59,6 @@ impl PollData {
     /// # Returns
     ///
     /// * `Option<u32>`: An initial event mask if the file is already ready, otherwise `None`.
-    ///                  This helps in providing an immediate response to the poll syscall if appropriate.
     pub fn register_poll_handle(
         &mut self,
         ph: u64,
@@ -219,14 +218,14 @@ mod tests {
             poll_data.register_poll_handle(ph1, ino1, events1);
 
             assert_eq!(poll_data.registered_poll_handles.get(&ph1), Some(&(ino1, events1)));
-            assert_eq!(poll_data.inode_poll_handles.get(&ino1).unwrap().contains(&ph1), true);
+            assert!(poll_data.inode_poll_handles.get(&ino1).unwrap().contains(&ph1));
         }
 
         {
             let mut poll_data = poll_data_arc.lock().unwrap();
             poll_data.unregister_poll_handle(ph1);
-            assert!(poll_data.registered_poll_handles.get(&ph1).is_none());
-            assert!(poll_data.inode_poll_handles.get(&ino1).is_none()); // Becomes none as it's empty
+            assert!(!poll_data.registered_poll_handles.contains_key(&ph1));
+            assert!(!poll_data.inode_poll_handles.contains_key(&ino1));
         }
     }
 

@@ -144,7 +144,7 @@ impl<FS: Filesystem> Session<FS> {
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (pxs, pxr) = crossbeam_channel::unbounded();
-        let new_session = Session {
+        Session {
             filesystem,
             ch,
             mount: Arc::new(Mutex::new(None)),
@@ -158,8 +158,7 @@ impl<FS: Filesystem> Session<FS> {
             poll_event_sender: pxs,
             #[cfg(feature = "abi-7-11")]
             poll_event_receiver: pxr,
-        };
-        new_session
+        }
     }
 
     /// Run the session loop that receives kernel requests and dispatches them to method
@@ -291,7 +290,7 @@ impl BackgroundSession {
         #[cfg(feature = "abi-7-11")]
         {
             // Pass the sender to the filesystem.
-            if let Err(e) = se.filesystem.init_poll_sender(se.poll_event_sender.clone()) {
+            if let Err(e) = se.filesystem.init_poll_sender(se.get_poll_sender()) {
                 // Log an error if the filesystem explicitely states it does not support polling.
                 // ENOSYS is the default from the trait if not implemented.
                 if e != crate::Errno::ENOSYS {

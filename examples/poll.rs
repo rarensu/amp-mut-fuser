@@ -22,7 +22,7 @@ use std::{
 };
 
 #[cfg(feature = "abi-7-11")]
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Sender;
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
     Attr,
@@ -416,7 +416,7 @@ mod test {
     use super::*;
     use fuser::{Filesystem, RequestMeta, PollData}; // Ensure PollData is in scope
     use std::sync::{Arc, Mutex};
-    use crossbeam_channel::unbounded;
+    use crossbeam_channel::{unbounded, Receiver};
 
     // Helper to create FSelFS and a channel pair for its PollData for tests
     fn setup_test_fs_with_channel() -> (FSelFS, Sender<(u64, u32)>, Receiver<(u64,u32)>) {
