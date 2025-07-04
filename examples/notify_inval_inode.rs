@@ -20,7 +20,8 @@ use std::{
 use clap::Parser;
 
 use fuser::{
-    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption, Open, RequestMeta, FUSE_ROOT_ID
+    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption,
+    Open, RequestMeta, FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
@@ -72,10 +73,10 @@ impl Filesystem for ClockFS<'_> {
         self.lookup_cnt.fetch_add(1, SeqCst);
         match self.stat(ClockFS::FILE_INO) {
             Some(attr) => Ok(Entry {
-                    attr,
-                    ttl: Duration::MAX, // Effectively infinite TTL
-                    generation: 0,
-                }),
+                attr,
+                ttl: Duration::MAX, // Effectively infinite TTL
+                generation: 0,
+            }),
             None => Err(Errno::EIO), // Should not happen
         }
     }
@@ -159,7 +160,7 @@ impl Filesystem for ClockFS<'_> {
 
         let start_offset: usize = offset.try_into().map_err(|_| Errno::EINVAL)?;
         if start_offset > filedata.len() {
-             return Ok(Vec::new()); // Read past EOF
+            return Ok(Vec::new()); // Read past EOF
         }
 
         let end_offset: usize = (offset + i64::from(size))

@@ -4,11 +4,11 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    consts, BackingId, FileAttr, FileType, Filesystem, KernelConfig, MountOption, Attr, DirEntry,
-    Entry, Open, Errno, RequestMeta,
+    consts, Attr, BackingId, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, KernelConfig,
+    MountOption, Open, RequestMeta,
 };
 use std::collections::HashMap;
-use std::ffi::{OsString};
+use std::ffi::OsString;
 use std::fs::File;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, UNIX_EPOCH};
@@ -136,11 +136,7 @@ impl PassthroughFs {
 }
 
 impl Filesystem for PassthroughFs {
-    fn init(
-        &mut self,
-        _req: RequestMeta,
-        config: KernelConfig,
-    ) -> Result<KernelConfig, Errno> {
+    fn init(&mut self, _req: RequestMeta, config: KernelConfig) -> Result<KernelConfig, Errno> {
         let mut config = config;
         config.add_capabilities(consts::FUSE_PASSTHROUGH).unwrap();
         config.set_max_stack_depth(2).unwrap();
@@ -159,15 +155,17 @@ impl Filesystem for PassthroughFs {
         }
     }
 
-    fn getattr(&mut self,
-        _req: RequestMeta,
-        ino: u64,
-        _fh: Option<u64>,
-    ) -> Result<Attr, Errno> {
+    fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match ino {
-            1 => Ok(Attr{attr: self.root_attr, ttl: TTL}),
-            2 => Ok(Attr{attr: self.passthrough_file_attr, ttl: TTL}),
-            _ =>Err(Errno::ENOENT),
+            1 => Ok(Attr {
+                attr: self.root_attr,
+                ttl: TTL,
+            }),
+            2 => Ok(Attr {
+                attr: self.passthrough_file_attr,
+                ttl: TTL,
+            }),
+            _ => Err(Errno::ENOENT),
         }
     }
 
@@ -183,7 +181,10 @@ impl Filesystem for PassthroughFs {
                 // TODO: Implement opening the backing file and returning appropriate
                 // information, possibly including a BackingId within the Open struct,
                 // or handle it through other means if fd-passthrough is intended here.
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "TODO: passthrough open not fully implemented"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "TODO: passthrough open not fully implemented",
+                ))
             })
             .unwrap();
 
@@ -191,7 +192,7 @@ impl Filesystem for PassthroughFs {
         // TODO: Ensure fd-passthrough is correctly set up if intended.
         // The Open struct would carry necessary info.
         // TODO: implement flags for Open struct
-        Ok(Open{fh, flags: 0 })
+        Ok(Open { fh, flags: 0 })
     }
 
     fn release(
@@ -213,7 +214,7 @@ impl Filesystem for PassthroughFs {
         ino: u64,
         _fh: u64,
         offset: i64,
-        _max_bytes: u32
+        _max_bytes: u32,
     ) -> Result<Vec<DirEntry>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
@@ -224,7 +225,7 @@ impl Filesystem for PassthroughFs {
             (1, FileType::Directory, ".."),
             (2, FileType::RegularFile, "passthrough"),
         ];
-        let mut result=Vec::new();
+        let mut result = Vec::new();
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
             // i + 1 means the index of the next entry

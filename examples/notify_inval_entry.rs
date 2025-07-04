@@ -20,7 +20,8 @@ use std::{
 use clap::Parser;
 
 use fuser::{
-    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption, RequestMeta, FUSE_ROOT_ID
+    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption, RequestMeta,
+    FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
@@ -93,9 +94,9 @@ impl Filesystem for ClockFS<'_> {
     fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
         match ClockFS::stat(ino) {
             Some(attr) => Ok(Attr {
-                    attr,
-                    ttl: self.timeout,
-                }),
+                attr,
+                ttl: self.timeout,
+            }),
             None => Err(Errno::ENOENT),
         }
     }
