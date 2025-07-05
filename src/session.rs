@@ -4,10 +4,6 @@
 //! point. A session begins by mounting the filesystem and ends by unmounting it. While the
 //! filesystem is mounted, the session loop receives, dispatches and replies to kernel requests
 //! for filesystem operations under its mount point.
-///
-/// A session can be run synchronously in the current thread using `run()`, spawned into a
-/// background thread using `spawn()`, or run in a single-threaded mode that handles
-/// both FUSE requests and poll notifications using `run_single_threaded()`.
 
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
@@ -249,6 +245,7 @@ impl<FS: Filesystem> Session<FS> {
                     _ => return Err(err),
                 },
             }
+            // TODO: maybe add a heartbeat?
         }
         Ok(())
     }
@@ -279,7 +276,7 @@ impl<FS: Filesystem> Session<FS> {
 
     /// Run the session loop in a single thread, same as run(), but additionally
     /// processing both FUSE requests and poll events without blocking.
-    pub fn run_single_threaded(&mut self) -> io::Result<()> {
+    pub fn run_with_notifications(&mut self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
         let buf = aligned_sub_buf(
@@ -431,6 +428,8 @@ fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
     }
 }
 
+/// A session can be run synchronously in the current thread using `run()` or spawned into a
+/// background thread using `spawn()`.
 impl<FS: 'static + Filesystem + Send> Session<FS> {
     /// Run the session loop in a background thread
     pub fn spawn(self) -> io::Result<BackgroundSession> {
@@ -486,7 +485,7 @@ impl BackgroundSession {
         });
         #[cfg(feature = "abi-7-11")]
         let main_loop_guard = thread::spawn(move || {
-            se.run_single_threaded()
+            se.run_with_notifications()
         });
 
         #[cfg(feature = "abi-7-11")]
