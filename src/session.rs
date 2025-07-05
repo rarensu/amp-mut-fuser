@@ -29,8 +29,6 @@ use crate::{channel::Channel, mnt::Mount};
 use crate::{channel::ChannelSender, notify::Notifier};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{Sender, Receiver};
-#[cfg(feature = "abi-7-11")]
-use std::os::fs::AsRawFd;
 
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,

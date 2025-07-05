@@ -326,10 +326,17 @@ impl KernelConfig {
     }
 }
 
-enum FsStatus {
+#[derive(Debug)]
+#[allow(dead_code)]
+/// This enum is an optional way for the Filesystem to report its status to a Session thread.
+pub enum FsStatus {
+    /// Default may be used when the Filesystem does not implement a status
     Default,
+    /// Ready indicates the Filesystem has no actions in progress
     Ready,
+    /// Busy indicates the Filesytem has one or more actions in progress
     Busy,
+    /// Stopped indicates that the Filesystem will not accept new requests 
     Stopped
 }
 
@@ -1000,6 +1007,9 @@ pub trait Filesystem {
         Err(Errno::ENOSYS) // Default: not supported
     }
 
+    /// In a syncronous execution model where a sleep may happen, 
+    /// the Filesystem may be notified that time has elapsed,
+    /// using this heartbeat method. 
     fn heartbeat(&mut self) -> Result<FsStatus, Errno> {
         Ok(FsStatus::Default)
     }
