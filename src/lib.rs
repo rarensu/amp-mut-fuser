@@ -27,7 +27,7 @@ use crate::session::MAX_WRITE_SIZE;
 pub use ll::Errno;
 pub use mnt::mount_options::MountOption;
 #[cfg(feature = "abi-7-11")]
-pub use notify::Notifier;
+pub use notify::{Poll, InvalEntry, InvalInode, Notifier};
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
 #[cfg(feature = "abi-7-11")]
@@ -1000,7 +1000,7 @@ pub trait Filesystem {
     #[cfg(feature = "abi-7-11")]
     fn init_poll_sender(
         &mut self,
-        _sender: crossbeam_channel::Sender<(u64, u32)>,
+        _sender: crossbeam_channel::Sender<Poll>,
     ) -> Result<(), Errno> {
         Err(Errno::ENOSYS) // Default: not supported
     }
@@ -1110,77 +1110,6 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 }
-
-// Conceptual example of a Filesystem implementation owning PollData:
-//
-// use crossbeam_channel::Sender;
-// use fuser::{FileType, FileAttr, RequestMeta, Entry, Open, Errno, Filesystem, PollData};
-// use std::time::{Duration, UNIX_EPOCH};
-//
-// struct MyPollableFs {
-//     poll_data: PollData, // Owns PollData directly
-//     // Other FS-specific data
-// }
-//
-// impl MyPollableFs {
-//     fn new() -> Self {
-//         Self {
-//             poll_data: PollData::new(None), // Sender will be provided by Session via init_poll_sender
-//             // Initialize other data
-//         }
-//     }
-// }
-//
-// impl Filesystem for MyPollableFs {
-//     // ... other Filesystem methods (init, lookup, getattr, etc.) ...
-//
-//     #[cfg(feature = "abi-7-11")]
-//     fn init_poll_sender(&mut self, sender: Sender<(u64, u32)>) -> Result<(), Errno> {
-//         self.poll_data.set_sender(sender);
-//         Ok(())
-//     }
-//
-//     #[cfg(feature = "abi-7-11")]
-//     fn poll(
-//         &mut self,
-//         _req: RequestMeta,
-//         ino: u64,
-//         _fh: u64,
-//         ph: u64,
-//         events: u32,
-//         _flags: u32,
-//     ) -> Result<u32, Errno> {
-//         // Now poll_data is accessed directly, no Arc<Mutex> lock needed from FS side.
-//         // The PollData methods themselves are responsible for internal consistency if shared (but here it's owned).
-//         if let Some(initial_events) = self.poll_data.register_poll_handle(ph, ino, events) {
-//             Ok(initial_events)
-//         } else {
-//             Ok(0)
-//         }
-//     }
-//
-//     fn write(
-//         &mut self,
-//         _req: RequestMeta,
-//         ino: u64,
-//         _fh: u64,
-//         _offset: i64,
-//         data: Vec<u8>,
-//         _write_flags: u32,
-//         _flags: i32,
-//         _lock_owner: Option<u64>,
-//     ) -> Result<u32, Errno> {
-//         // Actual write logic for `ino`...
-//         let bytes_written = data.len() as u32;
-//
-//         if bytes_written > 0 {
-//             self.poll_data.mark_inode_ready(ino, libc::POLLIN as u32);
-//         }
-//         Ok(bytes_written)
-//     }
-//
-//     // ...
-// }
 
 /// Mount the given filesystem to the given mountpoint. This function will
 /// block until the filesystem is unmounted.

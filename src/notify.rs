@@ -1,7 +1,7 @@
 use std::io;
 
 #[allow(unused)]
-use std::{convert::TryInto, ffi::OsStr};
+use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
 
 use crate::{
     channel::ChannelSender,
@@ -12,6 +12,35 @@ use crate::{
     // reuse ReplySender for it.
     reply::ReplySender,
 };
+
+/// Poll event data to be sent to the kernel
+#[derive(Debug, Clone)]
+pub struct Poll {
+    /// Poll handle: the unique idenifier from a previous poll request
+    pub ph: u64,
+    /// Events flag: binary encoded information about resource availability
+    pub events: u32
+}
+
+/// Invalid entry notification to be sent to the kernel
+#[derive(Debug, Clone)]
+pub struct InvalEntry {
+    /// Parent: the inode of the parent of the invalid entry
+    pub parent: u64,
+    /// Name: the file name of the invalid entry
+    pub name: OsString
+}
+
+/// Invalid inode notification to be sent to the kernel
+#[derive(Debug, Clone)]
+pub struct InvalInode {
+    /// Inode with invalid metadata
+    pub ino: u64,
+    /// Start of invalid metadata
+    pub offset: i64,
+    /// Length of invalid metadata
+    pub len: i64
+}
 
 /// A handle by which the application can send notifications to the server
 #[derive(Debug, Clone)]
@@ -24,23 +53,23 @@ impl Notifier {
 
     /// Notify poll clients of I/O readiness
     #[cfg(feature = "abi-7-11")]
-    pub fn poll(&self, kh: u64) -> io::Result<()> {
-        let notif = Notification::new_poll(kh);
+    pub fn poll(&self, notification: Poll) -> io::Result<()> {
+        let notif = Notification::new_poll(notification.ph);
         self.send(notify_code::FUSE_POLL, &notif)
     }
 
     /// Invalidate the kernel cache for a given directory entry
     #[cfg(feature = "abi-7-12")]
-    pub fn inval_entry(&self, parent: u64, name: &OsStr) -> io::Result<()> {
-        let notif = Notification::new_inval_entry(parent, name).map_err(Self::too_big_err)?;
+    pub fn inval_entry(&self, notification: InvalEntry) -> io::Result<()> {
+        let notif = Notification::new_inval_entry(notification.parent, notification.name.as_ref()).map_err(Self::too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_INVAL_ENTRY, &notif)
     }
 
     /// Invalidate the kernel cache for a given inode (metadata and
     /// data in the given range)
     #[cfg(feature = "abi-7-12")]
-    pub fn inval_inode(&self, ino: u64, offset: i64, len: i64) -> io::Result<()> {
-        let notif = Notification::new_inval_inode(ino, offset, len);
+    pub fn inval_inode(&self, notification: InvalInode ) -> io::Result<()> {
+        let notif = Notification::new_inval_inode(notification.ino, notification.offset, notification.len);
         self.send_inval(notify_code::FUSE_NOTIFY_INVAL_INODE, &notif)
     }
 

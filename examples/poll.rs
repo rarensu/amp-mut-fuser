@@ -31,6 +31,7 @@ use fuser::{
     Filesystem, // Removed SharedPollData
     MountOption,
     Open,
+    Poll,
     RequestMeta,
     FUSE_ROOT_ID,
 }; // For PollData initialization and test setup
@@ -318,7 +319,7 @@ impl Filesystem for FSelFS {
     }
 
     #[cfg(feature = "abi-7-11")]
-    fn init_poll_sender(&mut self, sender: Sender<(u64, u32)>) -> Result<(), Errno> {
+    fn init_poll_sender(&mut self, sender: Sender<Poll>) -> Result<(), Errno> {
         log::info!("init_poll_sender() called");
         self.poll_handler.set_sender(sender);
         Ok(())
@@ -369,23 +370,22 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use fuser::{Filesystem, RequestMeta, PollData}; // Ensure PollData is in scope
-    use std::sync::{Arc, Mutex};
+    use fuser::{Filesystem, RequestMeta};
     use crossbeam_channel::{unbounded, Receiver};
 
     // Helper to create FSelFS and a channel pair for its PollData for tests
     fn setup_test_fs_with_channel() -> (FSelFS, Sender<(u64, u32)>, Receiver<(u64,u32)>) {
         log::debug!("Setting up test FS with poll channel");
         let (tx, rx) = unbounded();
-        let fsel_data_arc = Arc::new(Mutex::new(FSelData {
+        let data = FSelData {
             bytecnt: [0; NUMFILES as usize],
             open_mask: 0,
-        }));
+        };
         // PollData with None sender.
-        let poll_handler_arc = Arc::new(Mutex::new(PollData::new(None)));
+        let poll_handler = PollData::new(None);
         let fs = FSelFS {
-            data: fsel_data_arc,
-            poll_handler: poll_handler_arc,
+            data,
+            poll_handler,
             producer: ProducerData { next_time: UNIX_EPOCH, next_idx: 0, next_nr: 1 }
         };
         (fs, tx, rx)

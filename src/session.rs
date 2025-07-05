@@ -22,7 +22,9 @@ use crate::{Filesystem, FsStatus};
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::{channel::ChannelSender, notify::Notifier};
+use crate::{channel::ChannelSender,
+    notify::{Poll, InvalEntry, InvalInode, Notifier}
+};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{Sender, Receiver};
 
@@ -77,10 +79,10 @@ pub struct Session<FS: Filesystem> {
     pub(crate) poll_enabled: bool,
     /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
     #[cfg(feature = "abi-7-11")]
-    pub(crate) poll_event_sender: Sender<(u64, u32)>,
+    pub(crate) poll_event_sender: Sender<Poll>,
     /// Receiver for poll events from the filesystem.
     #[cfg(feature = "abi-7-11")]
-    pub(crate) poll_event_receiver: Receiver<(u64, u32)>,
+    pub(crate) poll_event_receiver: Receiver<Poll>,
 }
 
 impl<FS: Filesystem> AsFd for Session<FS> {
@@ -270,7 +272,7 @@ impl<FS: Filesystem> Session<FS> {
 
     /// Returns an object that can be used to send poll event notifications
     #[cfg(feature = "abi-7-11")]
-    pub fn get_poll_sender(&self) -> Sender<(u64, u32)> {
+    pub fn get_poll_sender(&self) -> Sender<Poll> {
         self.poll_event_sender.clone()
     }
 
@@ -292,15 +294,15 @@ impl<FS: Filesystem> Session<FS> {
             #[cfg(feature = "abi-7-11")]
             if self.poll_enabled {
                 match self.poll_event_receiver.try_recv() {
-                    Ok((kh, events)) => {
+                    Ok(notification) => {
                         // Note: Original plan mentioned calling self.notifier().poll(kh).
                         // The existing poll loop in BackgroundSession directly calls notifier.poll(ph).
                         // We'll replicate that behavior.
                         // The `events` variable from `poll_event_receiver` is not directly used by `Notifier::poll`,
                         // as `Notifier::poll` only takes `kh`. This matches existing behavior.
-                        debug!("Processing poll event for kh: {}, events: {:x}", kh, events);
-                        if let Err(e) = self.notifier().poll(kh) {
-                            error!("Failed to send poll notification for kh {}: {}", kh, e);
+                        debug!("Processing poll event for ph: {}, events: {}", notification.ph, notification.events);
+                        if let Err(e) = self.notifier().poll(notification) {
+                            error!("Failed to send poll notification: {}", e);
                             // Decide if error is fatal. ENODEV might mean unmounted.
                             if e.raw_os_error() == Some(libc::ENODEV) {
                                 warn!("FUSE device not available for poll notification, likely unmounted. Exiting.");
@@ -454,9 +456,6 @@ impl<FS: Filesystem> Drop for Session<FS> {
 pub struct BackgroundSession {
     /// Thread guard of the main session loop
     pub main_loop_guard: JoinHandle<io::Result<()>>,
-    /// Thread guard for the poll event notification loop
-    #[cfg(feature = "abi-7-11")]
-    pub poll_event_loop_guard: Option<JoinHandle<()>>,
     /// Object for creating Notifiers for client use
     #[cfg(feature = "abi-7-11")]
     sender: ChannelSender,
@@ -469,10 +468,6 @@ impl BackgroundSession {
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
     pub fn new<FS: Filesystem + Send + 'static>(mut se: Session<FS>) -> io::Result<BackgroundSession> {
-        #[cfg(feature = "abi-7-11")]
-        let poll_event_receiver_for_loop = se.poll_event_receiver.clone(); // Receiver is copied into the poll_event_loop_guard's thread
-        #[cfg(feature = "abi-7-11")]
-        let notifier_for_poll_loop = Notifier::new(se.ch.sender().clone()); // Notifier needs its own sender clone
         #[cfg(feature = "abi-7-11")]
         let extra_sender_clone = se.ch.sender().clone();
 
@@ -488,38 +483,8 @@ impl BackgroundSession {
             se.run_with_notifications()
         });
 
-        #[cfg(feature = "abi-7-11")]
-        let poll_event_loop_guard = {
-            // Note: se.ch.sender() is used for the notifier, se.poll_event_receiver for this loop.
-            info!("Spawning poll event notification thread.");
-            Some(thread::spawn(move || {
-                loop {
-                    match poll_event_receiver_for_loop.recv() { // uses clone of receiver
-                        Ok((ph, _events)) => {
-                            if let Err(e) = notifier_for_poll_loop.poll(ph) {
-                                log::error!("Failed to send poll notification for ph {}: {}", ph, e);
-                                if e.kind() == io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(libc::ENODEV) {
-                                    warn!("Poll notification channel broken, exiting poll event loop.");
-                                    break;
-                                }
-                            } else {
-                                debug!("Sent poll notification for ph {}", ph);
-                            }
-                        }
-                        Err(e) => {
-                            info!("Poll event channel disconnected: {}. Exiting poll event loop.", e);
-                            break;
-                        }
-                    }
-                }
-            }))
-        };
-        // No explicit poll_event_loop_guard = None for the else case, as the field itself is conditional in BackgroundSession
-
         Ok(BackgroundSession {
             main_loop_guard,
-            #[cfg(feature = "abi-7-11")]
-            poll_event_loop_guard,
             #[cfg(feature = "abi-7-11")]
             sender: extra_sender_clone, // This sender is for the Notifier method on BackgroundSession
             _mount: mount,
@@ -529,18 +494,12 @@ impl BackgroundSession {
     pub fn join(self) {
         let Self {
             main_loop_guard,
-            #[cfg(feature = "abi-7-11")]
-            poll_event_loop_guard,
             #[cfg(feature = "abi-7-11")] // sender is conditionally present
             sender: _,
             _mount,
         } = self;
         drop(_mount); // Unmounts the filesystem
         main_loop_guard.join().unwrap().unwrap();
-        #[cfg(feature = "abi-7-11")]
-        if let Some(guard) = poll_event_loop_guard {
-            guard.join().unwrap();
-        }
     }
 
     /// Returns an object that can be used to send notifications to the kernel
@@ -558,7 +517,6 @@ impl fmt::Debug for BackgroundSession {
         builder.field("main_loop_guard", &self.main_loop_guard);
         #[cfg(feature = "abi-7-11")]
         {
-            builder.field("poll_event_loop_guard", &self.poll_event_loop_guard);
             builder.field("sender", &self.sender);
         }
         builder.field("_mount", &self._mount);

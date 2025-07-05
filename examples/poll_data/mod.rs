@@ -1,5 +1,6 @@
 use crossbeam_channel::Sender;
 use std::collections::{HashMap, HashSet};
+use fuser::Poll;
 
 /// `PollData` holds the state required for managing asynchronous poll notifications.
 /// It is typically owned by a `Filesystem` implementation. The `Sender` end of its
@@ -10,7 +11,7 @@ pub struct PollData {
     /// Sender part of the MPMC channel for (poll_handle, events_bitmask).
     /// This is used by the filesystem logic to send readiness events.
     /// Typically set via `PollData::new` or `PollData::set_sender`.
-    pub ready_events_sender: Option<Sender<(u64, u32)>>,
+    pub ready_events_sender: Option<Sender<Poll>>,
     /// Stores registered poll handles.
     /// Maps a kernel poll handle (`u64`) to a tuple of (inode, requested_events).
     /// This allows us to know which inode and which events a poll handle is interested in.
@@ -28,7 +29,7 @@ pub struct PollData {
 
 impl PollData {
     /// Creates a new `PollData` instance, optionally with an initial sender.
-    pub fn new(sender: Option<Sender<(u64, u32)>>) -> Self {
+    pub fn new(sender: Option<Sender<Poll>>) -> Self {
         PollData {
             ready_events_sender: sender,
             registered_poll_handles: HashMap::new(),
@@ -39,7 +40,7 @@ impl PollData {
 
     /// Sets or updates the sender for ready events.
     /// This is typically called by the `Filesystem` implementation when the `Session` provides the sender.
-    pub fn set_sender(&mut self, new_sender: Sender<(u64, u32)>) {
+    pub fn set_sender(&mut self, new_sender: Sender<Poll>) {
         self.ready_events_sender = Some(new_sender);
     }
 
@@ -77,7 +78,7 @@ impl PollData {
                         "PollData::register_poll_handle() sending initial event: ph={}, initial_events_to_send={:#x}",
                         ph, initial_events_to_send
                     );
-                    if sender.send((ph, initial_events_to_send)).is_err() {
+                    if sender.send(Poll{ph, events: initial_events_to_send}).is_err() {
                         log::warn!("PollData: Failed to send initial poll readiness event for ph {}. Channel might be disconnected.", ph);
                     }
                 }
@@ -138,7 +139,7 @@ impl PollData {
                                 "PollData::mark_inode_ready() sending event: ino={}, ph={}, events_to_send={:#x}",
                                 ino, ph, events_to_send
                             );
-                            if sender.send((ph, events_to_send)).is_err() {
+                            if sender.send(Poll{ph, events: events_to_send}).is_err() {
                                 log::warn!("PollData: Failed to send poll readiness event for ino {}, ph {}. Channel might be disconnected.", ino, ph);
                             }
                         }
