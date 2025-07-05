@@ -16,6 +16,10 @@ use std::{
 
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::Sender;
+
+mod poll_data;
+use poll_data::PollData;
+
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
     Attr,
@@ -27,7 +31,6 @@ use fuser::{
     Filesystem, // Removed SharedPollData
     MountOption,
     Open,
-    PollData,
     RequestMeta,
     FUSE_ROOT_ID,
 }; // For PollData initialization and test setup
@@ -228,7 +231,6 @@ impl Filesystem for FSelFS {
             return Err(Errno::EACCES);
         }
 
-
         if self.data.open_mask & (1 << idx) != 0 {
             return Err(Errno::EBUSY);
         }
@@ -298,12 +300,15 @@ impl Filesystem for FSelFS {
         _ino: u64,
         fh: u64,
         ph: u64,
-        _events: u32,
-        _flags: u32,
+        events: u32,
+        flags: u32,
     ) -> Result<u32, Errno> {
-        log::info!("poll() called: fh={fh}, ph={ph}, events={_events}");
+        log::info!("poll() called: fh={fh}, ph={ph}, events={events}, flags={flags}");
+        if flags & FUSE_POLL_SCHEDULE_NOTIFY == 0 { 
+            // TODO: handle this unexpected case.
+        }
         let ino = FSelData::idx_to_ino(fh.try_into().expect("fh should be a valid index"));
-        if let Some(initial_events) = self.poll_handler.register_poll_handle(ph, ino, _events) {
+        if let Some(initial_events) = self.poll_handler.register_poll_handle(ph, ino, events) {
             log::debug!("poll(): Registered poll handle {ph} for ino {ino}, initial_events={initial_events}");
             Ok(initial_events)
         } else {

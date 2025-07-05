@@ -1,7 +1,5 @@
 use crossbeam_channel::Sender;
 use std::collections::{HashMap, HashSet};
-// Arc and Mutex are no longer used directly within this module's PollData logic
-// as PollData is typically owned directly or its sharing is managed by its owner.
 
 /// `PollData` holds the state required for managing asynchronous poll notifications.
 /// It is typically owned by a `Filesystem` implementation. The `Sender` end of its
@@ -90,6 +88,9 @@ impl PollData {
         None
     }
 
+    // NOTE: the example does not currently process poll cancellations.
+    // If it did, it would use this convenience function. 
+    #[allow(unused)]
     /// Unregisters a poll handle.
     ///
     /// This is typically called when the poll request is cancelled or the associated
@@ -108,8 +109,6 @@ impl PollData {
             }
         }
     }
-
-    // Removed set_ready_events_sender as set_sender serves this purpose.
 
     /// Marks an inode as ready for I/O and notifies registered poll handles.
     ///
@@ -172,30 +171,6 @@ impl PollData {
         // and for correctly reporting initial readiness.
     }
 }
-
-// Example of how it might be integrated into a Filesystem struct
-//
-// pub struct MyFs {
-//     poll_data: Arc<Mutex<PollData>>,
-//     // other fs data
-// }
-//
-// impl MyFs {
-//     pub fn new(poll_data_sender: Option<Sender<(u64, u32)>>) -> Self {
-//         Self {
-//             poll_data: Arc::new(Mutex::new(PollData::new(poll_data_sender))),
-//             // ...
-//         }
-//     }
-// }
-//
-// // In the Filesystem::poll implementation:
-// // let mut poll_data_guard = self.poll_data.lock().unwrap();
-// // poll_data_guard.register_poll_handle(ph, ino, events);
-//
-// // In an operation that makes a file ready (e.g., write):
-// // let mut poll_data_guard = self.poll_data.lock().unwrap();
-// // poll_data_guard.mark_inode_ready(ino, libc::POLLIN as u32);
 
 #[cfg(test)]
 mod tests {

@@ -30,7 +30,6 @@ pub use mnt::mount_options::MountOption;
 pub use notify::Notifier;
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
-pub use poll::PollData; // Removed SharedPollData
 #[cfg(feature = "abi-7-11")]
 pub use reply::Ioctl;
 #[cfg(target_os = "macos")]
@@ -50,7 +49,6 @@ mod mnt;
 mod notify;
 #[cfg(feature = "abi-7-40")]
 mod passthrough;
-mod poll;
 mod reply;
 mod request;
 mod session;
