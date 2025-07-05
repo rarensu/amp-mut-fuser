@@ -233,9 +233,9 @@ mod tests {
         }
 
         match rx.try_recv() {
-            Ok((ph_recv, events_recv)) => {
-                assert_eq!(ph_recv, ph1);
-                assert_eq!(events_recv, libc::POLLIN as u32);
+            Ok(notification) => {
+                assert_eq!(notification.ph, ph1);
+                assert_eq!(notification.events, libc::POLLIN as u32);
             }
             Err(e) => panic!("Expected to receive a poll event, but got error: {}", e),
         }
@@ -270,9 +270,9 @@ mod tests {
             poll_data.mark_inode_ready(ino1, libc::POLLIN as u32);
         }
         match rx.try_recv() {
-            Ok((ph_recv, events_recv)) => {
-                assert_eq!(ph_recv, ph1);
-                assert_eq!(events_recv, libc::POLLIN as u32);
+            Ok(notification) => {
+                assert_eq!(notification.ph, ph1);
+                assert_eq!(notification.events, libc::POLLIN as u32);
             }
             Err(e) => panic!("Expected to receive a POLLIN event, but got error: {}", e),
         }
@@ -306,9 +306,9 @@ mod tests {
         assert_eq!(initial_event_mask, Some(libc::POLLIN as u32), "Initial event mask should be POLLIN");
 
         match rx.try_recv() {
-            Ok((ph_recv, events_recv)) => {
-                assert_eq!(ph_recv, ph1);
-                assert_eq!(events_recv, libc::POLLIN as u32);
+            Ok(notification) => {
+                assert_eq!(notification.ph, ph1);
+                assert_eq!(notification.events, libc::POLLIN as u32);
             }
             Err(e) => panic!("Expected to receive an initial poll event, but got error: {}", e),
         }

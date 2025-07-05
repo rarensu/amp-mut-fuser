@@ -11,7 +11,7 @@
 
 use std::{
     convert::TryInto, ffi::OsString, os::unix::ffi::{OsStrExt, OsStringExt}, 
-    thread, time::{Duration, UNIX_EPOCH}
+    time::{Duration, UNIX_EPOCH}
 };
 
 #[cfg(feature = "abi-7-11")]
@@ -330,6 +330,12 @@ fn main() {
     let options = vec![MountOption::RO, MountOption::FSName("fsel_chan".to_string())];
     env_logger::init();
     log::info!("Starting fsel example with poll support.");
+
+    ctrlc::set_handler(move || {
+        println!("\nCtrl-C pressed, shutting down...");
+        std::process::exit(0); // Exit directly, for simplicity
+    }).expect("Error setting Ctrl-C handler");
+
     let data = FSelData {
         bytecnt: [0; NUMFILES as usize],
         open_mask: 0,
@@ -346,24 +352,16 @@ fn main() {
         producer
     };
     let mntpt = std::env::args().nth(1).expect("Expected mountpoint argument");
-    let session = fuser::Session::new(
+    let mut session = fuser::Session::new(
         fs,
         &mntpt,
         &options
     ).unwrap_or_else(|e| {
         panic!("Failed to create FUSE session on {}: {}", mntpt, e);
     });
-    let _bg = session.spawn().unwrap_or_else(|e| {
-        panic!("Failed to spawn FUSE session: {}", e);
-    });
     println!("FUSE filesystem 'fsel_chan' mounted on {}. Press Ctrl-C to unmount.", mntpt);
-    ctrlc::set_handler(move || {
-        println!("\nCtrl-C pressed, shutting down...");
-        std::process::exit(0); // Exit directly for simplicity in example
-    }).expect("Error setting Ctrl-C handler");
-    loop {
-        thread::park();
-    }
+    session.run_with_notifications()
+        .expect("Failed to spawn FUSE session");
 }
 
 
@@ -374,7 +372,7 @@ mod test {
     use crossbeam_channel::{unbounded, Receiver};
 
     // Helper to create FSelFS and a channel pair for its PollData for tests
-    fn setup_test_fs_with_channel() -> (FSelFS, Sender<(u64, u32)>, Receiver<(u64,u32)>) {
+    fn setup_test_fs_with_channel() -> (FSelFS, Sender<Poll>, Receiver<Poll>) {
         log::debug!("Setting up test FS with poll channel");
         let (tx, rx) = unbounded();
         let data = FSelData {
@@ -444,9 +442,9 @@ mod test {
         assert!(fs.poll_handler.registered_poll_handles.contains_key(&ph));
 
         match rx_from_fs.try_recv() {
-            Ok((ph_recv, ev_recv)) => {
-                assert_eq!(ph_recv, ph);
-                assert_eq!(ev_recv, libc::POLLIN as u32);
+            Ok(notification) => {
+                assert_eq!(notification.ph, ph);
+                assert_eq!(notification.events, libc::POLLIN as u32);
             }
             Err(_) => panic!("Expected an initial event on the channel"),
         }
@@ -474,9 +472,9 @@ mod test {
         log::debug!("test_producer_marks_inode_ready_triggers_event: marked inode ready");
 
         match rx_from_fs.try_recv() {
-            Ok((ph_recv, ev_recv)) => {
-                assert_eq!(ph_recv, ph_to_test);
-                assert_eq!(ev_recv, libc::POLLIN as u32);
+            Ok(notification) => {
+                assert_eq!(notification.ph, ph_to_test);
+                assert_eq!(notification.events, libc::POLLIN as u32);
             }
             Err(_) => panic!("Producer marking inode ready should have triggered an event on the channel"),
         }
