@@ -14,7 +14,7 @@ use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 use log::{debug, info, warn, error};
 use nix::unistd::geteuid;
 use std::fmt;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd, AsRawFd}; // Added AsRawFd
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -22,13 +22,16 @@ use std::{io, ops::DerefMut};
 
 use crate::ll::fuse_abi as abi;
 use crate::request::Request;
-use crate::Filesystem;
+use crate::{Filesystem, FsStatus};
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::{channel::ChannelSender, notify::Notifier};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{Sender, Receiver};
+#[cfg(feature = "abi-7-11")]
+use std::os::fs::AsRawFd;
+
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
@@ -38,6 +41,8 @@ pub const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
 /// Size of the buffer for reading a request from the kernel. Since the kernel may send
 /// up to MAX_WRITE_SIZE bytes in a write request, we use that value plus some extra space.
 const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
+
+const SYNC_SLEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
 #[derive(Default, Debug, Eq, PartialEq)]
 /// How requests should be filtered based on the calling UID.
@@ -87,283 +92,6 @@ pub struct Session<FS: Filesystem> {
 impl<FS: Filesystem> AsFd for Session<FS> {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.ch.as_fd()
-    }
-}
-
-
-#[cfg(test)]
-#[cfg(feature = "abi-7-11")]
-mod test_single_threaded_session {
-    use super::*;
-    // Removed ReplyPoll as it's no longer used by MockFS::poll
-    // Removed ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen as they are unused by MockFS
-    use crate::{Errno, Filesystem, KernelConfig, RequestMeta}; // Removed Open, PollData
-    // use std::ffi::OsStr; // Removed as unused
-    use std::sync::atomic::{AtomicBool, Ordering};
-    // use std::time::Duration; // Duration is no longer used by current tests.
-    // use crossbeam_channel::unbounded; // Removed as unused by current tests
-    use crate::ll::fuse_abi; // Direct import for fuse_abi types
-    use std::os::unix::io::AsRawFd;
-    use std::io::{Read, Write}; // Added for the module
-    use std::os::fd::OwnedFd;
-    use std::fs::File;
-
-    // Shared state for MockFS, allowing it to be cloned for Session and test assertion/manipulation.
-    #[derive(Default, Debug)]
-    struct MockFsState {
-        init_called: AtomicBool,
-        lookup_called: AtomicBool,
-        poll_event_sender: Mutex<Option<Sender<(u64, u32)>>>,
-        last_lookup_name: Mutex<Option<String>>,
-    }
-
-    // A mock Filesystem for testing
-    #[derive(Debug, Clone)] // MockFS is now Clone
-    struct MockFS {
-        state: Arc<MockFsState>,
-    }
-
-    impl Default for MockFS {
-        fn default() -> Self {
-            MockFS {
-                state: Arc::new(MockFsState::default()),
-            }
-        }
-    }
-
-    impl Filesystem for MockFS {
-        fn init(&mut self, _req: RequestMeta, _config: KernelConfig) -> Result<KernelConfig, Errno> {
-            self.state.init_called.store(true, Ordering::SeqCst);
-            Ok(KernelConfig::new(0, 0))
-        }
-
-        fn lookup(&mut self, _req: RequestMeta, _parent: u64, name: std::ffi::OsString) -> Result<crate::Entry, Errno> {
-            self.state.lookup_called.store(true, Ordering::SeqCst);
-            *self.state.last_lookup_name.lock().unwrap() = Some(name.to_string_lossy().to_string());
-            Err(Errno::ENOENT)
-        }
-
-        #[cfg(feature = "abi-7-11")]
-        fn init_poll_sender(&mut self, sender: Sender<(u64, u32)>) -> Result<(), Errno> {
-            *self.state.poll_event_sender.lock().unwrap() = Some(sender);
-            Ok(())
-        }
-
-        #[cfg(feature = "abi-7-11")]
-        fn poll(&mut self, _req: RequestMeta, _ino: u64, _fh: u64, _ph: u64, _events: u32, _flags: u32) -> Result<u32, Errno> {
-            Ok(0)
-        }
-    }
-
-    // Helper to create a Session with MockFS
-    fn create_test_session() -> (Session<MockFS>, File, MockFS) { // Returns MockFS (clone)
-        let (kernel_fd_owned, session_fd_owned) = nix::sys::socket::socketpair(
-            nix::sys::socket::AddressFamily::Unix,
-            nix::sys::socket::SockType::SeqPacket,
-            None,
-            nix::sys::socket::SockFlag::empty(),
-        ).expect("socketpair failed for test");
-
-        let mock_fs_instance = MockFS::default(); // Create one instance
-
-        let kernel_fd_file = File::from(kernel_fd_owned);
-        let session_fd_file = OwnedFd::from(session_fd_owned);
-
-        // Session gets a clone, test gets a clone. Both share the Arc<MockFsState>.
-        let session = Session::from_fd(mock_fs_instance.clone(), session_fd_file, SessionACL::All);
-        (session, kernel_fd_file, mock_fs_instance) // Return the original mock_fs_instance (or another clone)
-    }
-
-
-    #[test]
-    fn test_single_threaded_processes_init_request() {
-        let (mut session, kernel_fd_file, mock_fs_handle) = create_test_session();
-
-        // Manually call init_poll_sender on the session's filesystem instance.
-        let poll_sender = session.get_poll_sender();
-        session.filesystem.init_poll_sender(poll_sender).unwrap();
-
-        let session_thread = std::thread::spawn(move || {
-            session.run_single_threaded().expect("run_single_threaded failed");
-            session // Return session
-        });
-
-        // Construct FUSE_INIT request
-        // Construct fuse_init_in. For abi-7-11 (and not higher ones like 7-12 or 7-23),
-        // it only has major, minor, max_readahead, flags.
-        let init_in = fuse_abi::fuse_init_in {
-            major: fuse_abi::FUSE_KERNEL_VERSION,
-            minor: fuse_abi::FUSE_KERNEL_MINOR_VERSION,
-            max_readahead: 0,
-            flags: 0,
-            // If testing with abi-7-12, .conn would be needed.
-            // If testing with abi-7-23, .flags2 would be needed.
-            // Since this test module is cfg(feature = "abi-7-11"), we assume this base version.
-        };
-
-        let header = fuse_abi::fuse_in_header {
-            len: (std::mem::size_of::<fuse_abi::fuse_in_header>() + std::mem::size_of_val(&init_in)) as u32,
-            opcode: fuse_abi::fuse_opcode::FUSE_INIT as u32,
-            unique: 1,
-            nodeid: crate::FUSE_ROOT_ID,
-            uid: 0,
-            gid: 0,
-            pid: 0,
-            padding: 0,
-        };
-
-        let mut req_buf = Vec::new();
-        req_buf.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(&header as *const _ as *const u8, std::mem::size_of_val(&header))
-        });
-        req_buf.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(&init_in as *const _ as *const u8, std::mem::size_of_val(&init_in))
-        });
-
-        let mut kfile_write = kernel_fd_file.try_clone().expect("Failed to clone kernel_fd for writing");
-        let mut kfile_read = kernel_fd_file;
-
-        kfile_write.write_all(&req_buf).expect("Failed to write FUSE_INIT to kernel_fd");
-
-        // Session thread should process INIT and reply. Read the reply.
-        let mut reply_buf = vec![0; 1024];
-        let fd_read = kfile_read.as_raw_fd();
-        let mut poll_fds_kernel_read = [libc::pollfd { fd: fd_read, events: libc::POLLIN, revents: 0 }];
-
-        // Poll with a timeout to wait for the reply
-        let poll_res_read = unsafe { libc::poll(poll_fds_kernel_read.as_mut_ptr(), 1, 1000) }; // 1 second timeout
-        assert!(poll_res_read > 0, "Kernel FD did not become readable for INIT reply (poll timeout or error)");
-
-        let reply_len = kfile_read.read(&mut reply_buf).expect("Failed to read FUSE_INIT reply");
-        assert!(reply_len >= std::mem::size_of::<fuse_abi::fuse_out_header>(), "INIT reply too short");
-
-        // Basic check on reply header (e.g., error code should be 0)
-        let reply_header_ptr = reply_buf.as_ptr() as *const fuse_abi::fuse_out_header;
-        let reply_header = unsafe { &*reply_header_ptr };
-        assert_eq!(reply_header.unique, header.unique, "INIT reply unique ID mismatch");
-        assert_eq!(reply_header.error, 0, "INIT reply error non-zero");
-
-        // Check if Filesystem::init was called
-        assert!(mock_fs_handle.state.init_called.load(Ordering::SeqCst), "Filesystem init should have been called");
-
-        // Send DESTROY to cleanly shut down the session thread
-        let destroy_header = fuse_abi::fuse_in_header {
-            len: std::mem::size_of::<fuse_abi::fuse_in_header>() as u32,
-            opcode: fuse_abi::fuse_opcode::FUSE_DESTROY as u32,
-            unique: 2, // Different unique ID from INIT
-            nodeid: crate::FUSE_ROOT_ID,
-            uid: 0, gid: 0, pid: 0, padding: 0,
-        };
-        let destroy_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(&destroy_header as *const _ as *const u8, std::mem::size_of_val(&destroy_header))
-        };
-        // kfile_write is the handle for writing to the kernel side
-        kfile_write.write_all(destroy_bytes).expect("Failed to write FUSE_DESTROY");
-
-        // Close kernel FDs to signal end to the session thread
-        drop(kfile_write);
-        drop(kfile_read); // kfile_read is the handle for reading from the kernel side (original kernel_fd_file)
-
-        let _session_after_run = session_thread.join().expect("Session thread panicked");
-    }
-
-    #[test]
-    fn test_single_threaded_processes_poll_event() {
-        let (mut session, mut kernel_fd_read, mock_fs_handle) = create_test_session();
-        let mut kfile_write = kernel_fd_read.try_clone().expect("Failed to clone kernel_fd for writing");
-
-        let poll_sender_from_session = session.get_poll_sender();
-        session.filesystem.init_poll_sender(poll_sender_from_session.clone()).unwrap();
-
-        // Session must be initialized for poll notifications to work
-        // std::io::{Read, Write} is already imported at the top of the test module for test_single_threaded_processes_init_request
-        // so no new import needed here.
-        let init_in = fuse_abi::fuse_init_in {
-            major: fuse_abi::FUSE_KERNEL_VERSION,
-            minor: fuse_abi::FUSE_KERNEL_MINOR_VERSION,
-            max_readahead: 0,
-            flags: 0,
-            // Assuming base abi-7-11 for this test module
-        };
-        let header = fuse_abi::fuse_in_header {
-            len: (std::mem::size_of::<fuse_abi::fuse_in_header>() + std::mem::size_of_val(&init_in)) as u32,
-            opcode: fuse_abi::fuse_opcode::FUSE_INIT as u32,
-            unique: 1, nodeid: crate::FUSE_ROOT_ID, uid: 0, gid: 0, pid: 0, padding: 0,
-        };
-        let mut req_buf = Vec::new();
-        req_buf.extend_from_slice(unsafe { std::slice::from_raw_parts(&header as *const _ as *const u8, std::mem::size_of_val(&header)) });
-        req_buf.extend_from_slice(unsafe { std::slice::from_raw_parts(&init_in as *const _ as *const u8, std::mem::size_of_val(&init_in)) });
-
-        kfile_write.write_all(&req_buf).expect("Failed to write FUSE_INIT for poll test");
-
-        let mut reply_buf_init = vec![0;1024];
-        let fd_read_init = kernel_fd_read.as_raw_fd();
-        let mut poll_fds_init_reply = [libc::pollfd { fd: fd_read_init, events: libc::POLLIN, revents: 0 }];
-        let poll_res_init = unsafe { libc::poll(poll_fds_init_reply.as_mut_ptr(), 1, 1000) };
-        assert!(poll_res_init > 0, "Kernel FD did not become readable for INIT reply in poll test");
-        kernel_fd_read.read(&mut reply_buf_init).expect("Failed to read FUSE_INIT reply in poll test");
-        // INIT processed, session should be initialized.
-
-        let session_thread = std::thread::spawn(move || {
-            session.run_single_threaded().expect("run_single_threaded failed");
-        });
-
-        // Send a poll event from the "filesystem"
-        let test_kh = 12345u64;
-        let test_events = libc::POLLIN as u32;
-        mock_fs_handle.state.poll_event_sender.lock().unwrap().as_ref().unwrap().send((test_kh, test_events))
-            .expect("Failed to send poll event to session");
-
-        // How to verify Notifier::poll was called?
-        // The `run_single_threaded` loop calls `self.notifier().poll(kh)`.
-        // This sends a message through `self.ch.sender()`.
-        // So, we should expect a FUSE_POLL message on `kernel_fd_file`.
-
-        // Expected FUSE_POLL message structure:
-        // fuse_out_header: len, error=0, unique=0 (notifications have unique=0)
-        // fuse_notify_poll_wakeup_out: kh (u64)
-        // Total length: sizeof(fuse_out_header) + sizeof(fuse_notify_poll_wakeup_out)
-        // sizeof(fuse_out_header) = 16 (len,error,unique)
-        // sizeof(fuse_notify_poll_wakeup_out) = 8 (kh)
-        // Total = 24
-
-        let mut read_buf = vec![0u8; 100];
-        use std::io::Read;
-        let mut kfile = kernel_fd_file;
-
-        // Set a timeout for the read, as the test might hang if no poll notification is sent.
-        let fd = kfile.as_raw_fd();
-        let mut poll_fds_kernel = [libc::pollfd { fd, events: libc::POLLIN, revents: 0 }];
-        let poll_res = unsafe { libc::poll(poll_fds_kernel.as_mut_ptr(), 1, 1000) }; // 1s timeout
-        assert!(poll_res > 0, "Kernel FD did not become readable for poll notification");
-
-        let bytes_read = kfile.read(&mut read_buf).expect("Failed to read from kernel_fd");
-        assert_eq!(bytes_read, 16 + 8, "Unexpected size of FUSE_POLL notification");
-
-        let header_ptr = read_buf.as_ptr() as *const fuse_abi::fuse_out_header;
-        let header = unsafe { &*header_ptr };
-        assert_eq!(header.len as usize, 16 + 8);
-        assert_eq!(header.error, 0); // Error should be 0 for successful notification
-        assert_eq!(header.unique, 0); // Notifications have unique ID 0
-
-        // Check opcode (implicitly part of how Notifier sends, not in fuse_out_header directly for notifies)
-        // The actual "opcode" for notification is part of the initial send structure,
-        // not present in fuse_out_header in this way. What IS sent is:
-        // struct fuse_out_header: len, error=FUSE_NOTIFY_POLL (this is how it's distinguished), unique
-        // struct fuse_notify_poll_wakeup_out: kh
-        // So header.error should be FUSE_POLL (-4) as per fuse_abi.rs for poll notifications.
-        // Let's re-check ll::notify::Notification::new_poll - it sets error to the code.
-        assert_eq!(header.error, fuse_abi::fuse_notify_code::FUSE_POLL as i32, "Notification code mismatch");
-
-
-        let poll_wakeup_out_ptr = unsafe { read_buf.as_ptr().add(std::mem::size_of::<fuse_abi::fuse_out_header>()) }
-            as *const fuse_abi::fuse_notify_poll_wakeup_out; // Used fuse_abi alias
-        let poll_wakeup_out = unsafe { &*poll_wakeup_out_ptr };
-        assert_eq!(poll_wakeup_out.kh, test_kh, "Poll handle (kh) in notification mismatch");
-
-        // Cleanly shut down the session thread by closing the kernel_fd
-        drop(kfile);
-        session_thread.join().expect("Session thread panicked");
     }
 }
 
@@ -551,64 +279,8 @@ impl<FS: Filesystem> Session<FS> {
         self.poll_event_sender.clone()
     }
 
-    /// Run the session loop in a single thread, processing both FUSE requests and poll events.
-    ///
-    /// This method provides an alternative to `run()` (blocking multi-threaded via `spawn()`)
-    /// for applications that prefer or require a single-threaded operational model.
-    /// The loop operates as follows:
-    /// 1. It first checks for pending poll events received from the `Filesystem` implementation
-    ///    (via the channel initialized by `Filesystem::init_poll_sender`). These are processed
-    ///    non-blockingly using `try_recv()`. If an event is found, a `FUSE_NOTIFY_POLL`
-    ///    is sent to the kernel.
-    /// 2. It then checks for incoming FUSE requests from the kernel on the FUSE device
-    ///    descriptor. This check is performed non-blockingly using `libc::poll()` with a
-    ///    timeout of zero. If a request is ready, it's read and dispatched to the
-    ///    appropriate `Filesystem` method.
-    /// 3. If neither poll events nor FUSE requests are immediately available, the loop
-    ///    pauses for a very short duration (1 millisecond) using `std::thread::sleep()`
-    ///    to prevent busy-waiting and yield CPU time.
-    ///
-    /// This loop continues until the FUSE session is unmounted (e.g., `ENODEV` is received)
-    /// or a fatal error occurs.
-    ///
-    /// ## Usage
-    ///
-    /// This method is suitable for `Filesystem` implementations that manage their own
-    /// asynchronous tasks (if any) and can signal I/O readiness for polling via the
-    /// `poll_event_sender` channel provided by `Session::get_poll_sender()` and
-    /// typically passed to the `Filesystem` during its `init_poll_sender` call.
-    ///
-    /// For example, a `Filesystem` might have a `PollData` struct that, upon being
-    /// notified of data readiness for a polled file handle (`kh`), sends `(kh, event_mask)`
-    /// through this channel. `run_single_threaded` will then pick this up and notify the kernel.
-    ///
-    /// ```rust,no_run
-    /// # use fuser::{Filesystem, Session, MountOption, SessionACL, KernelConfig, ReplyEntry, RequestMeta, Errno};
-    /// # use std::ffi::OsStr;
-    /// # use crossbeam_channel::Sender;
-    /// # struct MyFS;
-    /// # impl Filesystem for MyFS {
-    /// #     fn init(&mut self, _req: RequestMeta, _config: KernelConfig) -> Result<KernelConfig, Errno> { Ok(KernelConfig::default()) }
-    /// #     fn lookup(&mut self, _req: RequestMeta, _parent: u64, _name: &OsStr, reply: ReplyEntry) { reply.error(Errno::ENOENT); }
-    /// #     #[cfg(feature = "abi-7-11")]
-    /// #     fn init_poll_sender(&mut self, _sender: Sender<(u64, u32)>) -> Result<(), Errno> { Ok(()) }
-    /// # }
-    /// # fn main() -> std::io::Result<()> {
-    /// # let mountpoint = "/tmp/fuse_mount";
-    /// # std::fs::create_dir_all(mountpoint).ok();
-    /// let fs = MyFS;
-    /// let options = vec![MountOption::FSName("myfs".to_string())];
-    /// let mut session = Session::new(fs, mountpoint, &options)?;
-    /// // Initialize the poll sender in your Filesystem implementation if it uses polling.
-    /// // session.filesystem.init_poll_sender(session.get_poll_sender()).unwrap();
-    ///
-    /// // Run the single-threaded session loop.
-    /// // This will block until the filesystem is unmounted or an error occurs.
-    /// session.run_single_threaded()?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[cfg(feature = "abi-7-11")]
+    /// Run the session loop in a single thread, same as run(), but additionally
+    /// processing both FUSE requests and poll events without blocking.
     pub fn run_single_threaded(&mut self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
@@ -617,17 +289,12 @@ impl<FS: Filesystem> Session<FS> {
             std::mem::align_of::<abi::fuse_in_header>(),
         );
 
-        let fuse_fd = self.ch.as_fd().as_raw_fd();
-        let mut pollfds = [libc::pollfd {
-            fd: fuse_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-
         info!("Running FUSE session in single-threaded mode");
 
         loop {
+            let mut work_done = false;
             // 1. Check for and process pending poll events (non-blocking)
+            #[cfg(feature = "abi-7-11")]
             if self.poll_enabled {
                 match self.poll_event_receiver.try_recv() {
                     Ok((kh, events)) => {
@@ -645,8 +312,7 @@ impl<FS: Filesystem> Session<FS> {
                                 break;
                             }
                         }
-                        // Continue immediately to prioritize processing all available internal events
-                        continue;
+                        work_done = true;
                     }
                     Err(crossbeam_channel::TryRecvError::Empty) => {
                         // No poll events pending, proceed to check FUSE FD
@@ -656,34 +322,29 @@ impl<FS: Filesystem> Session<FS> {
                         // This is not necessarily a fatal error for the session itself,
                         // as FUSE requests can still be processed.
                         warn!("Poll event channel disconnected by sender. No more poll events will be processed.");
-                        // We could choose to break or continue; for now, let FUSE requests continue.
+                        self.poll_enabled=false;
                     }
                 }
             }
-
-            // 2. Check for incoming FUSE requests (non-blocking)
-            let poll_timeout_ms = 0; // Non-blocking poll
-            let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), 1, poll_timeout_ms) };
-
-            match ret {
-                -1 => {
-                    let err = io::Error::last_os_error();
+            // Check for incoming FUSE requests (non-blocking)
+            if work_done {
+                // skip checking for incoming FUSE requests, for now,
+                // to prioritize checking for additional outgoing messages
+                continue;
+            }
+            match self.ch.ready() {
+                Err(err) => {
                     if err.raw_os_error() == Some(EINTR) {
-                        debug!("libc::poll interrupted (EINTR), retrying.");
-                        continue;
+                        debug!("Poll interrupted, will retry.");
+                    } else {
+                        error!("Error polling FUSE FD: {}", err);
+                        // Assume very bad. Stop the run. TODO: maybe some handling. 
+                        return Err(err);
                     }
-                    error!("Error polling FUSE FD: {}", err);
-                    return Err(err); // Fatal error
-                }
-                0 => {
-                    // Timeout with no events on FUSE FD.
-                    // And no poll notifications were pending (checked above).
-                    // Sleep briefly to yield CPU.
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                _ => { // ret > 0, FUSE FD has events
-                    if (pollfds[0].revents & libc::POLLIN) != 0 {
-                        // FUSE FD is ready to read.
+                },
+                Ok( ready) => {
+                    if ready {
+                        // Read a FUSE request (blocks until read succeeds)
                         match self.ch.receive(buf) {
                             Ok(size) => {
                                 if size == 0 {
@@ -698,6 +359,7 @@ impl<FS: Filesystem> Session<FS> {
                                         break; // Illegal request, quit loop
                                     }
                                 }
+                                work_done=true;
                             }
                             Err(err) => match err.raw_os_error() {
                                 Some(ENOENT) => {
@@ -722,9 +384,24 @@ impl<FS: Filesystem> Session<FS> {
                                 }
                             },
                         }
-                    } else if (pollfds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
-                        info!("FUSE FD error or hangup detected (revents: {:#x}). Session ending.", pollfds[0].revents);
-                        break;
+                    }
+
+                }
+            }
+            if !work_done {
+                // No actions taken this loop iteration.
+                // Sleep briefly to yield CPU.
+                std::thread::sleep(SYNC_SLEEP_INTERVAL);
+                // Do a heartbeat to let the Filesystem know that some time has passed. 
+                match FS::heartbeat(&mut self.filesystem) {
+                    Ok(status) => {
+                        match status {
+                            FsStatus::Stopped => { break; }
+                            _ => { }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Heartbeat error: {:?}", e);
                     }
                 }
             }

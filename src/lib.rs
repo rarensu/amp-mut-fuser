@@ -326,6 +326,13 @@ impl KernelConfig {
     }
 }
 
+enum FsStatus {
+    Default,
+    Ready,
+    Busy,
+    Stopped
+}
+
 /// Filesystem trait.
 ///
 /// This trait must be implemented to provide a userspace filesystem via FUSE.
@@ -991,6 +998,10 @@ pub trait Filesystem {
         _sender: crossbeam_channel::Sender<(u64, u32)>,
     ) -> Result<(), Errno> {
         Err(Errno::ENOSYS) // Default: not supported
+    }
+
+    fn heartbeat(&mut self) -> Result<FsStatus, Errno> {
+        Ok(FsStatus::Default)
     }
 
     /// Preallocate or deallocate space to a file.
