@@ -392,10 +392,8 @@ impl<FS: Filesystem> Session<FS> {
                 // Do a heartbeat to let the Filesystem know that some time has passed. 
                 match FS::heartbeat(&mut self.filesystem) {
                     Ok(status) => {
-                        match status {
-                            FsStatus::Stopped => { break; }
-                            _ => { }
-                        }
+                        if let FsStatus::Stopped = status { break; }
+                        // TODO: handle other cases
                     }
                     Err(e) => {
                         warn!("Heartbeat error: {:?}", e);
