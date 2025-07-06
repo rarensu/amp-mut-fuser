@@ -13,21 +13,23 @@ use std::{
         atomic::{AtomicU64, Ordering::SeqCst},
         Arc, Mutex,
     },
-    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
-
+use crossbeam_channel::Sender;
 use fuser::{
-    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption, RequestMeta,
-    FUSE_ROOT_ID,
+    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, FsStatus, InvalEntry,
+    MountOption, Notification, RequestMeta, FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
     file_name: Arc<Mutex<String>>,
     lookup_cnt: &'a AtomicU64,
-    timeout: Duration,
+    timeout: Duration, // This is specific to entry caching TTL, keep it.
+    notification_sender: Option<Sender<Notification>>,
+    opts: Arc<Options>,
+    last_update: Mutex<SystemTime>,
 }
 
 impl ClockFS<'_> {
@@ -66,6 +68,43 @@ impl ClockFS<'_> {
 }
 
 impl Filesystem for ClockFS<'_> {
+    fn init_notification_sender(
+        &mut self,
+        sender: Sender<Notification>,
+    ) -> bool {
+        self.notification_sender = Some(sender);
+        true
+    }
+
+    fn heartbeat(&mut self) -> Result<FsStatus, Errno> {
+        let mut last_update_guard = self.last_update.lock().unwrap();
+        let now = SystemTime::now();
+
+        if now.duration_since(*last_update_guard).unwrap_or_default() >= Duration::from_secs_f32(self.opts.update_interval) {
+            let mut fname_guard = self.file_name.lock().unwrap();
+            let old_filename = std::mem::replace(&mut *fname_guard, now_filename());
+            drop(fname_guard); // Release lock
+
+            if !self.opts.no_notify && self.lookup_cnt.load(SeqCst) != 0 {
+                if let Some(sender) = &self.notification_sender {
+                    // As per plan, treat only_expire same as inval_entry for now
+                    // if self.opts.only_expire {
+                    // fuser::notify_expire_entry(_SOME_HANDLE_, FUSE_ROOT_ID, &oldname);
+                    // } else
+                    let notification = Notification::InvalEntry(InvalEntry {
+                        parent: FUSE_ROOT_ID,
+                        name: OsString::from(old_filename),
+                    });
+                    if let Err(e) = sender.send(notification) {
+                        eprintln!("Warning: failed to send InvalEntry notification: {}", e);
+                    }
+                }
+            }
+            *last_update_guard = now;
+        }
+        Ok(FsStatus::Ready)
+    }
+
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name != OsStr::new(&self.get_filename()) {
             return Err(Errno::ENOENT);
@@ -133,7 +172,7 @@ fn now_filename() -> String {
     format!("Time_is_{}", d.as_secs())
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug, Clone)]
 struct Options {
     /// Mount demo filesystem at given path
     mount_point: String,
@@ -156,31 +195,29 @@ struct Options {
 }
 
 fn main() {
-    let opts = Options::parse();
-    let options = vec![MountOption::RO, MountOption::FSName("clock".to_string())];
+    let opts = Arc::new(Options::parse());
+    let mount_options = vec![MountOption::RO, MountOption::FSName("clock_entry".to_string())];
     let fname = Arc::new(Mutex::new(now_filename()));
-    let lookup_cnt = Box::leak(Box::new(AtomicU64::new(0)));
+    let lookup_cnt = Box::leak(Box::new(AtomicU64::new(0))); // Keep as is
+
     let fs = ClockFS {
         file_name: fname.clone(),
         lookup_cnt,
         timeout: Duration::from_secs_f32(opts.timeout),
+        notification_sender: None, // Will be initialized by the session
+        opts: opts.clone(),
+        last_update: Mutex::new(SystemTime::now()),
     };
 
-    let session = fuser::Session::new(fs, opts.mount_point, &options).unwrap();
-    let notifier = session.notifier();
-    let _bg = session.spawn().unwrap();
+    eprintln!("Mounting ClockFS (entry invalidation) at {}", opts.mount_point);
+    eprintln!("Press Ctrl-C to unmount and exit.");
 
-    loop {
-        let mut fname = fname.lock().unwrap();
-        let oldname = std::mem::replace(&mut *fname, now_filename());
-        drop(fname);
-        if !opts.no_notify && lookup_cnt.load(SeqCst) != 0 {
-            if opts.only_expire {
-                // fuser::notify_expire_entry(_SOME_HANDLE_, FUSE_ROOT_ID, &oldname);
-            } else if let Err(e) = notifier.inval_entry(FUSE_ROOT_ID, oldname.as_ref()) {
-                eprintln!("Warning: failed to invalidate entry '{}': {}", oldname, e);
-            }
-        }
-        thread::sleep(Duration::from_secs_f32(opts.update_interval));
-    }
+    let mut session = fuser::Session::new(fs, &opts.mount_point, &mount_options)
+        .unwrap_or_else(|e| panic!("Failed to create FUSE session: {}", e));
+
+    session
+        .run_with_notifications()
+        .expect("Failed to run FUSE session with notifications");
+
+    eprintln!("ClockFS (entry invalidation) unmounted and exited.");
 }

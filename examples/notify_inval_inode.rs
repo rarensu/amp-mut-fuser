@@ -13,20 +13,22 @@ use std::{
         atomic::{AtomicU64, Ordering::SeqCst},
         Arc, Mutex,
     },
-    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
-
+use crossbeam_channel::Sender;
 use fuser::{
-    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, MountOption,
-    Open, RequestMeta, FUSE_ROOT_ID,
+    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, FsStatus,
+    InvalInode, MountOption, Notification, Open, RequestMeta, Store, FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
     file_contents: Arc<Mutex<String>>,
     lookup_cnt: &'a AtomicU64,
+    notification_sender: Option<Sender<Notification>>,
+    opts: Arc<Options>,
+    last_update: Mutex<SystemTime>,
 }
 
 impl ClockFS<'_> {
@@ -65,6 +67,47 @@ impl ClockFS<'_> {
 }
 
 impl Filesystem for ClockFS<'_> {
+    fn init_notification_sender(
+        &mut self,
+        sender: Sender<Notification>,
+    ) -> bool {
+        self.notification_sender = Some(sender);
+        true
+    }
+
+    fn heartbeat(&mut self) -> Result<FsStatus, Errno> {
+        let mut last_update_guard = self.last_update.lock().unwrap();
+        let now = SystemTime::now();
+        if now.duration_since(*last_update_guard).unwrap_or_default() >= Duration::from_secs_f32(self.opts.update_interval) {
+            let mut s = self.file_contents.lock().unwrap();
+            let olddata = std::mem::replace(&mut *s, now_string());
+            drop(s); // Release lock on file_contents
+
+            if !self.opts.no_notify && self.lookup_cnt.load(SeqCst) != 0 {
+                if let Some(sender) = &self.notification_sender {
+                    let notification = if self.opts.notify_store {
+                        Notification::Store(Store {
+                            ino: Self::FILE_INO,
+                            offset: 0,
+                            data: self.file_contents.lock().unwrap().as_bytes().to_vec(),
+                        })
+                    } else {
+                        Notification::InvalInode(InvalInode {
+                            ino: Self::FILE_INO,
+                            offset: 0,
+                            len: olddata.len().try_into().unwrap_or(-1),
+                        })
+                    };
+                    if let Err(e) = sender.send(notification) {
+                        eprintln!("Warning: failed to send notification: {}", e);
+                    }
+                }
+            }
+            *last_update_guard = now;
+        }
+        Ok(FsStatus::Ready)
+    }
+
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name != OsStr::new(Self::FILE_NAME) {
             return Err(Errno::ENOENT);
@@ -186,7 +229,7 @@ fn now_string() -> String {
     format!("The current time is {}\n", d.as_secs())
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug, Clone)]
 struct Options {
     /// Mount demo filesystem at given path
     mount_point: String,
@@ -205,36 +248,42 @@ struct Options {
 }
 
 fn main() {
-    let opts = Options::parse();
-    let options = vec![MountOption::RO, MountOption::FSName("clock".to_string())];
+    let opts = Arc::new(Options::parse());
+    let mount_options = vec![MountOption::RO, MountOption::FSName("clock_inode".to_string())];
     let fdata = Arc::new(Mutex::new(now_string()));
-    let lookup_cnt = Box::leak(Box::new(AtomicU64::new(0)));
+    let lookup_cnt = Box::leak(Box::new(AtomicU64::new(0))); // Keep as is for simplicity, though not ideal
+
     let fs = ClockFS {
         file_contents: fdata.clone(),
         lookup_cnt,
+        notification_sender: None, // Will be initialized by the session
+        opts: opts.clone(),
+        last_update: Mutex::new(SystemTime::now()),
     };
 
-    let session = fuser::Session::new(fs, opts.mount_point, &options).unwrap();
-    let notifier = session.notifier();
-    let _bg = session.spawn().unwrap();
+    // The main thread will run the FUSE session loop.
+    // No separate thread for notification logic is needed anymore.
+    // No direct use of session.notifier() from main.
+    // No thread::sleep in main's loop.
+    // Ctrl-C will be handled by the FUSE session ending, or manually if needed.
+    // For now, relying on unmount or external Ctrl-C to stop.
 
-    loop {
-        let mut s = fdata.lock().unwrap();
-        let olddata = std::mem::replace(&mut *s, now_string());
-        drop(s);
-        if !opts.no_notify && lookup_cnt.load(SeqCst) != 0 {
-            if opts.notify_store {
-                if let Err(e) =
-                    notifier.store(ClockFS::FILE_INO, 0, fdata.lock().unwrap().as_bytes())
-                {
-                    eprintln!("Warning: failed to update kernel cache: {}", e);
-                }
-            } else if let Err(e) =
-                notifier.inval_inode(ClockFS::FILE_INO, 0, olddata.len().try_into().unwrap())
-            {
-                eprintln!("Warning: failed to invalidate inode: {}", e);
-            }
-        }
-        thread::sleep(Duration::from_secs_f32(opts.update_interval));
-    }
+    eprintln!("Mounting ClockFS (inode invalidation) at {}", opts.mount_point);
+    eprintln!("Press Ctrl-C to unmount and exit.");
+
+    // Setup Ctrl-C handler to gracefully unmount (optional but good practice)
+    // This part is a bit tricky as Session takes ownership or runs in its own thread.
+    // For a direct run like `run_with_notifications`, we might need to handle Ctrl-C
+    // to signal the FS to stop or rely on the unmount to terminate.
+    // The simplest for now is to let the user unmount the FS to stop.
+    // Or, if the session itself handles Ctrl-C, that's also fine.
+
+    let mut session = fuser::Session::new(fs, &opts.mount_point, &mount_options)
+        .unwrap_or_else(|e| panic!("Failed to create FUSE session: {}", e));
+
+    session
+        .run_with_notifications()
+        .expect("Failed to run FUSE session with notifications");
+
+    eprintln!("ClockFS (inode invalidation) unmounted and exited.");
 }

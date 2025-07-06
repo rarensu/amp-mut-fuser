@@ -54,7 +54,7 @@ pub struct Store {
     /// The start location of the metadata to be updated
     pub offset: u64,
     /// The new metadata
-    data: Vec<u8>
+    pub data: Vec<u8>
 }
 
 #[cfg(feature = "abi-7-18")]
