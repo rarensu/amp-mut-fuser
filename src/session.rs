@@ -259,11 +259,16 @@ impl<FS: Filesystem> Session<FS> {
 
         loop {
             let mut work_done = false;
-            // 1. Check for and process pending poll events (non-blocking)
+            // Check for outgoing Notifications (non-blocking)
             #[cfg(feature = "abi-7-11")]
             if self.notify {
                 match self.nr.try_recv() {
                     Ok(notification) => {
+                        if let Notification::Stop = notification {
+                            // Filesystem says no more notifications.
+                            info!("Filesystem sent Stop notifcation; disabling notifications.");
+                            self.notify = false
+                        }
                         if let Err(e) = self.notifier().notify(notification) {
                             error!("Failed to send notification: {}", e);
                             // Decide if error is fatal. ENODEV might mean unmounted.
@@ -286,12 +291,12 @@ impl<FS: Filesystem> Session<FS> {
                     }
                 }
             }
-            // Check for incoming FUSE requests (non-blocking)
             if work_done {
-                // skip checking for incoming FUSE requests, for now,
+                // skip checking for incoming FUSE requests,
                 // to prioritize checking for additional outgoing messages
                 continue;
             }
+            // Check for incoming FUSE requests (non-blocking)
             match self.ch.ready() {
                 Err(err) => {
                     if err.raw_os_error() == Some(EINTR) {
@@ -345,7 +350,7 @@ impl<FS: Filesystem> Session<FS> {
                             },
                         }
                     }
-
+                    // if not ready, do nothing.
                 }
             }
             if !work_done {
