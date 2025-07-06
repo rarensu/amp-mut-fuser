@@ -991,19 +991,31 @@ pub trait Filesystem {
         Err(Errno::ENOSYS)
     }
 
-    /// Initializes the poll event sender for the filesystem.
-    /// This method is called by the `Session` to provide the `Sender` end of an MPMC
-    /// channel to the filesystem. The filesystem implementation should store this
-    /// sender (e.g., in its `PollData` instance) to send poll readiness events.
-    /// The default implementation returns `Err(Errno::ENOSYS)`, indicating that
-    /// channel-based polling is not supported by this filesystem.
     #[cfg(feature = "abi-7-11")]
+    /// Initializes the poll event sender for the filesystem.
     fn init_poll_sender(
         &mut self,
         _sender: crossbeam_channel::Sender<Poll>,
     ) -> Result<(), Errno> {
         Err(Errno::ENOSYS) // Default: not supported
     }
+    #[cfg(feature = "abi-7-11")]
+    /// Initializes the invalid entry sender for the filesystem.
+    fn init_inval_entry_sender(
+        &mut self,
+        _sender: crossbeam_channel::Sender<InvalEntry>,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS) // Default: not supported
+    }
+    #[cfg(feature = "abi-7-11")]
+    /// Initializes the invalid inode sender for the filesystem.
+    fn init_inval_inode_sender(
+        &mut self,
+        _sender: crossbeam_channel::Sender<InvalInode>,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS) // Default: not supported
+    }
+
 
     /// In a syncronous execution model where a sleep may happen, 
     /// the Filesystem may be notified that time has elapsed,
