@@ -27,7 +27,13 @@ use crate::session::MAX_WRITE_SIZE;
 pub use ll::Errno;
 pub use mnt::mount_options::MountOption;
 #[cfg(feature = "abi-7-11")]
-pub use notify::{Poll, InvalEntry, InvalInode, Notifier};
+pub use notify::{Notification, Poll};
+#[cfg(feature = "abi-7-12")]
+pub use notify::{InvalEntry, InvalInode};
+#[cfg(feature = "abi-7-15")]
+pub use notify::Store;
+#[cfg(feature = "abi-7-18")]
+pub use notify::Delete;
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
 #[cfg(feature = "abi-7-11")]
@@ -992,30 +998,14 @@ pub trait Filesystem {
     }
 
     #[cfg(feature = "abi-7-11")]
-    /// Initializes the poll event sender for the filesystem.
-    fn init_poll_sender(
+    /// Initializes the notification event sender for the filesystem.
+    /// Response indicates whether the channel may be used.
+    fn init_notification_sender(
         &mut self,
-        _sender: crossbeam_channel::Sender<Poll>,
-    ) -> Result<(), Errno> {
-        Err(Errno::ENOSYS) // Default: not supported
+        _sender: crossbeam_channel::Sender<Notification>,
+    ) -> bool {
+        false // Default: not supported
     }
-    #[cfg(feature = "abi-7-11")]
-    /// Initializes the invalid entry sender for the filesystem.
-    fn init_inval_entry_sender(
-        &mut self,
-        _sender: crossbeam_channel::Sender<InvalEntry>,
-    ) -> Result<(), Errno> {
-        Err(Errno::ENOSYS) // Default: not supported
-    }
-    #[cfg(feature = "abi-7-11")]
-    /// Initializes the invalid inode sender for the filesystem.
-    fn init_inval_inode_sender(
-        &mut self,
-        _sender: crossbeam_channel::Sender<InvalInode>,
-    ) -> Result<(), Errno> {
-        Err(Errno::ENOSYS) // Default: not supported
-    }
-
 
     /// In a syncronous execution model where a sleep may happen, 
     /// the Filesystem may be notified that time has elapsed,

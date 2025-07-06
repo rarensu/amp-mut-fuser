@@ -28,13 +28,13 @@ use fuser::{
     Errno,
     FileAttr,
     FileType,
-    Filesystem, // Removed SharedPollData
+    Filesystem,
     MountOption,
+    Notification,
     Open,
-    Poll,
     RequestMeta,
     FUSE_ROOT_ID,
-}; // For PollData initialization and test setup
+};
 
 const NUMFILES: u8 = 16;
 const MAXBYTES: u64 = 10;
@@ -319,10 +319,10 @@ impl Filesystem for FSelFS {
     }
 
     #[cfg(feature = "abi-7-11")]
-    fn init_poll_sender(&mut self, sender: Sender<Poll>) -> Result<(), Errno> {
+    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
         log::info!("init_poll_sender() called");
         self.poll_handler.set_sender(sender);
-        Ok(())
+        true
     }
 }
 
@@ -473,8 +473,10 @@ mod test {
 
         match rx_from_fs.try_recv() {
             Ok(notification) => {
-                assert_eq!(notification.ph, ph_to_test);
-                assert_eq!(notification.events, libc::POLLIN as u32);
+                if let Poll(poll) = notification {
+                    assert_eq!(poll.ph, ph_to_test);
+                    assert_eq!(poll.events, libc::POLLIN as u32);
+                }
             }
             Err(_) => panic!("Producer marking inode ready should have triggered an event on the channel"),
         }

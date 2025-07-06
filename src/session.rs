@@ -22,9 +22,7 @@ use crate::{Filesystem, FsStatus};
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::{channel::ChannelSender,
-    notify::{Poll, InvalEntry, InvalInode, Notifier}
-};
+use crate::notify::{Notification, Notifier};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{Sender, Receiver};
 
@@ -75,32 +73,14 @@ pub struct Session<FS: Filesystem> {
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: bool,
     #[cfg(feature = "abi-7-11")]
-    /// Whether this session currently has poll support
-    pub(crate) poll_enabled: bool,
+    /// Whether this session currently has notification support
+    pub(crate) notify: bool,
+    #[cfg(feature = "abi-7-11")]
     /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
+    pub(crate) ns: Sender<Notification>,
     #[cfg(feature = "abi-7-11")]
-    pub(crate) poll_event_sender: Sender<Poll>,
     /// Receiver for poll events from the filesystem.
-    #[cfg(feature = "abi-7-11")]
-    pub(crate) poll_event_receiver: Receiver<Poll>,
-    #[cfg(feature = "abi-7-11")]
-    /// Whether this session currently has notification invalid entry support
-    pub(crate) inval_entry_enabled: bool,
-    /// Sender for invalid entry notifications to the filesystem. It will be cloned and passed to Filesystem.
-    #[cfg(feature = "abi-7-11")]
-    pub(crate) inval_entry_sender: Sender<InvalEntry>,
-    /// Receiver for invalid entry notifications from the filesystem.
-    #[cfg(feature = "abi-7-11")]
-    pub(crate) inval_entry_receiver: Receiver<InvalEntry>,
-    #[cfg(feature = "abi-7-11")]
-    /// Whether this session currently has notification invalid inode support
-    pub(crate) inval_inode_enabled: bool,
-    /// Sender for invalid inode notifications to the filesystem. It will be cloned and passed to Filesystem.
-    #[cfg(feature = "abi-7-11")]
-    pub(crate) inval_inode_sender: Sender<InvalInode>,
-    /// Receiver for invalid inode notifications from the filesystem.
-    #[cfg(feature = "abi-7-11")]
-    pub(crate) inval_inode_receiver: Receiver<InvalInode>,
+    pub(crate) nr: Receiver<Notification>,
 }
 
 impl<FS: Filesystem> AsFd for Session<FS> {
@@ -145,67 +125,10 @@ impl<FS: Filesystem> Session<FS> {
         let mut filesystem = filesystem;
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
-        let (pxs, pxr) = crossbeam_channel::unbounded();
+        let (ns, nr) = crossbeam_channel::unbounded();
         #[cfg(feature = "abi-7-11")]
         // Pass the sender to the filesystem.
-        let poll_enabled = match filesystem.init_poll_sender(pxs.clone()) {
-            Err(e) => {
-                // Log an error if the filesystem explicitely states it does not support polling.
-                // ENOSYS is the default from the trait if not implemented.
-                if e != crate::Errno::ENOSYS {
-                    warn!("Filesystem failed to initialize poll sender: {:?}. Channel-based polling might not work as expected.", e);
-                } else {
-                    info!("Filesystem does not implement init_poll_sender (ENOSYS). Assuming no channel-based poll support or uses legacy poll.");
-                }
-                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
-                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
-                // but it might not receive anything if FS doesn't use the sender.
-                false
-            },
-            Ok(()) => true
-        };
-        #[cfg(feature = "abi-7-11")]
-        // Create the channel for invalid entry notifications.
-        let (exs, exr) = crossbeam_channel::unbounded();
-        #[cfg(feature = "abi-7-11")]
-        // Pass the sender to the filesystem.
-        let inval_entry_enabled = match filesystem.init_inval_entry_sender(exs.clone()) {
-            Err(e) => {
-                // Log an error if the filesystem explicitely states it does not support polling.
-                // ENOSYS is the default from the trait if not implemented.
-                if e != crate::Errno::ENOSYS {
-                    warn!("Filesystem failed to initialize invalid entry sender: {:?}. Channel-based notifications might not work as expected.", e);
-                } else {
-                    info!("Filesystem does not implement init_inval_entry_sender (ENOSYS). Assuming no channel-based invalid entry support or uses legacy notifications.");
-                }
-                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
-                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
-                // but it might not receive anything if FS doesn't use the sender.
-                false
-            },
-            Ok(()) => true
-        };
-        #[cfg(feature = "abi-7-11")]
-        // Create the channel for invalid entry notifications.
-        let (ixs, ixr) = crossbeam_channel::unbounded();
-        #[cfg(feature = "abi-7-11")]
-        // Pass the sender to the filesystem.
-        let inval_inode_enabled = match filesystem.init_inval_inode_sender(ixs.clone()) {
-            Err(e) => {
-                // Log an error if the filesystem explicitely states it does not support polling.
-                // ENOSYS is the default from the trait if not implemented.
-                if e != crate::Errno::ENOSYS {
-                    warn!("Filesystem failed to initialize invalid inode sender: {:?}. Channel-based notifications might not work as expected.", e);
-                } else {
-                    info!("Filesystem does not implement init_inval_inode_sender (ENOSYS). Assuming no channel-based invalid inode support or uses legacy notifications.");
-                }
-                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
-                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
-                // but it might not receive anything if FS doesn't use the sender.
-                false
-            },
-            Ok(()) => true
-        };
+        let notify = filesystem.init_notification_sender(ns.clone());
         let new_session = Session {
             filesystem,
             ch,
@@ -217,23 +140,11 @@ impl<FS: Filesystem> Session<FS> {
             initialized: false,
             destroyed: false,
             #[cfg(feature = "abi-7-11")]
-            poll_enabled,
+            notify,
             #[cfg(feature = "abi-7-11")]
-            poll_event_sender: pxs,
+            ns,
             #[cfg(feature = "abi-7-11")]
-            poll_event_receiver: pxr,
-            #[cfg(feature = "abi-7-11")]
-            inval_entry_enabled,
-            #[cfg(feature = "abi-7-11")]
-            inval_entry_sender: exs,
-            #[cfg(feature = "abi-7-11")]
-            inval_entry_receiver: exr,
-            #[cfg(feature = "abi-7-11")]
-            inval_inode_enabled,
-            #[cfg(feature = "abi-7-11")]
-            inval_inode_sender: ixs,
-            #[cfg(feature = "abi-7-11")]
-            inval_inode_receiver: ixr,
+            nr,
         };
         Ok(new_session)
     }
@@ -244,69 +155,13 @@ impl<FS: Filesystem> Session<FS> {
         // Create the channel for fuse messages
         let ch = Channel::new(Arc::new(fd.into()));
         #[cfg(feature = "abi-7-11")]
-        // Create the channel for poll events.
-        let (pxs, pxr) = crossbeam_channel::unbounded();
-        #[cfg(feature = "abi-7-11")]
         let mut filesystem = filesystem;
         #[cfg(feature = "abi-7-11")]
-        let poll_enabled = match filesystem.init_poll_sender(pxs.clone()) {
-            Err(e) => {
-                // Log an error if the filesystem explicitely states it does not support polling.
-                // ENOSYS is the default from the trait if not implemented.
-                if e != crate::Errno::ENOSYS {
-                    warn!("Filesystem failed to initialize poll sender: {:?}. Channel-based polling might not work as expected.", e);
-                } else {
-                    info!("Filesystem does not implement init_poll_sender (ENOSYS). Assuming no channel-based poll support or uses legacy poll.");
-                }
-                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
-                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
-                // but it might not receive anything if FS doesn't use the sender.
-                false
-            },
-            Ok(()) => true
-        };
-       #[cfg(feature = "abi-7-11")]
-        // Create the channel for invalid entry notifications.
-        let (exs, exr) = crossbeam_channel::unbounded();
+        // Create the channel for poll events.
+        let (ns, nr) = crossbeam_channel::unbounded();
         #[cfg(feature = "abi-7-11")]
         // Pass the sender to the filesystem.
-        let inval_entry_enabled = match filesystem.init_inval_entry_sender(exs.clone()) {
-            Err(e) => {
-                // Log an error if the filesystem explicitely states it does not support polling.
-                // ENOSYS is the default from the trait if not implemented.
-                if e != crate::Errno::ENOSYS {
-                    warn!("Filesystem failed to initialize invalid entry sender: {:?}. Channel-based notifications might not work as expected.", e);
-                } else {
-                    info!("Filesystem does not implement init_inval_entry_sender (ENOSYS). Assuming no channel-based invalid entry support or uses legacy notifications.");
-                }
-                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
-                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
-                // but it might not receive anything if FS doesn't use the sender.
-                false
-            },
-            Ok(()) => true
-        };
-        #[cfg(feature = "abi-7-11")]
-        // Create the channel for invalid entry notifications.
-        let (ixs, ixr) = crossbeam_channel::unbounded();
-        #[cfg(feature = "abi-7-11")]
-        // Pass the sender to the filesystem.
-        let inval_inode_enabled = match filesystem.init_inval_inode_sender(ixs.clone()) {
-            Err(e) => {
-                // Log an error if the filesystem explicitely states it does not support polling.
-                // ENOSYS is the default from the trait if not implemented.
-                if e != crate::Errno::ENOSYS {
-                    warn!("Filesystem failed to initialize invalid inode sender: {:?}. Channel-based notifications might not work as expected.", e);
-                } else {
-                    info!("Filesystem does not implement init_inval_inode_sender (ENOSYS). Assuming no channel-based invalid inode support or uses legacy notifications.");
-                }
-                // Proceeding even if init_poll_sender fails, as FS might use legacy poll or no poll.
-                // The poll_event_loop will still be spawned if abi-7-11 is enabled,
-                // but it might not receive anything if FS doesn't use the sender.
-                false
-            },
-            Ok(()) => true
-        };
+        let notify = filesystem.init_notification_sender(ns.clone());
         Session {
             filesystem,
             ch,
@@ -318,23 +173,11 @@ impl<FS: Filesystem> Session<FS> {
             initialized: false,
             destroyed: false,
             #[cfg(feature = "abi-7-11")]
-            poll_enabled,
+            notify,
             #[cfg(feature = "abi-7-11")]
-            poll_event_sender: pxs,
+            ns,
             #[cfg(feature = "abi-7-11")]
-            poll_event_receiver: pxr,
-            #[cfg(feature = "abi-7-11")]
-            inval_entry_enabled,
-            #[cfg(feature = "abi-7-11")]
-            inval_entry_sender: exs,
-            #[cfg(feature = "abi-7-11")]
-            inval_entry_receiver: exr,
-            #[cfg(feature = "abi-7-11")]
-            inval_inode_enabled,
-            #[cfg(feature = "abi-7-11")]
-            inval_inode_sender: ixs,
-            #[cfg(feature = "abi-7-11")]
-            inval_inode_receiver: ixr,
+            nr,
         }
     }
 
@@ -392,14 +235,14 @@ impl<FS: Filesystem> Session<FS> {
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Notifier {
+    fn notifier(&self) -> Notifier {
         Notifier::new(self.ch.sender())
     }
 
     /// Returns an object that can be used to send poll event notifications
     #[cfg(feature = "abi-7-11")]
-    pub fn get_poll_sender(&self) -> Sender<Poll> {
-        self.poll_event_sender.clone()
+    pub fn get_notification_sender(&self) -> Sender<Notification> {
+        self.ns.clone()
     }
 
     /// Run the session loop in a single thread, same as run(), but additionally
@@ -418,20 +261,14 @@ impl<FS: Filesystem> Session<FS> {
             let mut work_done = false;
             // 1. Check for and process pending poll events (non-blocking)
             #[cfg(feature = "abi-7-11")]
-            if self.poll_enabled {
-                match self.poll_event_receiver.try_recv() {
+            if self.notify {
+                match self.nr.try_recv() {
                     Ok(notification) => {
-                        // Note: Original plan mentioned calling self.notifier().poll(kh).
-                        // The existing poll loop in BackgroundSession directly calls notifier.poll(ph).
-                        // We'll replicate that behavior.
-                        // The `events` variable from `poll_event_receiver` is not directly used by `Notifier::poll`,
-                        // as `Notifier::poll` only takes `kh`. This matches existing behavior.
-                        debug!("Processing poll event for ph: {}, events: {}", notification.ph, notification.events);
-                        if let Err(e) = self.notifier().poll(notification) {
-                            error!("Failed to send poll notification: {}", e);
+                        if let Err(e) = self.notifier().notify(notification) {
+                            error!("Failed to send notification: {}", e);
                             // Decide if error is fatal. ENODEV might mean unmounted.
                             if e.raw_os_error() == Some(libc::ENODEV) {
-                                warn!("FUSE device not available for poll notification, likely unmounted. Exiting.");
+                                warn!("FUSE device not available for notification, likely unmounted. Exiting.");
                                 break;
                             }
                         }
@@ -445,17 +282,9 @@ impl<FS: Filesystem> Session<FS> {
                         // This is not necessarily a fatal error for the session itself,
                         // as FUSE requests can still be processed.
                         warn!("Poll event channel disconnected by sender. No more poll events will be processed.");
-                        self.poll_enabled=false;
+                        self.notify = false;
                     }
                 }
-            }
-            #[cfg(feature = "abi-7-11")]
-            if self.inval_entry_enabled {
-                //TODO
-            }
-            #[cfg(feature = "abi-7-11")]
-            if self.inval_inode_enabled {
-                //TODO
             }
             // Check for incoming FUSE requests (non-blocking)
             if work_done {
@@ -466,7 +295,7 @@ impl<FS: Filesystem> Session<FS> {
             match self.ch.ready() {
                 Err(err) => {
                     if err.raw_os_error() == Some(EINTR) {
-                        debug!("Poll interrupted, will retry.");
+                        debug!("FUSE Fd Poll interrupted, will retry.");
                     } else {
                         error!("Error polling FUSE FD: {}", err);
                         // Assume very bad. Stop the run. TODO: maybe some handling. 
@@ -590,7 +419,7 @@ pub struct BackgroundSession {
     pub main_loop_guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
     #[cfg(feature = "abi-7-11")]
-    sender: ChannelSender,
+    sender: Sender<Notification>,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }
@@ -601,7 +430,7 @@ impl BackgroundSession {
     /// the filesystem is unmounted and the given session ends.
     pub fn new<FS: Filesystem + Send + 'static>(mut se: Session<FS>) -> io::Result<BackgroundSession> {
         #[cfg(feature = "abi-7-11")]
-        let extra_sender_clone = se.ch.sender().clone();
+        let sender = se.ns.clone();
 
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
 
@@ -618,7 +447,7 @@ impl BackgroundSession {
         Ok(BackgroundSession {
             main_loop_guard,
             #[cfg(feature = "abi-7-11")]
-            sender: extra_sender_clone, // This sender is for the Notifier method on BackgroundSession
+            sender, // This sender is for the Notifier method on BackgroundSession
             _mount: mount,
         })
     }
@@ -636,8 +465,8 @@ impl BackgroundSession {
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Notifier {
-        Notifier::new(self.sender.clone())
+    pub fn get_notification_sender(&self) -> Sender<Notification> {
+       self.sender.clone()
     }
 }
 
