@@ -28,6 +28,169 @@ impl<'a> From<&'a [u8]> for ByteBox<'a> {
     }
 }
 
+// --- OsBox ---
+
+use std::ffi::{OsStr, OsString};
+
+/// `OsBox` provides a flexible way to handle OS-native string data (`OsStr`)
+/// with different ownership models, similar to `ByteBox` for byte slices.
+/// This is particularly useful for `Filesystem` trait methods that return path
+/// components or symbolic link targets.
+///
+/// - `Borrowed`: For `&OsStr` that can be borrowed (e.g., static `OsStr`s).
+/// - `Owned`: For an owned, heap-allocated `OsStr` (i.e., `Box<OsStr>`).
+/// - `Shared`: For a shared, atomically reference-counted `OsStr` (i.e., `Arc<OsStr>`).
+#[derive(Debug)]
+pub enum OsBox<'a> {
+    /// A borrowed `OsStr`.
+    Borrowed(&'a OsStr),
+    /// An owned, heap-allocated `OsStr`. This is `Clone` as `Box<OsStr>` is `Clone`.
+    Owned(Box<OsStr>),
+    /// A shared, atomically reference-counted `OsStr`.
+    Shared(Arc<OsStr>),
+}
+
+impl<'a> From<&'a OsStr> for OsBox<'a> {
+    fn from(s: &'a OsStr) -> Self {
+        OsBox::Borrowed(s)
+    }
+}
+
+impl<'a> From<OsString> for OsBox<'a> {
+    fn from(s: OsString) -> Self {
+        OsBox::Owned(s.into_boxed_os_str())
+    }
+}
+
+impl<'a> From<Box<OsStr>> for OsBox<'a> {
+    fn from(b: Box<OsStr>) -> Self {
+        OsBox::Owned(b)
+    }
+}
+
+impl<'a> From<Arc<OsStr>> for OsBox<'a> {
+    fn from(a: Arc<OsStr>) -> Self {
+        OsBox::Shared(a)
+    }
+}
+
+impl<'a> AsRef<OsStr> for OsBox<'a> {
+    fn as_ref(&self) -> &OsStr {
+        match self {
+            OsBox::Borrowed(s) => s,
+            OsBox::Owned(b) => b.as_ref(),
+            OsBox::Shared(a) => a.as_ref(),
+        }
+    }
+}
+
+impl<'a> Deref for OsBox<'a> {
+    type Target = OsStr;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+impl<'a> Clone for OsBox<'a> {
+    fn clone(&self) -> Self {
+        match self {
+            OsBox::Borrowed(s) => OsBox::Borrowed(s),
+            OsBox::Owned(b) => OsBox::Owned(b.clone()), // Box<OsStr> is Clone
+            OsBox::Shared(a) => OsBox::Shared(a.clone()), // Arc<OsStr> is Clone (bumps ref count)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_os_box {
+    use super::*;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::Arc;
+
+    #[test]
+    fn os_box_borrowed() {
+        let data: &OsStr = OsStr::new("test_borrowed");
+        let os_box = OsBox::from(data);
+        match os_box {
+            OsBox::Borrowed(s) => assert_eq!(s, data),
+            _ => panic!("Expected OsBox::Borrowed"),
+        }
+        assert_eq!(os_box.as_ref(), data);
+        assert_eq!(&*os_box, data);
+    }
+
+    #[test]
+    fn os_box_owned_from_os_string() {
+        let data_os_string = OsString::from("test_owned_osstring");
+        let os_box = OsBox::from(data_os_string.clone()); // clone because From<OsString> consumes
+        match os_box {
+            OsBox::Owned(ref b) => assert_eq!(b.as_ref(), data_os_string.as_os_str()),
+            _ => panic!("Expected OsBox::Owned from OsString"),
+        }
+        assert_eq!(os_box.as_ref(), data_os_string.as_os_str());
+    }
+
+    #[test]
+    fn os_box_owned_from_box_os_str() {
+        let data_box: Box<OsStr> = OsString::from("test_owned_box").into_boxed_os_str();
+        let os_box = OsBox::from(data_box.clone()); // clone because From<Box<OsStr>> consumes
+        match os_box {
+            OsBox::Owned(ref b) => assert_eq!(b.as_ref(), data_box.as_ref()),
+            _ => panic!("Expected OsBox::Owned from Box<OsStr>"),
+        }
+        assert_eq!(os_box.as_ref(), data_box.as_ref());
+    }
+
+    #[test]
+    fn os_box_shared_from_arc_os_str() {
+        let data_arc: Arc<OsStr> = Arc::from(OsString::from("test_shared_arc").into_boxed_os_str());
+        let os_box = OsBox::from(data_arc.clone());
+        match os_box {
+            OsBox::Shared(ref a) => assert_eq!(a.as_ref(), data_arc.as_ref()),
+            _ => panic!("Expected OsBox::Shared from Arc<OsStr>"),
+        }
+        assert_eq!(os_box.as_ref(), data_arc.as_ref());
+        assert!(Arc::ptr_eq(
+            match os_box { OsBox::Shared(ref a) => a, _ => panic!() },
+            &data_arc
+        ));
+    }
+
+    #[test]
+    fn os_box_clone() {
+        let static_os_str: &'static OsStr = OsStr::new("static_val");
+
+        let b1 = OsBox::Borrowed(static_os_str);
+        let b2 = b1.clone();
+        assert_eq!(b1.as_ref(), b2.as_ref());
+        if let OsBox::Borrowed(s) = b2 {
+            assert_eq!(s, static_os_str);
+        } else { panic!(); }
+
+        let owned_os_string = OsString::from("owned_val");
+        let o1 = OsBox::from(owned_os_string.clone());
+        let o2 = o1.clone();
+        assert_eq!(o1.as_ref(), o2.as_ref());
+        if let OsBox::Owned(ref b_val) = o2 { // o2 is OsBox::Owned(Box<OsStr>)
+            assert_eq!(b_val.as_ref(), owned_os_string.as_os_str());
+            // Ensure it's a new Box, not just a reference copy of the Box itself
+            if let OsBox::Owned(ref orig_b_val) = o1 {
+                 assert_ne!(std::ptr::addr_of!(**orig_b_val) as *const u8, std::ptr::addr_of!(**b_val) as *const u8);
+            }
+        } else { panic!(); }
+
+
+        let shared_arc: Arc<OsStr> = Arc::from(OsString::from("shared_val").into_boxed_os_str());
+        let s1 = OsBox::from(shared_arc.clone());
+        let s2 = s1.clone();
+        assert_eq!(s1.as_ref(), s2.as_ref());
+        if let OsBox::Shared(ref arc_val) = s2 {
+            assert!(Arc::ptr_eq(arc_val, &shared_arc));
+        } else { panic!(); }
+    }
+}
+
 // --- DirEntryBox ---
 
 /// `DirEntryBox` is an enum analogous to `ByteBox`, but for returning slices of directory

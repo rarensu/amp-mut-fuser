@@ -38,7 +38,7 @@ pub use request::RequestMeta;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 
 mod byte_box;
-pub use byte_box::{ByteBox, DirEntryBox, DirEntryPlusBox};
+pub use byte_box::{ByteBox, DirEntryBox, DirEntryPlusBox, OsBox};
 
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
@@ -414,9 +414,10 @@ pub trait Filesystem {
     }
 
     /// Read symbolic link.
-    /// The method should return `Ok(ByteBox<'a>)` with the link target, or `Err(Errno)` otherwise.
-    /// `ByteBox` allows for returning borrowed or owned data, potentially avoiding data copies.
-    fn readlink<'a>(&mut self, req: RequestMeta, ino: u64) -> Result<ByteBox<'a>, Errno> {
+    /// The method should return `Ok(OsBox<'a>)` with the link target (an OS native string),
+    /// or `Err(Errno)` otherwise.
+    /// `OsBox` allows for returning borrowed or owned `OsStr` data, potentially avoiding data copies.
+    fn readlink<'a>(&mut self, req: RequestMeta, ino: u64) -> Result<OsBox<'a>, Errno> {
         warn!("[Not Implemented] readlink(ino: {:#x?})", ino);
         Err(Errno::ENOSYS)
     }

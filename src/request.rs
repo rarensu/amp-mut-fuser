@@ -8,6 +8,7 @@
 use crate::ll::{fuse_abi as abi, Errno};
 use log::{debug, error, warn};
 use std::convert::TryFrom;
+use std::os::unix::ffi::OsStrExt; // Added for OsStr::as_bytes()
 #[cfg(feature = "abi-7-28")]
 use std::convert::TryInto;
 
@@ -265,8 +266,8 @@ impl<'a> Request<'a> {
                      self.request.nodeid().into()
                 );
                 match response {
-                    Ok(data)=> {
-                        self.replyhandler.data(data.as_ref())
+                    Ok(os_box_data)=> {
+                        self.replyhandler.data(os_box_data.as_ref().as_bytes())
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)

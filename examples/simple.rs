@@ -9,7 +9,7 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Attr, ByteBox, DirEntry, DirEntryBox, Entry, Errno, Filesystem, Forget, KernelConfig,
+    Attr, ByteBox, DirEntry, DirEntryBox, Entry, Errno, Filesystem, Forget, KernelConfig, OsBox,
     MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr, FUSE_ROOT_ID,
 };
 #[cfg(feature = "abi-7-26")]
@@ -23,7 +23,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::raw::c_int;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt}; // Added OsStringExt
 use std::os::unix::fs::FileExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::io::IntoRawFd;
@@ -755,7 +755,7 @@ impl Filesystem for SimpleFS {
         Ok(Attr { attr: final_attrs.into(), ttl: Duration::new(0,0), })
     }
 
-    fn readlink<'a>(&mut self, _req: RequestMeta, inode: u64) -> Result<ByteBox<'a>, Errno> {
+    fn readlink<'a>(&mut self, _req: RequestMeta, inode: u64) -> Result<OsBox<'a>, Errno> {
         debug!("readlink() called on {:?}", inode);
         let path = self.content_path(inode);
         match File::open(path) {
@@ -766,7 +766,11 @@ impl Filesystem for SimpleFS {
                 };
                 let mut buffer = vec![0; file_size as usize];
                 match file.read_exact(&mut buffer) {
-                    Ok(_) => Ok(ByteBox::from(buffer)),
+                    Ok(_) => {
+                        // Symlink content is an OS string (path)
+                        let os_string = OsString::from_vec(buffer);
+                        Ok(OsBox::from(os_string))
+                    }
                     Err(_) => Err(Errno::EIO), // Or some other appropriate error
                 }
             }
@@ -2172,7 +2176,7 @@ mod test {
             let readlink_result = fs.readlink(req, entry.attr.ino);
             assert!(readlink_result.is_ok(), "Readlink should succeed");
             if let Ok(target_data) = readlink_result {
-                assert_eq!(target_data.as_ref(), target.as_os_str().as_bytes(), "Readlink should return the correct target");
+                assert_eq!(target_data.as_ref().as_bytes(), target.as_os_str().as_bytes(), "Readlink should return the correct target");
             }
         }
     }
