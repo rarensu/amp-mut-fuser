@@ -67,6 +67,7 @@ impl ClockFS<'_> {
 }
 
 impl Filesystem for ClockFS<'_> {
+    #[cfg(feature = "abi-7-11")]
     fn init_notification_sender(
         &mut self,
         sender: Sender<Notification>,
@@ -252,6 +253,8 @@ fn main() {
     let mount_options = vec![MountOption::RO, MountOption::FSName("clock_inode".to_string())];
     let fdata = Arc::new(Mutex::new(now_string()));
     let lookup_cnt = Box::leak(Box::new(AtomicU64::new(0))); // Keep as is for simplicity, though not ideal
+
+    env_logger::init();
 
     let fs = ClockFS {
         file_contents: fdata.clone(),

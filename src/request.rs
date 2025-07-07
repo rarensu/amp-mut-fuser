@@ -199,7 +199,8 @@ impl<'a> Request<'a> {
                     ino: self.request.nodeid().into(),
                     nlookup: x.nlookup(),
                 };
-                se.filesystem.forget(self.meta, target); // no reply
+                se.filesystem.forget(self.meta, target); // no response
+                self.replyhandler.no_reply(); // no reply
             }
             ll::Operation::GetAttr(_attr) => {
                 #[cfg(feature = "abi-7-9")]
@@ -645,7 +646,8 @@ impl<'a> Request<'a> {
             }
             #[cfg(feature = "abi-7-16")]
             ll::Operation::BatchForget(x) => {
-                se.filesystem.batch_forget(self.meta, x.into()); // no reply
+                se.filesystem.batch_forget(self.meta, x.into()); // no response
+                self.replyhandler.no_reply(); // no reply
             }
             #[cfg(feature = "abi-7-19")]
             ll::Operation::FAllocate(x) => {

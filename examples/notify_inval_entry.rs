@@ -68,6 +68,7 @@ impl ClockFS<'_> {
 }
 
 impl Filesystem for ClockFS<'_> {
+    #[cfg(feature = "abi-7-11")]
     fn init_notification_sender(
         &mut self,
         sender: Sender<Notification>,
@@ -212,6 +213,7 @@ fn main() {
     eprintln!("Mounting ClockFS (entry invalidation) at {}", opts.mount_point);
     eprintln!("Press Ctrl-C to unmount and exit.");
 
+    env_logger::init();
     let mut session = fuser::Session::new(fs, &opts.mount_point, &mount_options)
         .unwrap_or_else(|e| panic!("Failed to create FUSE session: {}", e));
 

@@ -264,9 +264,10 @@ impl<FS: Filesystem> Session<FS> {
             if self.notify {
                 match self.nr.try_recv() {
                     Ok(notification) => {
+                        debug!("Notification: {:?}", &notification);
                         if let Notification::Stop = notification {
                             // Filesystem says no more notifications.
-                            info!("Filesystem sent Stop notifcation; disabling notifications.");
+                            info!("Filesystem sent Stop notification; disabling notifications.");
                             self.notify = false
                         }
                         if let Err(e) = self.notifier().notify(notification) {

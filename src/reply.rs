@@ -432,6 +432,11 @@ impl ReplyHandler {
     pub fn offset(self, offset: i64) {
         self.send_ll(&ll::Response::new_lseek(offset))
     }
+
+    /// Disable this replyhandler. No reply will be sent. 
+    pub fn no_reply(mut self) {
+        self.sender = None;
+    }
 }
 
 #[cfg(test)]
