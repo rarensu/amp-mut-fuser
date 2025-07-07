@@ -1,5 +1,8 @@
+use std::ffi::{OsStr, OsString};
+use std::ops::Deref;
 use std::sync::Arc;
 
+// --- ByteBox ---
 /// `ByteBox` is an enum that provides a flexible way to return byte slices (`&[u8]`)
 /// from `Filesystem` trait methods like `read` and `readlink`. It allows filesystem
 /// implementations to return data with different ownership models, optimizing for
@@ -28,9 +31,42 @@ impl<'a> From<&'a [u8]> for ByteBox<'a> {
     }
 }
 
-// --- OsBox ---
+impl<'a> From<Vec<u8>> for ByteBox<'a> {
+    fn from(vec: Vec<u8>) -> Self {
+        ByteBox::Owned(vec.into_boxed_slice())
+    }
+}
 
-use std::ffi::{OsStr, OsString};
+impl<'a> From<Box<[u8]>> for ByteBox<'a> {
+    fn from(boxed_slice: Box<[u8]>) -> Self {
+        ByteBox::Owned(boxed_slice)
+    }
+}
+
+impl<'a> From<Arc<[u8]>> for ByteBox<'a> {
+    fn from(arc_slice: Arc<[u8]>) -> Self {
+        ByteBox::Shared(arc_slice)
+    }
+}
+
+impl<'a> AsRef<[u8]> for ByteBox<'a> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            ByteBox::Borrowed(slice) => slice,
+            ByteBox::Owned(boxed_slice) => boxed_slice,
+            ByteBox::Shared(arc_slice) => arc_slice,
+        }
+    }
+}
+
+impl<'a> Deref for ByteBox<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+// --- OsBox ---
 
 /// `OsBox` provides a flexible way to handle OS-native string data (`OsStr`)
 /// with different ownership models, similar to `ByteBox` for byte slices.
@@ -42,38 +78,26 @@ use std::ffi::{OsStr, OsString};
 /// - `Shared`: For a shared, atomically reference-counted `OsStr` (i.e., `Arc<OsStr>`).
 #[derive(Debug)]
 pub enum OsBox<'a> {
-    /// A borrowed `OsStr`.
+    /// A borrowed `&'a OsStr`.
     Borrowed(&'a OsStr),
-    /// An owned, heap-allocated `OsStr`. This is `Clone` as `Box<OsStr>` is `Clone`.
+    /// An owned `Box<OsStr>`.
     Owned(Box<OsStr>),
-    /// A shared, atomically reference-counted `OsStr`.
+    /// A shared `Arc<OsStr>`.
     Shared(Arc<OsStr>),
 }
 
 impl<'a> From<&'a OsStr> for OsBox<'a> {
-    fn from(s: &'a OsStr) -> Self {
-        OsBox::Borrowed(s)
-    }
+    fn from(s: &'a OsStr) -> Self { OsBox::Borrowed(s) }
 }
-
 impl<'a> From<OsString> for OsBox<'a> {
-    fn from(s: OsString) -> Self {
-        OsBox::Owned(s.into_boxed_os_str())
-    }
+    fn from(s: OsString) -> Self { OsBox::Owned(s.into_boxed_os_str()) }
 }
-
 impl<'a> From<Box<OsStr>> for OsBox<'a> {
-    fn from(b: Box<OsStr>) -> Self {
-        OsBox::Owned(b)
-    }
+    fn from(b: Box<OsStr>) -> Self { OsBox::Owned(b) }
 }
-
 impl<'a> From<Arc<OsStr>> for OsBox<'a> {
-    fn from(a: Arc<OsStr>) -> Self {
-        OsBox::Shared(a)
-    }
+    fn from(a: Arc<OsStr>) -> Self { OsBox::Shared(a) }
 }
-
 impl<'a> AsRef<OsStr> for OsBox<'a> {
     fn as_ref(&self) -> &OsStr {
         match self {
@@ -83,28 +107,348 @@ impl<'a> AsRef<OsStr> for OsBox<'a> {
         }
     }
 }
-
 impl<'a> Deref for OsBox<'a> {
     type Target = OsStr;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
+    fn deref(&self) -> &Self::Target { self.as_ref() }
 }
-
 impl<'a> Clone for OsBox<'a> {
     fn clone(&self) -> Self {
         match self {
             OsBox::Borrowed(s) => OsBox::Borrowed(s),
-            OsBox::Owned(b) => OsBox::Owned(b.clone()), // Box<OsStr> is Clone
-            OsBox::Shared(a) => OsBox::Shared(a.clone()), // Arc<OsStr> is Clone (bumps ref count)
+            OsBox::Owned(b) => OsBox::Owned(b.clone()),
+            OsBox::Shared(a) => OsBox::Shared(a.clone()),
         }
     }
 }
 
+// --- DirEntryData related Box types ---
+
+// DirEntryData itself is defined in src/reply.rs
+// For DirEntryPlusData, we need fuser::Entry for attributes
+use crate::reply::DirEntryData;
+use crate::Entry as FuserEntry;
+use crate::FileType; // For test helpers
+
+/// `DirEntryContainer` allows a single directory entry (`DirEntryData`) to be returned
+/// with flexible ownership, enabling borrowing of static/cached entries or returning owned ones.
+///
+/// The `'entry_lt` lifetime is for the `DirEntryData` if it's borrowed.
+/// The `'name_lt` lifetime is for the name within the `DirEntryData` if that name is borrowed.
+#[derive(Debug, Clone)]
+pub enum DirEntryContainer<'entry_lt, 'name_lt> {
+    /// A borrowed `DirEntryData` struct. The lifetime `'entry_lt` applies to this borrow.
+    Borrowed(&'entry_lt DirEntryData<'name_lt>),
+    /// An owned `DirEntryData` struct.
+    Owned(DirEntryData<'name_lt>),
+    /// A shared, atomically reference-counted `DirEntryData` struct.
+    Shared(Arc<DirEntryData<'name_lt>>),
+}
+
+impl<'entry_lt, 'name_lt> AsRef<DirEntryData<'name_lt>> for DirEntryContainer<'entry_lt, 'name_lt> {
+    fn as_ref(&self) -> &DirEntryData<'name_lt> {
+        match self {
+            DirEntryContainer::Borrowed(entry_data) => entry_data,
+            DirEntryContainer::Owned(entry_data) => entry_data,
+            DirEntryContainer::Shared(arc_entry_data) => arc_entry_data.as_ref(),
+        }
+    }
+}
+
+impl<'entry_lt, 'name_lt> Deref for DirEntryContainer<'entry_lt, 'name_lt> {
+    type Target = DirEntryData<'name_lt>;
+    fn deref(&self) -> &Self::Target { self.as_ref() }
+}
+
+impl<'entry_lt, 'name_lt> From<&'entry_lt DirEntryData<'name_lt>> for DirEntryContainer<'entry_lt, 'name_lt> {
+    fn from(entry_data_ref: &'entry_lt DirEntryData<'name_lt>) -> Self {
+        DirEntryContainer::Borrowed(entry_data_ref)
+    }
+}
+
+impl<'name_lt> From<DirEntryData<'name_lt>> for DirEntryContainer<'static, 'name_lt> {
+    fn from(entry_data: DirEntryData<'name_lt>) -> Self {
+        DirEntryContainer::Owned(entry_data)
+    }
+}
+
+impl<'name_lt> From<Arc<DirEntryData<'name_lt>>> for DirEntryContainer<'static, 'name_lt> {
+    fn from(arc_entry_data: Arc<DirEntryData<'name_lt>>) -> Self {
+        DirEntryContainer::Shared(arc_entry_data)
+    }
+}
+
+/// `DirEntriesList` provides a flexible way to return a list of directory entries
+/// (where each entry is wrapped in a `DirEntryContainer`) from `Filesystem::readdir`.
+/// It allows the entire list of containers to be borrowed, owned, or shared, providing
+/// flexibility for filesystem implementations to optimize data handling.
+///
+/// The lifetimes are:
+/// - `'list_lt`: Lifetime of the slice itself if `Borrowed`.
+/// - `'entry_lt`: Lifetime of borrowed `DirEntryData` within a `DirEntryContainer`.
+/// - `'name_lt`: Lifetime of borrowed names (`OsStr`) within `DirEntryData`.
+#[derive(Debug)]
+pub enum DirEntriesList<'list_lt, 'entry_lt, 'name_lt> {
+    /// A borrowed slice of `DirEntryContainer`s. This is suitable when the list of
+    /// directory entry containers is already available with a lifetime `'list_lt`.
+    Borrowed(&'list_lt [DirEntryContainer<'entry_lt, 'name_lt>]),
+    /// An owned, heap-allocated slice of `DirEntryContainer`s. This is used when
+    /// the list of entries is created dynamically for the current request.
+    Owned(Box<[DirEntryContainer<'entry_lt, 'name_lt>]>),
+    /// A shared, atomically reference-counted slice of `DirEntryContainer`s. This allows
+    /// the list to be shared across multiple contexts or to outlive the immediate request.
+    Shared(Arc<[DirEntryContainer<'entry_lt, 'name_lt>]>),
+}
+
+impl<'list_lt, 'entry_lt, 'name_lt> AsRef<[DirEntryContainer<'entry_lt, 'name_lt>]>
+    for DirEntriesList<'list_lt, 'entry_lt, 'name_lt> {
+    fn as_ref(&self) -> &[DirEntryContainer<'entry_lt, 'name_lt>] {
+        match self {
+            DirEntriesList::Borrowed(s) => s,
+            DirEntriesList::Owned(b) => b.as_ref(),
+            DirEntriesList::Shared(a) => a.as_ref(),
+        }
+    }
+}
+
+impl<'list_lt, 'entry_lt, 'name_lt> Deref for DirEntriesList<'list_lt, 'entry_lt, 'name_lt> {
+    type Target = [DirEntryContainer<'entry_lt, 'name_lt>];
+    fn deref(&self) -> &Self::Target { self.as_ref() }
+}
+
+impl<'entry_lt, 'name_lt> From<Vec<DirEntryContainer<'entry_lt, 'name_lt>>>
+    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
+    fn from(vec: Vec<DirEntryContainer<'entry_lt, 'name_lt>>) -> Self {
+        DirEntriesList::Owned(vec.into_boxed_slice())
+    }
+}
+
+impl<'entry_lt, 'name_lt> From<Box<[DirEntryContainer<'entry_lt, 'name_lt>]>>
+    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
+    fn from(b: Box<[DirEntryContainer<'entry_lt, 'name_lt>]>) -> Self {
+        DirEntriesList::Owned(b)
+    }
+}
+
+impl<'entry_lt, 'name_lt> From<Arc<[DirEntryContainer<'entry_lt, 'name_lt>]>>
+    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
+    fn from(a: Arc<[DirEntryContainer<'entry_lt, 'name_lt>]>) -> Self {
+        DirEntriesList::Shared(a)
+    }
+}
+
+// --- Types for readdirplus ---
+
+/// Data for a single directory entry, including its attributes, for `readdirplus`.
+/// This structure combines the basic directory entry information (`DirEntryData`)
+/// with its full FUSE attributes (`fuser::Entry`).
+///
+/// The `'name_lt` lifetime parameter is associated with the `name` field within
+/// `entry_data` if that name is a borrowed `OsStr`.
+#[derive(Debug, Clone)]
+pub struct DirEntryPlusData<'name_lt> {
+    /// The core directory entry data (inode, offset, kind, name).
+    /// The name within `entry_data` is an `OsBox<'name_lt>`.
+    pub entry_data: DirEntryData<'name_lt>,
+    /// The full attributes of the directory entry, as defined by `fuser::Entry`.
+    /// This includes metadata like size, permissions, timestamps, etc.
+    pub attr_entry: FuserEntry,
+}
+
+/// `DirEntryPlusContainer` allows a single "plus" directory entry (`DirEntryPlusData`)
+/// to be returned with flexible ownership, similar to `DirEntryContainer`.
+/// This is used for entries returned by `Filesystem::readdirplus`.
+///
+/// The lifetimes are:
+/// - `'entry_lt`: Lifetime of the `DirEntryPlusData` if `Borrowed`.
+/// - `'name_lt`: Lifetime of borrowed names (`OsStr`) within the nested `DirEntryData`.
+#[derive(Debug, Clone)]
+pub enum DirEntryPlusContainer<'entry_lt, 'name_lt> {
+    /// A borrowed `DirEntryPlusData` struct. The lifetime `'entry_lt` applies to this borrow.
+    Borrowed(&'entry_lt DirEntryPlusData<'name_lt>),
+    /// An owned `DirEntryPlusData` struct.
+    Owned(DirEntryPlusData<'name_lt>),
+    /// A shared, atomically reference-counted `DirEntryPlusData` struct.
+    Shared(Arc<DirEntryPlusData<'name_lt>>),
+}
+
+impl<'entry_lt, 'name_lt> AsRef<DirEntryPlusData<'name_lt>> for DirEntryPlusContainer<'entry_lt, 'name_lt> {
+    fn as_ref(&self) -> &DirEntryPlusData<'name_lt> {
+        match self {
+            DirEntryPlusContainer::Borrowed(data) => data,
+            DirEntryPlusContainer::Owned(data) => data,
+            DirEntryPlusContainer::Shared(arc_data) => arc_data.as_ref(),
+        }
+    }
+}
+
+impl<'entry_lt, 'name_lt> Deref for DirEntryPlusContainer<'entry_lt, 'name_lt> {
+    type Target = DirEntryPlusData<'name_lt>;
+    fn deref(&self) -> &Self::Target { self.as_ref() }
+}
+
+impl<'entry_lt, 'name_lt> From<&'entry_lt DirEntryPlusData<'name_lt>> for DirEntryPlusContainer<'entry_lt, 'name_lt> {
+    fn from(data_ref: &'entry_lt DirEntryPlusData<'name_lt>) -> Self {
+        DirEntryPlusContainer::Borrowed(data_ref)
+    }
+}
+
+impl<'name_lt> From<DirEntryPlusData<'name_lt>> for DirEntryPlusContainer<'static, 'name_lt> {
+    fn from(data: DirEntryPlusData<'name_lt>) -> Self {
+        DirEntryPlusContainer::Owned(data)
+    }
+}
+
+impl<'name_lt> From<Arc<DirEntryPlusData<'name_lt>>> for DirEntryPlusContainer<'static, 'name_lt> {
+    fn from(arc_data: Arc<DirEntryPlusData<'name_lt>>) -> Self {
+        DirEntryPlusContainer::Shared(arc_data)
+    }
+}
+
+/// `DirEntryPlusList` provides a flexible way to return a list of "plus" directory entries
+/// (where each entry is a `DirEntryPlusContainer`) from `Filesystem::readdirplus`.
+/// This allows the entire list of "plus" containers to be borrowed, owned, or shared.
+///
+/// The lifetimes are:
+/// - `'list_lt`: Lifetime of the slice itself if `Borrowed`.
+/// - `'entry_lt`: Lifetime of borrowed `DirEntryPlusData` within a `DirEntryPlusContainer`.
+/// - `'name_lt`: Lifetime of borrowed names (`OsStr`) within the nested `DirEntryData`.
+#[derive(Debug)]
+pub enum DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt> {
+    /// A borrowed slice of `DirEntryPlusContainer`s. This is suitable when the list of
+    /// "plus" directory entry containers is already available with a lifetime `'list_lt`.
+    Borrowed(&'list_lt [DirEntryPlusContainer<'entry_lt, 'name_lt>]),
+    /// An owned, heap-allocated slice of `DirEntryPlusContainer`s. This is used when
+    /// the list of "plus" entries is created dynamically for the current request.
+    Owned(Box<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>),
+    /// A shared, atomically reference-counted slice of `DirEntryPlusContainer`s. This allows
+    /// the list to be shared across multiple contexts or to outlive the immediate request.
+    Shared(Arc<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>),
+}
+
+impl<'list_lt, 'entry_lt, 'name_lt> AsRef<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>
+    for DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt> {
+    fn as_ref(&self) -> &[DirEntryPlusContainer<'entry_lt, 'name_lt>] {
+        match self {
+            DirEntryPlusList::Borrowed(s) => s,
+            DirEntryPlusList::Owned(b) => b.as_ref(),
+            DirEntryPlusList::Shared(a) => a.as_ref(),
+        }
+    }
+}
+
+impl<'list_lt, 'entry_lt, 'name_lt> Deref for DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt> {
+    type Target = [DirEntryPlusContainer<'entry_lt, 'name_lt>];
+    fn deref(&self) -> &Self::Target { self.as_ref() }
+}
+
+impl<'entry_lt, 'name_lt> From<Vec<DirEntryPlusContainer<'entry_lt, 'name_lt>>>
+    for DirEntryPlusList<'static, 'entry_lt, 'name_lt> {
+    fn from(vec: Vec<DirEntryPlusContainer<'entry_lt, 'name_lt>>) -> Self {
+        DirEntryPlusList::Owned(vec.into_boxed_slice())
+    }
+}
+
+impl<'entry_lt, 'name_lt> From<Box<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>>
+    for DirEntryPlusList<'static, 'entry_lt, 'name_lt> {
+    fn from(b: Box<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>) -> Self {
+        DirEntryPlusList::Owned(b)
+    }
+}
+
+impl<'entry_lt, 'name_lt> From<Arc<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>>
+    for DirEntryPlusList<'static, 'entry_lt, 'name_lt> {
+    fn from(a: Arc<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>) -> Self {
+        DirEntryPlusList::Shared(a)
+    }
+}
+
+
+#[cfg(test)]
+mod tests_byte_box { // Renamed from "tests" to be specific
+    use super::*; // For ByteBox
+    use std::sync::Arc; // Already here
+
+    #[test]
+    fn byte_box_borrowed() {
+        let data: &[u8] = &[1, 2, 3];
+        let byte_box = ByteBox::from(data);
+        match byte_box {
+            ByteBox::Borrowed(b) => assert_eq!(b, data),
+            _ => panic!("Expected ByteBox::Borrowed"),
+        }
+        assert_eq!(byte_box.as_ref(), data);
+        assert_eq!(&*byte_box, data);
+    }
+
+    #[test]
+    fn byte_box_owned_from_vec() {
+        let data_vec: Vec<u8> = vec![4, 5, 6];
+        let byte_box = ByteBox::from(data_vec.clone());
+        match byte_box {
+            ByteBox::Owned(ref b) => assert_eq!(b.as_ref(), data_vec.as_slice()),
+            _ => panic!("Expected ByteBox::Owned"),
+        }
+        assert_eq!(byte_box.as_ref(), data_vec.as_slice());
+    }
+
+    #[test]
+    fn byte_box_owned_from_box() {
+        let data_box: Box<[u8]> = vec![7, 8, 9].into_boxed_slice();
+        let byte_box = ByteBox::from(data_box.clone());
+        match byte_box {
+            ByteBox::Owned(ref b) => assert_eq!(b.as_ref(), data_box.as_ref()),
+            _ => panic!("Expected ByteBox::Owned"),
+        }
+        assert_eq!(byte_box.as_ref(), data_box.as_ref());
+    }
+
+    #[test]
+    fn byte_box_shared_from_arc() {
+        let data_arc: Arc<[u8]> = Arc::new([10, 11, 12]);
+        let byte_box = ByteBox::from(data_arc.clone());
+        match byte_box {
+            ByteBox::Shared(ref a) => assert_eq!(a.as_ref(), data_arc.as_ref()),
+            _ => panic!("Expected ByteBox::Shared"),
+        }
+        assert_eq!(byte_box.as_ref(), data_arc.as_ref());
+        assert!(Arc::ptr_eq(
+            match byte_box { ByteBox::Shared(ref a) => a, _ => panic!() },
+            &data_arc
+        ));
+    }
+
+    #[test]
+    fn byte_box_as_ref() {
+        let data_static: &'static [u8] = b"static";
+        let bb_borrowed = ByteBox::from(data_static);
+        assert_eq!(bb_borrowed.as_ref(), b"static");
+
+        let data_vec = vec![1,2,3];
+        let bb_owned_vec = ByteBox::from(data_vec.clone());
+        assert_eq!(bb_owned_vec.as_ref(), data_vec.as_slice());
+
+        let data_box: Box<[u8]> = vec![4,5,6u8].into_boxed_slice();
+        let bb_owned_box = ByteBox::from(data_box.clone());
+        assert_eq!(bb_owned_box.as_ref(), data_box.as_ref());
+
+        let data_arc: Arc<[u8]> = Arc::from(vec![7,8,9u8]);
+        let bb_shared_arc = ByteBox::from(data_arc.clone());
+        assert_eq!(bb_shared_arc.as_ref(), data_arc.as_ref());
+    }
+
+    #[test]
+    fn byte_box_deref() {
+        let data_static: &'static [u8] = b"static_deref";
+        let bb_borrowed: ByteBox<'_> = ByteBox::from(data_static);
+        assert_eq!(&*bb_borrowed, b"static_deref");
+        assert_eq!(bb_borrowed.len(), b"static_deref".len());
+    }
+}
+
+
 #[cfg(test)]
 mod tests_os_box {
-    use super::*;
+    use super::*; // For OsBox
     use std::ffi::{OsStr, OsString};
     use std::sync::Arc;
 
@@ -123,7 +467,7 @@ mod tests_os_box {
     #[test]
     fn os_box_owned_from_os_string() {
         let data_os_string = OsString::from("test_owned_osstring");
-        let os_box = OsBox::from(data_os_string.clone()); // clone because From<OsString> consumes
+        let os_box = OsBox::from(data_os_string.clone());
         match os_box {
             OsBox::Owned(ref b) => assert_eq!(b.as_ref(), data_os_string.as_os_str()),
             _ => panic!("Expected OsBox::Owned from OsString"),
@@ -134,7 +478,7 @@ mod tests_os_box {
     #[test]
     fn os_box_owned_from_box_os_str() {
         let data_box: Box<OsStr> = OsString::from("test_owned_box").into_boxed_os_str();
-        let os_box = OsBox::from(data_box.clone()); // clone because From<Box<OsStr>> consumes
+        let os_box = OsBox::from(data_box.clone());
         match os_box {
             OsBox::Owned(ref b) => assert_eq!(b.as_ref(), data_box.as_ref()),
             _ => panic!("Expected OsBox::Owned from Box<OsStr>"),
@@ -172,14 +516,12 @@ mod tests_os_box {
         let o1 = OsBox::from(owned_os_string.clone());
         let o2 = o1.clone();
         assert_eq!(o1.as_ref(), o2.as_ref());
-        if let OsBox::Owned(ref b_val) = o2 { // o2 is OsBox::Owned(Box<OsStr>)
+        if let OsBox::Owned(ref b_val) = o2 {
             assert_eq!(b_val.as_ref(), owned_os_string.as_os_str());
-            // Ensure it's a new Box, not just a reference copy of the Box itself
             if let OsBox::Owned(ref orig_b_val) = o1 {
                  assert_ne!(std::ptr::addr_of!(**orig_b_val) as *const u8, std::ptr::addr_of!(**b_val) as *const u8);
             }
         } else { panic!(); }
-
 
         let shared_arc: Arc<OsStr> = Arc::from(OsString::from("shared_val").into_boxed_os_str());
         let s1 = OsBox::from(shared_arc.clone());
@@ -191,347 +533,211 @@ mod tests_os_box {
     }
 }
 
-// --- DirEntryBox ---
-
-/// `DirEntryBox` is an enum analogous to `ByteBox`, but for returning slices of directory
-/// entries (e.g., `DirEntry` from the `readdir` method). It allows for different
-/// ownership models to optimize performance.
-///
-/// The type parameter `DE` is typically `DirEntry`.
-///
-/// - `Borrowed`: For a slice of directory entries that can be borrowed.
-/// - `Owned`: For a newly allocated, owned list of directory entries.
-/// - `Shared`: For a shared, reference-counted list of directory entries.
-#[derive(Debug)]
-pub enum DirEntryBox<'a, DE> {
-    /// A borrowed slice of directory entries.
-    Borrowed(&'a [DE]),
-    /// An owned, heap-allocated slice of directory entries (`Box<[DE]>`).
-    Owned(Box<[DE]>),
-    /// A shared, atomically reference-counted slice of directory entries (`Arc<[DE]>`).
-    Shared(Arc<[DE]>),
-}
-
-impl<'a, DE> From<&'a [DE]> for DirEntryBox<'a, DE> where DE: 'a {
-    fn from(slice: &'a [DE]) -> Self {
-        DirEntryBox::Borrowed(slice)
-    }
-}
-
-impl<'a, DE> From<Vec<DE>> for DirEntryBox<'a, DE> {
-    fn from(vec: Vec<DE>) -> Self {
-        DirEntryBox::Owned(vec.into_boxed_slice())
-    }
-}
-
-impl<'a, DE> From<Box<[DE]>> for DirEntryBox<'a, DE> {
-    fn from(boxed_slice: Box<[DE]>) -> Self {
-        DirEntryBox::Owned(boxed_slice)
-    }
-}
-
-impl<'a, DE> From<Arc<[DE]>> for DirEntryBox<'a, DE> {
-    fn from(arc_slice: Arc<[DE]>) -> Self {
-        DirEntryBox::Shared(arc_slice)
-    }
-}
-
-impl<'a, DE> AsRef<[DE]> for DirEntryBox<'a, DE> {
-    fn as_ref(&self) -> &[DE] {
-        match self {
-            DirEntryBox::Borrowed(slice) => slice,
-            DirEntryBox::Owned(boxed_slice) => boxed_slice,
-            DirEntryBox::Shared(arc_slice) => arc_slice,
-        }
-    }
-}
-
-impl<'a, DE> Deref for DirEntryBox<'a, DE> {
-    type Target = [DE];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
-
-
-// --- DirEntryPlusBox ---
-// This is identical in structure to DirEntryBox, but typically DE will be (DirEntry, Entry)
-// We could use a type alias, but a distinct type might be clearer if specific methods were added later.
-// For now, it's a direct copy-paste with a different name.
-// pub type DirEntryPlusBox<'a, DEP> = DirEntryBox<'a, DEP>;
-// Using a new type for clarity, even if structurally identical for now.
-
-/// `DirEntryPlusBox` is similar to `DirEntryBox` but designed for methods like
-/// `readdirplus` that return directory entries along with their attributes
-/// (e.g., a slice of `(DirEntry, Entry)` tuples).
-///
-/// The type parameter `DEP` is typically `(DirEntry, Entry)`.
-///
-/// - `Borrowed`: For a slice of extended directory entries that can be borrowed.
-/// - `Owned`: For a newly allocated, owned list of extended directory entries.
-/// - `Shared`: For a shared, reference-counted list of extended directory entries.
-#[derive(Debug)]
-pub enum DirEntryPlusBox<'a, DEP> {
-    /// A borrowed slice of extended directory entries.
-    Borrowed(&'a [DEP]),
-    /// An owned, heap-allocated slice of extended directory entries (`Box<[DEP]>`).
-    Owned(Box<[DEP]>),
-    /// A shared, atomically reference-counted slice of extended directory entries (`Arc<[DEP]>`).
-    Shared(Arc<[DEP]>),
-}
-
-impl<'a, DEP> From<&'a [DEP]> for DirEntryPlusBox<'a, DEP> where DEP: 'a {
-    fn from(slice: &'a [DEP]) -> Self {
-        DirEntryPlusBox::Borrowed(slice)
-    }
-}
-
-impl<'a, DEP> From<Vec<DEP>> for DirEntryPlusBox<'a, DEP> {
-    fn from(vec: Vec<DEP>) -> Self {
-        DirEntryPlusBox::Owned(vec.into_boxed_slice())
-    }
-}
-
-impl<'a, DEP> From<Box<[DEP]>> for DirEntryPlusBox<'a, DEP> {
-    fn from(boxed_slice: Box<[DEP]>) -> Self {
-        DirEntryPlusBox::Owned(boxed_slice)
-    }
-}
-
-impl<'a, DEP> From<Arc<[DEP]>> for DirEntryPlusBox<'a, DEP> {
-    fn from(arc_slice: Arc<[DEP]>) -> Self {
-        DirEntryPlusBox::Shared(arc_slice)
-    }
-}
-
-impl<'a, DEP> AsRef<[DEP]> for DirEntryPlusBox<'a, DEP> {
-    fn as_ref(&self) -> &[DEP] {
-        match self {
-            DirEntryPlusBox::Borrowed(slice) => slice,
-            DirEntryPlusBox::Owned(boxed_slice) => boxed_slice,
-            DirEntryPlusBox::Shared(arc_slice) => arc_slice,
-        }
-    }
-}
-
-impl<'a, DEP> Deref for DirEntryPlusBox<'a, DEP> {
-    type Target = [DEP];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
-
-
 #[cfg(test)]
-mod tests_dir_entry {
+mod tests_dir_entry_containers {
     use super::*;
-    use crate::{DirEntry, Entry, FileAttr, FileType}; // Assuming these are available from crate root
-    use std::ffi::OsString;
+    use crate::{FileAttr, FileType, reply::DirEntryData, Entry as FuserEntry, OsBox};
+    use std::ffi::{OsStr, OsString};
     use std::sync::Arc;
     use std::time::{Duration, UNIX_EPOCH};
 
-    // Mock DirEntry and Entry for testing purposes if they are not easily constructible
-    // For now, assume they can be created. Need to ensure crate::DirEntry etc. are accessible.
-    // If not, we might need to define simplified versions here or adjust imports.
-    // Let's use dummy structures for DirEntry and Entry if actual ones are complex.
+    fn create_dir_entry_data<'name_lt>(ino: u64, name: OsBox<'name_lt>) -> DirEntryData<'name_lt> {
+        DirEntryData {
+            ino,
+            offset: ino as i64,
+            kind: FileType::RegularFile,
+            name,
+        }
+    }
 
     fn dummy_file_attr(ino: u64) -> FileAttr {
         FileAttr {
-            ino,
-            size: 0,
-            blocks: 0,
-            atime: UNIX_EPOCH,
-            mtime: UNIX_EPOCH,
-            ctime: UNIX_EPOCH,
-            crtime: UNIX_EPOCH,
-            kind: FileType::RegularFile,
-            perm: 0,
-            nlink: 0,
-            uid: 0,
-            gid: 0,
-            rdev: 0,
-            blksize: 0,
-            flags: 0,
+            ino, size: 0, blocks: 0, atime: UNIX_EPOCH, mtime: UNIX_EPOCH,
+            ctime: UNIX_EPOCH, crtime: UNIX_EPOCH, kind: FileType::RegularFile,
+            perm: 0, nlink: 0, uid: 0, gid: 0, rdev: 0, blksize: 0, flags: 0,
         }
     }
 
-    fn dummy_dir_entry(ino: u64, name: &str) -> DirEntry {
-        DirEntry {
-            ino,
-            offset: 0,
-            kind: FileType::RegularFile,
-            name: OsString::from(name),
-        }
-    }
-
-    fn dummy_entry_data(ino: u64) -> Entry {
-        Entry {
-            attr: dummy_file_attr(ino),
+    #[allow(dead_code)]
+    fn create_fuser_entry(attr: FileAttr) -> FuserEntry {
+        FuserEntry {
+            attr,
             ttl: Duration::from_secs(1),
             generation: 0,
         }
     }
 
-
     #[test]
-    fn dir_entry_box_borrowed() {
-        let entries = [dummy_dir_entry(1, "file1")];
-        let dir_entry_box = DirEntryBox::from(&entries[..]);
-        match dir_entry_box {
-            DirEntryBox::Borrowed(b) => assert_eq!(b.len(), 1),
-            _ => panic!("Expected DirEntryBox::Borrowed"),
-        }
-        assert_eq!(dir_entry_box.as_ref().len(), 1);
+    fn dir_entry_container_borrowed() {
+        let name_os_str = OsStr::new("borrowed_entry_name");
+        let entry_data = create_dir_entry_data(1, OsBox::Borrowed(name_os_str));
+        let container = DirEntryContainer::Borrowed(&entry_data);
+        assert_eq!(container.as_ref().ino, 1);
+        assert_eq!(container.as_ref().name.as_ref(), name_os_str);
     }
 
     #[test]
-    fn dir_entry_box_owned_from_vec() {
-        let entries_vec = vec![dummy_dir_entry(2, "file2")];
-        let dir_entry_box = DirEntryBox::from(entries_vec.clone());
-        match dir_entry_box {
-            DirEntryBox::Owned(ref b) => assert_eq!(b.len(), 1),
-            _ => panic!("Expected DirEntryBox::Owned"),
-        }
-        assert_eq!(dir_entry_box.as_ref().len(), 1);
+    fn dir_entry_container_owned() {
+        let owned_name = OsString::from("owned_entry_name");
+        let entry_data = create_dir_entry_data(2, OsBox::Owned(owned_name.clone().into_boxed_os_str()));
+        let container = DirEntryContainer::Owned(entry_data.clone());
+        assert_eq!(container.as_ref().ino, 2);
+        assert_eq!(container.as_ref().name.as_ref(), owned_name.as_os_str());
+
+        let entry_data_for_from = create_dir_entry_data(2, OsBox::Owned(owned_name.into_boxed_os_str()));
+        let container_from: DirEntryContainer<'static, 'static> = DirEntryContainer::from(entry_data_for_from);
+        assert_eq!(container_from.as_ref().ino, 2);
     }
 
     #[test]
-    fn dir_entry_plus_box_shared() {
-        let entries_plus_vec: Vec<(DirEntry, Entry)> = vec![(dummy_dir_entry(3, "file3"), dummy_entry_data(3))];
-        let arc_entries: Arc<[(DirEntry, Entry)]> = Arc::from(entries_plus_vec);
-        let dir_entry_plus_box = DirEntryPlusBox::from(arc_entries.clone());
-        match dir_entry_plus_box {
-            DirEntryPlusBox::Shared(ref a) => assert_eq!(a.len(), 1),
-            _ => panic!("Expected DirEntryPlusBox::Shared"),
-        }
-        assert_eq!(dir_entry_plus_box.as_ref().len(), 1);
+    fn dir_entry_container_shared() {
+        let shared_name_os_str = OsString::from("shared_entry_name");
+        let shared_name_arc: Arc<OsStr> = Arc::from(shared_name_os_str.into_boxed_os_str());
+        let entry_data = create_dir_entry_data(3, OsBox::Shared(shared_name_arc.clone()));
+        let arc_entry_data = Arc::new(entry_data);
+
+        let container = DirEntryContainer::Shared(arc_entry_data.clone());
+        assert_eq!(container.as_ref().ino, 3);
         assert!(Arc::ptr_eq(
-            match dir_entry_plus_box { DirEntryPlusBox::Shared(ref a) => a, _ => panic!() },
-            &arc_entries
+            match &container.as_ref().name { OsBox::Shared(a) => a, _ => panic!()},
+            &shared_name_arc
         ));
-    }
-}
 
-impl<'a> From<Vec<u8>> for ByteBox<'a> {
-    fn from(vec: Vec<u8>) -> Self {
-        ByteBox::Owned(vec.into_boxed_slice())
+        let container_from: DirEntryContainer<'static, 'static> = DirEntryContainer::from(arc_entry_data);
+        assert_eq!(container_from.as_ref().ino, 3);
     }
-}
 
-impl<'a> From<Box<[u8]>> for ByteBox<'a> {
-    fn from(boxed_slice: Box<[u8]>) -> Self {
-        ByteBox::Owned(boxed_slice)
+    #[test]
+    fn dir_entries_list_borrowed() {
+        let name1_static = OsStr::new("entry1_static_name");
+        let entry_data1 = create_dir_entry_data(10, OsBox::Borrowed(name1_static));
+        let container1 = DirEntryContainer::Borrowed(&entry_data1);
+
+        let name2_owned = OsString::from("entry2_owned_name");
+        let entry_data2 = create_dir_entry_data(11, OsBox::Owned(name2_owned.into_boxed_os_str()));
+        let container2_owned = DirEntryContainer::Owned(entry_data2);
+
+        let containers_slice: &[DirEntryContainer<'_, 'static>] = &[container1, container2_owned];
+        let list = DirEntriesList::Borrowed(containers_slice);
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].as_ref().ino, 10);
+        assert_eq!(list[1].as_ref().ino, 11);
+        assert_eq!(list[0].as_ref().name.as_ref(), name1_static);
+        assert_eq!(list[1].as_ref().name.as_ref(), OsStr::new("entry2_owned_name"));
     }
-}
 
-impl<'a> From<Arc<[u8]>> for ByteBox<'a> {
-    fn from(arc_slice: Arc<[u8]>) -> Self {
-        ByteBox::Shared(arc_slice)
-    }
-}
+    #[test]
+    fn dir_entries_list_owned_from_vec() {
+        let name1_static: &'static OsStr = OsStr::new("static_name_in_vec");
+        let entry_data1 = create_dir_entry_data(20, OsBox::Borrowed(name1_static));
+        let container1: DirEntryContainer<'static, 'static> = DirEntryContainer::Owned(entry_data1);
 
-// It's useful to be able to get a reference to the underlying bytes easily.
-impl<'a> AsRef<[u8]> for ByteBox<'a> {
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            ByteBox::Borrowed(slice) => slice,
-            ByteBox::Owned(boxed_slice) => boxed_slice,
-            ByteBox::Shared(arc_slice) => arc_slice,
+        let name2_owned = OsString::from("owned_name_in_vec");
+        let entry_data2 = create_dir_entry_data(21, OsBox::Owned(name2_owned.into_boxed_os_str()));
+        let container2: DirEntryContainer<'static, 'static> = DirEntryContainer::Owned(entry_data2);
+
+        let containers_vec: Vec<DirEntryContainer<'static, 'static>> = vec![container1, container2];
+        let list = DirEntriesList::from(containers_vec);
+
+        match list {
+            DirEntriesList::Owned(ref b_slice) => {
+                assert_eq!(b_slice.len(), 2);
+                assert_eq!(b_slice[0].as_ref().ino, 20);
+                assert_eq!(b_slice[1].as_ref().ino, 21);
+            }
+            _ => panic!("Expected DirEntriesList::Owned"),
         }
     }
-}
-
-// Adding Deref might also be convenient for some use cases,
-// though AsRef is often more explicit and preferred for generic code.
-use std::ops::Deref;
-impl<'a> Deref for ByteBox<'a> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
 
     #[test]
-    fn byte_box_borrowed() {
-        let data: &[u8] = &[1, 2, 3];
-        let byte_box = ByteBox::from(data);
-        match byte_box {
-            ByteBox::Borrowed(b) => assert_eq!(b, data),
-            _ => panic!("Expected ByteBox::Borrowed"),
+    fn dir_entries_list_shared_from_arc() {
+        let name1_static: &'static OsStr = OsStr::new("shared_static_name");
+        let entry_data1 = create_dir_entry_data(30, OsBox::Borrowed(name1_static));
+        let container1: DirEntryContainer<'static, 'static> = DirEntryContainer::Owned(entry_data1);
+
+        let name2_owned = OsString::from("shared_owned_name");
+        let entry_data2 = create_dir_entry_data(31, OsBox::Owned(name2_owned.into_boxed_os_str()));
+        let container2: DirEntryContainer<'static, 'static> = DirEntryContainer::Owned(entry_data2);
+
+        let containers_vec: Vec<DirEntryContainer<'static, 'static>> = vec![container1, container2];
+        let arc_slice: Arc<[DirEntryContainer<'static, 'static>]> = Arc::from(containers_vec);
+        let list = DirEntriesList::from(arc_slice.clone());
+
+        match list {
+            DirEntriesList::Shared(ref a_slice) => {
+                assert_eq!(a_slice.len(), 2);
+                assert!(Arc::ptr_eq(a_slice, &arc_slice));
+            }
+            _ => panic!("Expected DirEntriesList::Shared"),
         }
-        assert_eq!(byte_box.as_ref(), data);
-        assert_eq!(&*byte_box, data);
+    }
+
+    // TODO: Add tests for DirEntryPlusData, DirEntryPlusContainer, DirEntryPlusList
+
+    #[test]
+    fn dir_entry_plus_container_owned() {
+        let name_os_string = OsString::from("plus_owned_name");
+        let entry_data = create_dir_entry_data(100, OsBox::Owned(name_os_string.into_boxed_os_str()));
+        let attr_entry = create_fuser_entry(dummy_file_attr(100));
+        let plus_data = DirEntryPlusData { entry_data, attr_entry: attr_entry.clone() };
+
+        let container = DirEntryPlusContainer::Owned(plus_data.clone());
+        assert_eq!(container.as_ref().entry_data.ino, 100);
+        assert_eq!(container.as_ref().attr_entry.attr.ino, 100);
+        assert_eq!(container.as_ref().entry_data.name.as_ref(), OsStr::new("plus_owned_name"));
+
+        // Test From<DirEntryPlusData>
+        let container_from: DirEntryPlusContainer<'static, 'static> = DirEntryPlusContainer::from(plus_data);
+        assert_eq!(container_from.as_ref().entry_data.ino, 100);
     }
 
     #[test]
-    fn byte_box_owned_from_vec() {
-        let data_vec: Vec<u8> = vec![4, 5, 6];
-        let byte_box = ByteBox::from(data_vec.clone()); // clone because from(Vec) consumes
-        match byte_box {
-            ByteBox::Owned(ref b) => assert_eq!(b.as_ref(), data_vec.as_slice()),
-            _ => panic!("Expected ByteBox::Owned"),
+    fn dir_entry_plus_list_borrowed() {
+        let name1_static = OsStr::new("plus_entry1_static");
+        let entry_data1 = create_dir_entry_data(110, OsBox::Borrowed(name1_static));
+        let attr_entry1 = create_fuser_entry(dummy_file_attr(110));
+        let plus_data1 = DirEntryPlusData { entry_data: entry_data1, attr_entry: attr_entry1 };
+        let container1 = DirEntryPlusContainer::Borrowed(&plus_data1);
+
+        let name2_owned = OsString::from("plus_entry2_owned");
+        let entry_data2 = create_dir_entry_data(111, OsBox::Owned(name2_owned.into_boxed_os_str()));
+        let attr_entry2 = create_fuser_entry(dummy_file_attr(111));
+        let plus_data2 = DirEntryPlusData { entry_data: entry_data2, attr_entry: attr_entry2 };
+        let container2_owned = DirEntryPlusContainer::Owned(plus_data2);
+
+        let containers_slice: &[DirEntryPlusContainer<'_, 'static>] = &[container1, container2_owned];
+        let list = DirEntryPlusList::Borrowed(containers_slice);
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].as_ref().entry_data.ino, 110);
+        assert_eq!(list[1].as_ref().entry_data.ino, 111);
+    }
+
+    #[test]
+    fn dir_entry_plus_list_owned_from_vec() {
+        let name1_static: &'static OsStr = OsStr::new("plus_vec_static_name");
+        let entry_data1 = create_dir_entry_data(120, OsBox::Borrowed(name1_static));
+        let attr_entry1 = create_fuser_entry(dummy_file_attr(120));
+        let plus_data1 = DirEntryPlusData { entry_data: entry_data1, attr_entry: attr_entry1 };
+        let container1: DirEntryPlusContainer<'static, 'static> = DirEntryPlusContainer::Owned(plus_data1);
+
+        let name2_owned = OsString::from("plus_vec_owned_name");
+        let entry_data2 = create_dir_entry_data(121, OsBox::Owned(name2_owned.into_boxed_os_str()));
+        let attr_entry2 = create_fuser_entry(dummy_file_attr(121));
+        let plus_data2 = DirEntryPlusData { entry_data: entry_data2, attr_entry: attr_entry2 };
+        let container2: DirEntryPlusContainer<'static, 'static> = DirEntryPlusContainer::Owned(plus_data2);
+
+        let containers_vec: Vec<DirEntryPlusContainer<'static, 'static>> = vec![container1, container2];
+        let list = DirEntryPlusList::from(containers_vec);
+
+        match list {
+            DirEntryPlusList::Owned(ref b_slice) => {
+                assert_eq!(b_slice.len(), 2);
+                assert_eq!(b_slice[0].as_ref().entry_data.ino, 120);
+                assert_eq!(b_slice[1].as_ref().entry_data.ino, 121);
+            }
+            _ => panic!("Expected DirEntryPlusList::Owned"),
         }
-        assert_eq!(byte_box.as_ref(), data_vec.as_slice());
-    }
-
-    #[test]
-    fn byte_box_owned_from_box() {
-        let data_box: Box<[u8]> = vec![7, 8, 9].into_boxed_slice();
-        let byte_box = ByteBox::from(data_box.clone()); // clone because from(Box) consumes
-        match byte_box {
-            ByteBox::Owned(ref b) => assert_eq!(b.as_ref(), data_box.as_ref()),
-            _ => panic!("Expected ByteBox::Owned"),
-        }
-        assert_eq!(byte_box.as_ref(), data_box.as_ref());
-    }
-
-    #[test]
-    fn byte_box_shared_from_arc() {
-        let data_arc: Arc<[u8]> = Arc::new([10, 11, 12]);
-        let byte_box = ByteBox::from(data_arc.clone()); // clone because from(Arc) consumes Arc, not the data
-        match byte_box {
-            ByteBox::Shared(ref a) => assert_eq!(a.as_ref(), data_arc.as_ref()),
-            _ => panic!("Expected ByteBox::Shared"),
-        }
-        assert_eq!(byte_box.as_ref(), data_arc.as_ref());
-        assert!(Arc::ptr_eq(
-            match byte_box { ByteBox::Shared(ref a) => a, _ => panic!() },
-            &data_arc
-        ));
-    }
-
-    #[test]
-    fn byte_box_as_ref() {
-        let data_static: &'static [u8] = b"static";
-        let bb_borrowed = ByteBox::from(data_static);
-        assert_eq!(bb_borrowed.as_ref(), b"static");
-
-        let data_vec = vec![1,2,3];
-        let bb_owned_vec = ByteBox::from(data_vec.clone());
-        assert_eq!(bb_owned_vec.as_ref(), data_vec.as_slice());
-
-        let data_box: Box<[u8]> = vec![4,5,6u8].into_boxed_slice();
-        let bb_owned_box = ByteBox::from(data_box.clone());
-        assert_eq!(bb_owned_box.as_ref(), data_box.as_ref());
-
-        let data_arc: Arc<[u8]> = Arc::from(vec![7,8,9u8]);
-        let bb_shared_arc = ByteBox::from(data_arc.clone());
-        assert_eq!(bb_shared_arc.as_ref(), data_arc.as_ref());
-    }
-
-    #[test]
-    fn byte_box_deref() {
-        let data_static: &'static [u8] = b"static_deref";
-        let bb_borrowed: ByteBox<'_> = ByteBox::from(data_static);
-        assert_eq!(&*bb_borrowed, b"static_deref");
-        assert_eq!(bb_borrowed.len(), b"static_deref".len());
     }
 }

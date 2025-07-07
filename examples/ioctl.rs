@@ -4,8 +4,8 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    ByteBox, DirEntryBox, FileAttr, FileType, Filesystem, MountOption, RequestMeta, Entry, Attr,
-    Ioctl, Errno, DirEntry,
+    Attr, ByteBox, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno, FileAttr,
+    Filesystem, FileType, Ioctl, MountOption, OsBox, RequestMeta,
 };
 use log::debug;
 use std::ffi::{OsStr, OsString};
@@ -114,30 +114,74 @@ impl Filesystem for FiocFS {
         }
     }
 
-    fn readdir<'a>(
+    fn readdir<'list_lt, 'entry_lt, 'name_lt>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
-        offset: i64,
+        offset: i64, // This is the cookie of the *previous* entry returned, or 0.
         _max_bytes: u32,
-    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
 
-        let entries = vec![
-            DirEntry { ino: 1, offset: 1, kind: FileType::Directory, name: OsString::from(".") },
-            DirEntry { ino: 1, offset: 2, kind: FileType::Directory, name: OsString::from("..") },
-            DirEntry { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsString::from("fioc") },
+        let mut entries_to_add: Vec<DirEntryContainer<'static, 'static>> = Vec::new();
+
+        // Entry 1: "." - its own offset (cookie for next call if this is the last) is 1
+        if offset < 1 {
+            entries_to_add.push(DirEntryContainer::Owned(DirEntryData {
+                ino: 1,
+                offset: 1,
+                kind: FileType::Directory,
+                name: OsBox::Borrowed(OsStr::new(".")),
+            }));
+        }
+
+        // Entry 2: ".." - its own offset is 2
+        if offset < 2 {
+            entries_to_add.push(DirEntryContainer::Owned(DirEntryData {
+                ino: 1,
+                offset: 2,
+                kind: FileType::Directory,
+                name: OsBox::Borrowed(OsStr::new("..")),
+            }));
+        }
+
+        // Entry 3: "fioc" - its own offset is 3
+        if offset < 3 {
+            entries_to_add.push(DirEntryContainer::Owned(DirEntryData {
+                ino: 2,
+                offset: 3,
+                kind: FileType::RegularFile,
+                name: OsBox::Owned(OsString::from("fioc").into_boxed_os_str()),
+            }));
+        }
+
+        // The FUSE protocol expects entries from the given offset onwards.
+        // The `offset` field in `DirEntryData` should be the cookie for *that specific entry*.
+        // This was a misunderstanding in the previous attempt. The logic above now correctly
+        // only adds entries that should appear *after* the given `offset` (if offset is a count)
+        // or *at or after* if offset is a cookie.
+        // For typical FUSE, offset is the cookie of the last item sent.
+        // If offset is 0, send from the first. If offset is 1 (cookie of '.'), send from '..'.
+        // The simple way is to build a conceptual full list and then skip.
+
+        let all_potential_entries = [
+            DirEntryContainer::Owned(DirEntryData { ino: 1, offset: 1, kind: FileType::Directory, name: OsBox::Borrowed(OsStr::new(".")) }),
+            DirEntryContainer::Owned(DirEntryData { ino: 1, offset: 2, kind: FileType::Directory, name: OsBox::Borrowed(OsStr::new("..")) }),
+            DirEntryContainer::Owned(DirEntryData { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsBox::Owned(OsString::from("fioc").into_boxed_os_str()) }),
         ];
 
-        let mut result = Vec::new();
-        for entry in entries.into_iter().skip(offset as usize) {
-            // example loop where additional logic could be inserted
-            result.push(entry);
+        let mut final_entries_to_send: Vec<DirEntryContainer<'static, 'static>> = Vec::new();
+        for container_candidate_ref in all_potential_entries.iter() {
+            // entry_data_offset is the 'cookie' of the current entry.
+            // We send entries whose cookie is > the `offset` from the request.
+            if container_candidate_ref.as_ref().offset > offset {
+                final_entries_to_send.push(container_candidate_ref.clone());
+            }
         }
-        Ok(DirEntryBox::from(result))
+        Ok(DirEntriesList::from(final_entries_to_send))
     }
 
     #[cfg(feature = "abi-7-11")]

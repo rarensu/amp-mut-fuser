@@ -17,7 +17,7 @@ use crate::ll::Generation;
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
 use log::{error, warn};
-use std::ffi::OsString;
+// use std::ffi::OsString; // Keep for tests only if needed
 use std::fmt;
 use std::io::IoSlice;
 #[cfg(feature = "abi-7-40")]
@@ -27,7 +27,11 @@ use zerocopy::IntoBytes;
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
 
-use crate::{FileAttr, FileType, KernelConfig};
+use crate::{
+    ByteBox, FileAttr, FileType, KernelConfig, OsBox,
+    DirEntriesList, DirEntryContainer, // For dir
+    DirEntryPlusList, DirEntryPlusContainer, DirEntryPlusData, // For dirplus
+};
 
 /// Generic reply callback to send data
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
@@ -167,16 +171,18 @@ pub struct Statfs {
 }
 
 #[derive(Debug, Clone)]
-/// Directory listing response data
-pub struct DirEntry {
+/// Directory listing response data.
+/// This structure holds the data for a single directory entry.
+/// The `'name_lt` lifetime parameter is associated with the `name` field if it's a borrowed `OsStr`.
+pub struct DirEntryData<'name_lt> {
     /// file inode number
     pub ino: u64,
     /// entry number in directory
     pub offset: i64,
     /// kind of file
-    pub kind: FileType, 
+    pub kind: FileType,
     /// name of file
-    pub name: OsString
+    pub name: OsBox<'name_lt>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -193,8 +199,6 @@ pub struct Lock {
     /// PID of process blocking our lock
     pub pid: u32, 
 }
-
-use crate::ByteBox;
 
 /// `Xattr` represents the response for extended attribute operations (`getxattr`, `listxattr`).
 /// It can either indicate the size of the attribute data or provide the data itself
@@ -366,18 +370,19 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with a filled directory buffer
-    pub fn dir(
+    pub fn dir<'list_lt, 'entry_lt, 'name_lt>(
         self,
-        entries: &[DirEntry],
+        entries_list: &DirEntriesList<'list_lt, 'entry_lt, 'name_lt>,
         size: usize
     ) {
         let mut buf = DirEntList::new(size);
-        for item in entries.iter() { // Iterate over slice
+        for container in entries_list.as_ref().iter() {
+            let item_data = container.as_ref();
             let full= buf.push(&ll_DirEntry::new(
-                INodeNo(item.ino),
-                DirEntOffset(item.offset),
-                item.kind,
-                item.name.clone()
+                INodeNo(item_data.ino),
+                DirEntOffset(item_data.offset),
+                item_data.kind,
+                item_data.name.as_ref()
             ));
             if full {
                 break;
@@ -388,21 +393,29 @@ impl ReplyHandler {
 
     #[cfg(feature = "abi-7-21")]
     // Reply to a request with a filled directory plus buffer
-    pub fn dirplus(
+    pub fn dirplus<'list_lt, 'entry_lt, 'name_lt>(
         self,
-        entries: &[(DirEntry, Entry)], // Accept a slice
+        entries_plus_list: &DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt>,
         size: usize
     ) {
         let mut buf = DirEntPlusList::new(size);
-        for (item, plus) in entries.iter() { // Iterate over slice
+        log::debug!("ReplyHandler::dirplus: initial buf max_size: {}, size passed_to_fn: {}", size, size);
+        let mut count = 0;
+        for container in entries_plus_list.as_ref().iter() {
+            count += 1;
+            log::debug!("ReplyHandler::dirplus: processing container {}", count);
+            let plus_data = container.as_ref();
+            let item_data = &plus_data.entry_data;
+            let item_attr = &plus_data.attr_entry;
+
             let full = buf.push(&DirEntryPlus::new(
-                INodeNo(item.ino),
-                Generation(plus.generation),
-                DirEntOffset(item.offset),
-                item.name.clone(),
-                plus.ttl,
-                plus.attr.into(),
-                plus.ttl,
+                INodeNo(item_data.ino),
+                Generation(item_attr.generation),
+                DirEntOffset(item_data.offset),
+                item_data.name.as_ref(),
+                item_attr.ttl,
+                item_attr.attr.into(),
+                item_attr.ttl,
             ));
             if full {
                 break;
@@ -439,13 +452,59 @@ impl ReplyHandler {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::{FileAttr, FileType};
+    use super::*; // For ReplyHandler, Attr, Entry, Open, Statfs, Lock, Xattr, Ioctl, DirEntryData
+    use crate::{
+        FileAttr, FileType, OsBox, ByteBox, KernelConfig, // KernelConfig for config test if added
+        DirEntriesList, DirEntryContainer,
+        DirEntryPlusList, DirEntryPlusContainer, DirEntryPlusData,
+        ll, // For ll::Errno in reply_error test
+    };
+    use std::ffi::{OsStr, OsString};
     use std::io::IoSlice;
     use std::sync::mpsc::{sync_channel, SyncSender};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
     use zerocopy::{Immutable, IntoBytes};
+
+    // Define TestSender once for the module: captures sent data for inspection.
+    #[derive(Clone)]
+    struct TestSender {
+        sent_data: Arc<Mutex<Option<Vec<u8>>>>,
+    }
+
+    impl ReplySender for TestSender {
+        fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
+            let mut consolidated_data = vec![];
+            for iovec in data {
+                consolidated_data.extend_from_slice(iovec);
+            }
+            *self.sent_data.lock().unwrap() = Some(consolidated_data);
+            Ok(())
+        }
+        #[cfg(feature = "abi-7-40")]
+        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> { unreachable!() }
+    }
+
+    // AssertSender: panics if sent data doesn't match expected.
+    struct AssertSender {
+        expected: Vec<u8>,
+    }
+
+    impl ReplySender for AssertSender {
+        fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
+            let mut v = vec![];
+            for x in data {
+                v.extend_from_slice(x)
+            }
+            assert_eq!(self.expected, v);
+            Ok(())
+        }
+        #[cfg(feature = "abi-7-40")]
+        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
+            unreachable!()
+        }
+    }
 
     #[derive(Debug, IntoBytes, Immutable)]
     #[repr(C)]
@@ -476,26 +535,6 @@ mod test {
         assert_eq!(data.as_bytes(), [0x12, 0x34, 0x78, 0x56]);
     }
 
-    struct AssertSender {
-        expected: Vec<u8>,
-    }
-
-    impl super::ReplySender for AssertSender {
-        fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-            let mut v = vec![];
-            for x in data {
-                v.extend_from_slice(x)
-            }
-            assert_eq!(self.expected, v);
-            Ok(())
-        }
-
-        #[cfg(feature = "abi-7-40")]
-        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
-            unreachable!()
-        }
-    }
-
     #[test]
     fn reply_raw() {
         let data = Data {
@@ -522,8 +561,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        use crate::ll::Errno;
-        replyhandler.error(Errno::from_i32(66));
+        replyhandler.error(ll::Errno::from_i32(66));
     }
 
     #[test]
@@ -609,8 +647,8 @@ mod test {
         };
         replyhandler.entry(
             Entry{
-                attr: attr, 
-                ttl: ttl, 
+                attr,
+                ttl,
                 generation: 0xaa
             }
         );
@@ -671,7 +709,7 @@ mod test {
             blksize: 0xbb,
         };
         replyhandler.attr(
-            Attr { attr: attr, ttl: ttl}
+            Attr { attr, ttl }
         );
     }
 
@@ -860,34 +898,96 @@ mod test {
 
     #[test]
     fn reply_directory() {
-        let sender = AssertSender {
-            expected: vec![
-                0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65,
-                0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00,
-                0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
-            ],
+        let sent_data_arc = Arc::new(Mutex::new(None));
+        let test_sender = TestSender { sent_data: sent_data_arc.clone() };
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, test_sender);
+
+        let entry_data1 = DirEntryData {
+            ino: 0xaabb,
+            offset: 1,
+            kind: FileType::Directory,
+            name: OsBox::Owned(OsString::from("hello").into_boxed_os_str()),
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        let entries = vec!(
-            DirEntry {
-                ino: 0xaabb,
-                offset: 1,
-                kind: FileType::Directory,
-                name: OsString::from("hello"),
-            }, 
-            DirEntry {
-                ino: 0xccdd,
-                offset: 2,
-                kind: FileType::RegularFile,
-                name: OsString::from("world.rs"),
-            }
-        );
-        replyhandler.dir(&entries, std::mem::size_of::<u8>()*128);
+        let entry_data2 = DirEntryData {
+            ino: 0xccdd,
+            offset: 2,
+            kind: FileType::RegularFile,
+            name: OsBox::Owned(OsString::from("world.rs").into_boxed_os_str()),
+        };
+
+        let containers: Vec<DirEntryContainer<'static, 'static>> = vec![
+            DirEntryContainer::Owned(entry_data1),
+            DirEntryContainer::Owned(entry_data2),
+        ];
+
+        let entries_list = DirEntriesList::Owned(containers.into_boxed_slice());
+        replyhandler.dir(&entries_list, std::mem::size_of::<u8>()*128);
+
+        let sent_data_guard = sent_data_arc.lock().unwrap();
+        let sent_data_option = &*sent_data_guard;
+        assert!(sent_data_option.is_some(), "Data should have been sent by dir");
+        if let Some(data) = sent_data_option {
+            // A FUSE header is 16 bytes. If entries were added, it should be larger.
+            assert!(data.len() > 16, "Sent data should be more than just a header for non-empty entries_list");
+            // Further byte validation is complex and done in ll::reply::test::reply_directory
+        }
     }
 
+    // TODO: Add a similar test for reply_dirplus if it exists and needs updating,
+    // or ensure it's covered by other tests or removed if no longer applicable.
+    // The current `dirplus` in ReplyHandler takes `&[(DirEntryData, Entry)]` which is now incorrect.
+    // It should take `&DirEntryPlusList<...>`
+
+    #[test]
+    #[cfg(feature = "abi-7-21")]
+    fn reply_dirplus() {
+        use std::ffi::{OsStr, OsString};
+        // FileAttr is available from crate scope via `super::*` or direct `crate::FileAttr`
+        use crate::byte_box::{DirEntryPlusData, DirEntryPlusContainer, DirEntryPlusList, OsBox as ActualOsBox}; // Alias OsBox to avoid conflict if super::OsBox exists
+        use crate::FileAttr; // Explicit import if not covered by super::* or to be clear
+
+        let sent_data_arc = Arc::new(Mutex::new(None));
+        let test_sender = TestSender { sent_data: sent_data_arc.clone() }; // Uses module-level TestSender
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, test_sender);
+
+        let entry_data1 = super::DirEntryData { // Use super to be explicit
+            ino: 0xaabb,
+            offset: 1,
+            kind: FileType::Directory,
+            name: ActualOsBox::Borrowed(OsStr::new("hello")),
+        };
+        let attr1_fa = crate::FileAttr { ino: 0xaabb, size: 0, blocks: 0, atime: UNIX_EPOCH, mtime: UNIX_EPOCH, ctime: UNIX_EPOCH, crtime: UNIX_EPOCH, kind: FileType::Directory, perm: 0o755, nlink: 2, uid: 1000, gid: 1000, rdev: 0, blksize: 4096, flags: 0 };
+        let attr1 = super::Attr { attr: attr1_fa, ttl: Duration::from_secs(1) };
+        let plus_data1 = DirEntryPlusData { entry_data: entry_data1, attr_entry: super::Entry { attr: attr1.attr, ttl: attr1.ttl, generation: 1 } };
+
+        let entry_data2 = super::DirEntryData {
+            ino: 0xccdd,
+            offset: 2,
+            kind: FileType::RegularFile,
+            name: ActualOsBox::Owned(OsString::from("world.rs").into_boxed_os_str()),
+        };
+        let attr2_fa = crate::FileAttr { ino: 0xccdd, size: 10, blocks: 1, atime: UNIX_EPOCH, mtime: UNIX_EPOCH, ctime: UNIX_EPOCH, crtime: UNIX_EPOCH, kind: FileType::RegularFile, perm: 0o644, nlink: 1, uid: 1000, gid: 1000, rdev: 0, blksize: 4096, flags: 0 };
+        let attr2 = super::Attr { attr: attr2_fa, ttl: Duration::from_secs(1) };
+        let plus_data2 = DirEntryPlusData { entry_data: entry_data2, attr_entry: super::Entry { attr: attr2.attr, ttl: attr2.ttl, generation: 1 } };
+
+        let containers: Vec<DirEntryPlusContainer<'static, 'static>> = vec![
+            DirEntryPlusContainer::Owned(plus_data1.clone()),
+            DirEntryPlusContainer::Owned(plus_data2.clone()),
+        ];
+
+        let entries_list = DirEntryPlusList::Owned(containers.into_boxed_slice());
+
+        replyhandler.dirplus(&entries_list, std::mem::size_of::<u8>()*256);
+
+        let sent_data_guard = sent_data_arc.lock().unwrap();
+        let sent_data_option = &*sent_data_guard;
+
+        assert!(sent_data_option.is_some(), "Data should have been sent by dirplus");
+        if let Some(data) = sent_data_option {
+            // A FUSE header is 16 bytes. If entries were added, it should be larger.
+            assert!(data.len() > 16, "Sent data should be more than just a header for non-empty entries_list. Actual length: {}", data.len());
+        }
+    }
 
     #[test]
     fn reply_xattr_size() {

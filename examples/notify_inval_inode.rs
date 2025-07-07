@@ -20,8 +20,8 @@ use std::{
 use clap::Parser;
 
 use fuser::{
-    consts, Attr, ByteBox, DirEntry, DirEntryBox, Entry, Errno, FileAttr, FileType, Filesystem,
-    Forget, MountOption, Open, RequestMeta, FUSE_ROOT_ID,
+    consts, Attr, ByteBox, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno,
+    FileAttr, FileType, Filesystem, Forget, MountOption, Open, OsBox, RequestMeta, FUSE_ROOT_ID,
 };
 
 struct ClockFS<'a> {
@@ -100,28 +100,29 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn readdir<'a>(
+    fn readdir<'list_lt, 'entry_lt, 'name_lt>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
-        let mut entries_vec = Vec::new();
+        let mut result_containers: Vec<DirEntryContainer<'static, 'static>> = Vec::new();
         if offset == 0 {
-            entries_vec.push(DirEntry {
+            let entry_data = DirEntryData {
                 ino: ClockFS::FILE_INO,
-                offset: 1, // Next offset
+                offset: 1, // This entry's cookie
                 kind: FileType::RegularFile,
-                name: OsString::from(Self::FILE_NAME),
-            });
+                name: OsBox::Borrowed(OsStr::new(Self::FILE_NAME)),
+            };
+            result_containers.push(DirEntryContainer::Owned(entry_data));
         }
-        // If offset is > 0, we've already returned the single entry, so return an empty vector.
-        Ok(DirEntryBox::from(entries_vec))
+        // If offset is > 0 (meaning the first entry was already sent), an empty list is returned.
+        Ok(DirEntriesList::from(result_containers))
     }
 
     fn open(&mut self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {

@@ -9,8 +9,9 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Attr, ByteBox, DirEntry, DirEntryBox, Entry, Errno, Filesystem, Forget, KernelConfig, OsBox,
-    MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr, FUSE_ROOT_ID,
+    Attr, ByteBox, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno, Filesystem,
+    Forget, KernelConfig, MountOption, Open, OsBox, RequestMeta, Statfs, TimeOrNow, Xattr,
+    FUSE_ROOT_ID,
 };
 #[cfg(feature = "abi-7-26")]
 use log::info;
@@ -19,7 +20,7 @@ use log::{error, LevelFilter};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::{OsString}; // Removed OsStr here, it's used in tests only
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::raw::c_int;
@@ -1536,36 +1537,49 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn readdir<'a>(
+    fn readdir<'list_lt, 'entry_lt, 'name_lt>(
         &mut self,
         _req: RequestMeta,
         inode: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
         debug!("readdir() called with {:?}", inode);
         assert!(offset >= 0);
-        let entries = match self.get_directory_content(inode) {
+        let directory_content = match self.get_directory_content(inode) {
             Ok(entries) => entries,
             Err(error_code) => {
                 return Err(Errno::from_i32(error_code));
             }
         };
-        let mut result_vec =Vec::new();
 
-        for (index, entry) in entries.iter().skip(offset as usize).enumerate() {
-            let (name, (inode, file_type)) = entry;
+        let mut result_containers: Vec<DirEntryContainer<'static, 'static>> = Vec::new();
 
-            result_vec.push(DirEntry {
-                ino: *inode,
-                offset: offset + index as i64 + 1,
-                kind: (*file_type).into(),
-                name: OsStr::from_bytes(name).to_owned(),
-            });
-            // TODO stop if bytes > _max_bytes
+        // The lifetimes 'entry_lt and 'name_lt for Owned containers/data are effectively 'static
+        // relative to the container itself, so we can use 'static here if the data doesn't borrow
+        // from something shorter-lived within this readdir call.
+        // The trait signature's 'entry_lt and 'name_lt will be satisfied.
+        // However, to be strictly correct without making assumptions about how 'static is inferred,
+        // it's safer to acknowledge that the data created here lives as long as the call.
+        // But since we return DirEntriesList::Owned, the outer 'list_lt becomes 'static effectively.
+
+        for (index, entry) in directory_content.iter().skip(offset as usize).enumerate() {
+            let (name_bytes, (entry_ino, entry_file_type)) = entry;
+
+            let name_os_string = OsString::from_vec(name_bytes.clone()); // Clone Vec<u8> to OsString
+            let name_os_box = OsBox::Owned(name_os_string.into_boxed_os_str());
+
+            let dir_entry_data = DirEntryData {
+                ino: *entry_ino,
+                offset: offset + index as i64 + 1, // Cookie for this entry
+                kind: (*entry_file_type).into(),
+                name: name_os_box,
+            };
+            result_containers.push(DirEntryContainer::Owned(dir_entry_data));
+            // TODO stop if bytes > _max_bytes (this check is complex with variable name lengths and layers)
         }
-        Ok(DirEntryBox::from(result_vec))
+        Ok(DirEntriesList::from(result_containers))
     }
 
     fn releasedir(

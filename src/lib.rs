@@ -32,13 +32,18 @@ pub use reply::Ioctl;
 pub use passthrough::BackingId;
 #[cfg(target_os = "macos")]
 pub use reply::XTimes;
-pub use reply::{Entry, Attr, DirEntry, Open, Statfs, Xattr, Lock};
+pub use reply::{Entry, Attr, DirEntryData, Open, Statfs, Xattr, Lock}; // Changed DirEntry to DirEntryData
 pub use ll::Errno;
 pub use request::RequestMeta;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 
 mod byte_box;
-pub use byte_box::{ByteBox, DirEntryBox, DirEntryPlusBox, OsBox};
+pub use byte_box::{
+    ByteBox, OsBox,
+    // DirEntryData, // Removed: DirEntryData is pub use'd from reply module directly
+    DirEntryContainer, DirEntriesList,
+    DirEntryPlusData, DirEntryPlusContainer, DirEntryPlusList,
+};
 
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
@@ -680,20 +685,21 @@ pub trait Filesystem {
     }
 
     /// Read directory.
-    /// The filesystem should return a buffer filled with directory entries. The buffer
-    /// must not exceed the `max_bytes` parameter. An empty buffer indicates the end of
-    /// the stream. `fh` will contain the value set by the opendir method, or will be
-    /// undefined if the opendir method didn't set any value.
-    /// The method should return `Ok(DirEntryBox<'a, DirEntry>)` with the directory entries, or `Err(Errno)` otherwise.
-    /// `DirEntryBox` allows returning directory entries with flexible ownership.
-    fn readdir<'a>(
+    /// The filesystem should return a list of directory entries.
+    /// The returned `DirEntriesList` allows for flexible ownership of the list itself,
+    /// the `DirEntryContainer`s within it, and the names within the `DirEntryData`.
+    /// The buffer generated from this list must not exceed `max_bytes`.
+    /// An empty list indicates the end of the stream.
+    /// `fh` will contain the value set by the opendir method, or will be undefined if the
+    /// opendir method didn't set any value.
+    fn readdir<'list_lt, 'entry_lt, 'name_lt>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32
-    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
         warn!(
             "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
@@ -703,21 +709,22 @@ pub trait Filesystem {
 
     /// Read directory.
     /// Similar to `readdir`, but also returns the attributes of each directory entry.
-    /// The filesystem should return a buffer filled with directory entries and their attributes.
+    /// The filesystem should return a list of directory entries and their attributes.
+    /// The returned `DirEntryPlusList` allows for flexible ownership.
     /// The buffer must not exceed the `max_bytes` parameter. An empty buffer indicates the end of
     /// the stream. `fh` will contain the value set by the opendir method, or will be
     /// undefined if the opendir method didn't set any value.
-    /// The method should return `Ok(DirEntryPlusBox<'a, (DirEntry, Entry)>)` with the directory entries and their attributes, or `Err(Errno)` otherwise.
-    /// `DirEntryPlusBox` allows returning extended directory entries with flexible ownership.
+    /// The returned `DirEntryPlusList` allows for flexible ownership of the list, the containers,
+    /// and the names within the directory entry data.
     #[cfg(feature = "abi-7-21")]
-    fn readdirplus<'a>(
+    fn readdirplus<'list_lt, 'entry_lt, 'name_lt>( // 'attr_lt removed as fuser::Entry has no lifetimes for now
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32,
-    ) -> Result<DirEntryPlusBox<'a, (DirEntry, Entry)>, Errno>{
+    ) -> Result<DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
         warn!(
             "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes

@@ -23,8 +23,8 @@ use std::{
 
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
-    Attr, ByteBox, DirEntry, DirEntryBox, Entry, Errno, FileAttr, FileType,
-    MountOption, Open, RequestMeta, FUSE_ROOT_ID, // Removed Filesystem import
+    Attr, ByteBox, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno, FileAttr,
+    FileType, MountOption, Open, OsBox, RequestMeta, FUSE_ROOT_ID, // Removed Filesystem
 };
 
 const NUMFILES: u8 = 16;
@@ -136,14 +136,14 @@ impl fuser::Filesystem for FSelFS {
         }
     }
 
-    fn readdir<'a>(
+    fn readdir<'list_lt, 'entry_lt, 'name_lt>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
@@ -152,24 +152,26 @@ impl fuser::Filesystem for FSelFS {
             return Err(Errno::EINVAL);
         };
 
-        let mut entries_vec = Vec::new();
+        let mut result_containers: Vec<DirEntryContainer<'static, 'static>> = Vec::new();
         for idx in start_offset..NUMFILES {
             let ascii_char_val = match idx {
                 0..=9 => b'0' + idx,
                 10..=15 => b'A' + idx - 10, // Corrected range to 15 for NUMFILES = 16
                 _ => panic!("idx out of range for NUMFILES"),
             };
-            let name_bytes = vec![ascii_char_val]; // Byte vector (but just one byte)
-            let name = OsString::from_vec(name_bytes);
-            entries_vec.push(DirEntry {
+            // Create OsString from the single byte character
+            let name_os_string = OsString::from_vec(vec![ascii_char_val]);
+
+            let entry_data = DirEntryData {
                 ino: FSelData::idx_to_ino(idx),
-                offset: (idx + 1).into(),
+                offset: (idx + 1).into(), // Cookie for this entry
                 kind: FileType::RegularFile,
-                name,
-            });
-            // TODO: compare to _max_bytes; stop if full.
+                name: OsBox::Owned(name_os_string.into_boxed_os_str()),
+            };
+            result_containers.push(DirEntryContainer::Owned(entry_data));
+            // TODO: compare to _max_bytes; stop if full for real-world use.
         }
-        Ok(DirEntryBox::from(entries_vec))
+        Ok(DirEntriesList::from(result_containers))
     }
 
     fn open(&mut self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {

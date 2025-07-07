@@ -1,7 +1,7 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    ByteBox, DirEntryBox, Filesystem, MountOption, Attr, DirEntry,
-    Entry, Errno, RequestMeta, FileType, FileAttr
+    Attr, ByteBox, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno, FileAttr,
+    Filesystem, FileType, MountOption, OsBox, RequestMeta,
 };
 use std::ffi::{OsStr, OsString};
 use std::time::{Duration, UNIX_EPOCH};
@@ -93,33 +93,81 @@ impl Filesystem for HelloFS {
             }
         } else {
             Err(Errno::ENOENT)
-        }
+        } // <<< Added missing brace here
     }
 
-    fn readdir<'a>(
+    fn readdir<'list_lt, 'entry_lt, 'name_lt>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirEntryBox<'a, DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
 
-        let entries = vec![
-            DirEntry { ino: 1, offset: 1, kind: FileType::Directory, name: OsString::from(".") },
-            DirEntry { ino: 1, offset: 2, kind: FileType::Directory, name: OsString::from("..") },
-            DirEntry { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsString::from("hello.txt") },
+        let mut entries: Vec<DirEntryContainer<'static, 'static>> = Vec::new();
+
+        // Entry 1: "."
+        if offset < 1 {
+            entries.push(DirEntryContainer::Owned(DirEntryData {
+                ino: 1,
+                offset: 1, // This entry's cookie
+                kind: FileType::Directory,
+                name: OsBox::Borrowed(OsStr::new(".")),
+            }));
+        }
+
+        // Entry 2: ".."
+        if offset < 2 {
+            entries.push(DirEntryContainer::Owned(DirEntryData {
+                ino: 1, // Parent of root is root itself for simplicity here
+                offset: 2, // This entry's cookie
+                kind: FileType::Directory,
+                name: OsBox::Borrowed(OsStr::new("..")),
+            }));
+        }
+
+        // Entry 3: "hello.txt"
+        if offset < 3 {
+            entries.push(DirEntryContainer::Owned(DirEntryData {
+                ino: 2,
+                offset: 3, // This entry's cookie
+                kind: FileType::RegularFile,
+                name: OsBox::Owned(OsString::from("hello.txt").into_boxed_os_str()),
+            }));
+        }
+
+        // Slice the collected entries based on the offset.
+        // The FUSE convention is that offset is the cookie of the *previous* entry,
+        // or 0 for the first call. So, if offset is k, we start sending from the (k)th entry (0-indexed).
+        // The `offset` field in `DirEntryData` should be the cookie that `readdir` would return
+        // for *this* entry, so that if `readdir` is called again with that cookie, it knows where to resume.
+        // A common way is to use 1-based indexing for these cookies.
+
+        // Let's refine the logic slightly to be more standard with offset handling.
+        // The provided offset is the point *from which* to start reading.
+        // If offset = 0, send all. If offset = 1, send from ".." onwards. If offset = 2, send from "hello.txt" onwards.
+        // The `offset` field in `DirEntryData` should be the cookie for *that specific entry*.
+        // It's often the inode number or a sequence number.
+
+        let all_possible_entries = [
+            (DirEntryData { ino: 1, offset: 1, kind: FileType::Directory, name: OsBox::Borrowed(OsStr::new(".")) }),
+            (DirEntryData { ino: 1, offset: 2, kind: FileType::Directory, name: OsBox::Borrowed(OsStr::new("..")) }),
+            (DirEntryData { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsBox::Owned(OsString::from("hello.txt").into_boxed_os_str()) }),
         ];
 
-        let mut result = Vec::new();
-        for entry in entries.into_iter().skip(offset as usize) {
-            // example loop where additional logic could be inserted
-            result.push(entry);
+        let mut result_containers: Vec<DirEntryContainer<'static, 'static>> = Vec::new();
+        for entry_data in all_possible_entries.iter().skip(offset as usize) {
+            // We are creating new DirEntryContainer::Owned for simplicity,
+            // as the `all_possible_entries` array is local to this function call.
+            // If these were truly static `DirEntryData` instances, we could use `Borrowed`.
+            result_containers.push(DirEntryContainer::Owned(entry_data.clone()));
         }
-        Ok(DirEntryBox::from(result)) // Convert Vec<DirEntry> to DirEntryBox
+
+        Ok(DirEntriesList::from(result_containers))
     }
 }
 
@@ -161,7 +209,7 @@ fn main() {
 #[cfg(test)]
 mod test {
     use fuser::{Filesystem, RequestMeta, Errno, FileType};
-    use std::ffi::OsString;
+    use std::ffi::{OsString, OsStr}; // Added OsStr
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta { unique: 0, uid: 1000, gid: 1000, pid: 2000 }
@@ -197,14 +245,30 @@ mod test {
         let req = dummy_meta();
         let result = hellofs.readdir(req, 1, 0, 0, 4096);
         assert!(result.is_ok(), "Readdir on root should succeed");
-        if let Ok(entries) = result {
-            assert_eq!(entries.len(), 3, "Root directory should contain exactly 3 entries");
-            assert_eq!(entries[0].name, OsString::from("."), "First entry should be '.'");
-            assert_eq!(entries[0].ino, 1, "Inode for '.' should be 1");
-            assert_eq!(entries[1].name, OsString::from(".."), "Second entry should be '..'");
-            assert_eq!(entries[1].ino, 1, "Inode for '..' should be 1");
-            assert_eq!(entries[2].name, OsString::from("hello.txt"), "Third entry should be 'hello.txt'");
-            assert_eq!(entries[2].ino, 2, "Inode for 'hello.txt' should be 2");
+        if let Ok(entries_list) = result {
+            let entries_slice = entries_list.as_ref();
+            assert_eq!(entries_slice.len(), 3, "Root directory should contain exactly 3 entries");
+
+            // Check entry 0: "."
+            let entry0_data = entries_slice[0].as_ref();
+            assert_eq!(entry0_data.name.as_ref(), OsStr::new("."), "First entry should be '.'");
+            assert_eq!(entry0_data.ino, 1, "Inode for '.' should be 1");
+            assert_eq!(entry0_data.offset, 1, "Offset for '.' should be 1");
+            assert_eq!(entry0_data.kind, FileType::Directory, "'.' should be a directory");
+
+            // Check entry 1: ".."
+            let entry1_data = entries_slice[1].as_ref();
+            assert_eq!(entry1_data.name.as_ref(), OsStr::new(".."), "Second entry should be '..'");
+            assert_eq!(entry1_data.ino, 1, "Inode for '..' should be 1");
+            assert_eq!(entry1_data.offset, 2, "Offset for '..' should be 2");
+            assert_eq!(entry1_data.kind, FileType::Directory, "'..' should be a directory");
+
+            // Check entry 2: "hello.txt"
+            let entry2_data = entries_slice[2].as_ref();
+            assert_eq!(entry2_data.name.as_ref(), OsStr::new("hello.txt"), "Third entry should be 'hello.txt'");
+            assert_eq!(entry2_data.ino, 2, "Inode for 'hello.txt' should be 2");
+            assert_eq!(entry2_data.offset, 3, "Offset for 'hello.txt' should be 3");
+            assert_eq!(entry2_data.kind, FileType::RegularFile, "'hello.txt' should be a regular file");
         }
     }
 
