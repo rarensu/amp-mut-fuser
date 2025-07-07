@@ -452,59 +452,14 @@ impl ReplyHandler {
 
 #[cfg(test)]
 mod test {
-    use super::*; // For ReplyHandler, Attr, Entry, Open, Statfs, Lock, Xattr, Ioctl, DirEntryData
-    use crate::{
-        FileAttr, FileType, OsBox, ByteBox, KernelConfig, // KernelConfig for config test if added
-        DirEntriesList, DirEntryContainer,
-        DirEntryPlusList, DirEntryPlusContainer, DirEntryPlusData,
-        ll, // For ll::Errno in reply_error test
-    };
-    use std::ffi::{OsStr, OsString};
+    use super::*;
+    use crate::{FileAttr, FileType};
     use std::io::IoSlice;
     use std::sync::mpsc::{sync_channel, SyncSender};
-    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
     use zerocopy::{Immutable, IntoBytes};
-
-    // Define TestSender once for the module: captures sent data for inspection.
-    #[derive(Clone)]
-    struct TestSender {
-        sent_data: Arc<Mutex<Option<Vec<u8>>>>,
-    }
-
-    impl ReplySender for TestSender {
-        fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-            let mut consolidated_data = vec![];
-            for iovec in data {
-                consolidated_data.extend_from_slice(iovec);
-            }
-            *self.sent_data.lock().unwrap() = Some(consolidated_data);
-            Ok(())
-        }
-        #[cfg(feature = "abi-7-40")]
-        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> { unreachable!() }
-    }
-
-    // AssertSender: panics if sent data doesn't match expected.
-    struct AssertSender {
-        expected: Vec<u8>,
-    }
-
-    impl ReplySender for AssertSender {
-        fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-            let mut v = vec![];
-            for x in data {
-                v.extend_from_slice(x)
-            }
-            assert_eq!(self.expected, v);
-            Ok(())
-        }
-        #[cfg(feature = "abi-7-40")]
-        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
-            unreachable!()
-        }
-    }
+    use std::ffi::OsString;
 
     #[derive(Debug, IntoBytes, Immutable)]
     #[repr(C)]
@@ -535,6 +490,26 @@ mod test {
         assert_eq!(data.as_bytes(), [0x12, 0x34, 0x78, 0x56]);
     }
 
+    struct AssertSender {
+        expected: Vec<u8>,
+    }
+
+    impl super::ReplySender for AssertSender {
+        fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
+            let mut v = vec![];
+            for x in data {
+                v.extend_from_slice(x)
+            }
+            assert_eq!(self.expected, v);
+            Ok(())
+        }
+
+        #[cfg(feature = "abi-7-40")]
+        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
+            unreachable!()
+        }
+    }
+
     #[test]
     fn reply_raw() {
         let data = Data {
@@ -561,7 +536,8 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.error(ll::Errno::from_i32(66));
+        use crate::ll::Errno;
+        replyhandler.error(Errno::from_i32(66));
     }
 
     #[test]
@@ -590,41 +566,67 @@ mod test {
 
     #[test]
     fn reply_entry() {
-        let mut expected = if cfg!(target_os = "macos") {
-            vec![
-                0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56,
-                0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
-                0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x99, 0x00, 0x00, 0x00,
-            ]
-        } else {
-            vec![
-                0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00,
-                0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
-            ]
-        };
-
-        if cfg!(feature = "abi-7-9") {
-            expected.extend(vec![0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        }
+        // prepare the expected message
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&[
+                // header
+                0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00,
+                // ino
+                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                // generation
+                0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                // ttl
+                0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
+                // file attributes
+                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                // file times (s)
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        expected.extend_from_slice(&[
+                // crtime (s)
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+                // file times (ns)
+                0x78, 0x56, 0x00, 0x00,
+                0x78, 0x56, 0x00, 0x00, 
+                0x78, 0x56, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        expected.extend_from_slice([
+                // crtime (ns)
+                0x78, 0x56, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+                // file permissions
+                0xa4, 0x81, 0x00, 0x00,
+                // file owners
+                0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
+                0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        expected.extend_from_slice(&[
+                // flags
+                0x99, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(feature = "abi-7-9")]
+        expected.extend_from_slice(&[
+                // blksize
+                0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ]);
+        // correct the header
         expected[0] = (expected.len()) as u8;
-
+        // test reply will be compare with the expected message
         let sender = AssertSender { expected };
+        // prepare the test reply
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
@@ -645,10 +647,11 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
+        // send the test reply
         replyhandler.entry(
             Entry{
-                attr,
-                ttl,
+                attr: attr, 
+                ttl: ttl, 
                 generation: 0xaa
             }
         );
@@ -709,7 +712,7 @@ mod test {
             blksize: 0xbb,
         };
         replyhandler.attr(
-            Attr { attr, ttl }
+            Attr { attr: attr, ttl: ttl}
         );
     }
 
@@ -898,95 +901,164 @@ mod test {
 
     #[test]
     fn reply_directory() {
-        let sent_data_arc = Arc::new(Mutex::new(None));
-        let test_sender = TestSender { sent_data: sent_data_arc.clone() };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, test_sender);
-
-        let entry_data1 = DirEntryData {
-            ino: 0xaabb,
-            offset: 1,
-            kind: FileType::Directory,
-            name: OsBox::Owned(OsString::from("hello").into_boxed_os_str()),
+        let sender = AssertSender {
+            expected: vec![
+                0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
+                0x00, 0x00, 0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65,
+                0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00,
+                0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
+            ],
         };
-        let entry_data2 = DirEntryData {
-            ino: 0xccdd,
-            offset: 2,
-            kind: FileType::RegularFile,
-            name: OsBox::Owned(OsString::from("world.rs").into_boxed_os_str()),
-        };
-
-        let containers: Vec<DirEntryContainer<'static, 'static>> = vec![
-            DirEntryContainer::Owned(entry_data1),
-            DirEntryContainer::Owned(entry_data2),
-        ];
-
-        let entries_list = DirEntriesList::Owned(containers.into_boxed_slice());
-        replyhandler.dir(&entries_list, std::mem::size_of::<u8>()*128);
-
-        let sent_data_guard = sent_data_arc.lock().unwrap();
-        let sent_data_option = &*sent_data_guard;
-        assert!(sent_data_option.is_some(), "Data should have been sent by dir");
-        if let Some(data) = sent_data_option {
-            // A FUSE header is 16 bytes. If entries were added, it should be larger.
-            assert!(data.len() > 16, "Sent data should be more than just a header for non-empty entries_list");
-            // Further byte validation is complex and done in ll::reply::test::reply_directory
-        }
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let entries = vec!(
+            DirEntryData {
+                ino: 0xaabb,
+                offset: 1,
+                kind: FileType::Directory,
+                name: OsString::from("hello").into(),
+            }, 
+            DirEntryData {
+                ino: 0xccdd,
+                offset: 2,
+                kind: FileType::RegularFile,
+                name: OsString::from("world.rs").into(),
+            }
+        );
+        replyhandler.dir(&entries.into(), std::mem::size_of::<u8>()*128);
     }
-
-    // TODO: Add a similar test for reply_dirplus if it exists and needs updating,
-    // or ensure it's covered by other tests or removed if no longer applicable.
-    // The current `dirplus` in ReplyHandler takes `&[(DirEntryData, Entry)]` which is now incorrect.
-    // It should take `&DirEntryPlusList<...>`
-
+    
     #[test]
-    #[cfg(feature = "abi-7-21")]
-    fn reply_dirplus() {
-        use std::ffi::{OsStr, OsString};
-        // FileAttr is available from crate scope via `super::*` or direct `crate::FileAttr`
-        use crate::byte_box::{DirEntryPlusData, DirEntryPlusContainer, DirEntryPlusList, OsBox as ActualOsBox}; // Alias OsBox to avoid conflict if super::OsBox exists
-        use crate::FileAttr; // Explicit import if not covered by super::* or to be clear
+    fn reply_directory_plus() {
+        // prepare the expected file attribute portion of the message
+        // see test::reply_entry() for details
+        let mut attr_bytes = Vec::new();
+        attr_bytes.extend_from_slice(&[
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        attr_bytes.extend_from_slice(&[
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        attr_bytes.extend_from_slice(&[
+            0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        attr_bytes.extend_from_slice([
+            0x78, 0x56, 0x00, 0x00,
+        ]);
+        attr_bytes.extend_from_slice(&[
+            0xa4, 0x41, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
+            0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        attr_bytes.extend_from_slice(&[
+            0x99, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(feature = "abi-7-9")]
+        attr_bytes.extend_from_slice(&[
+            0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ]);
 
-        let sent_data_arc = Arc::new(Mutex::new(None));
-        let test_sender = TestSender { sent_data: sent_data_arc.clone() }; // Uses module-level TestSender
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, test_sender);
-
-        let entry_data1 = super::DirEntryData { // Use super to be explicit
+        let mut expected = Vec::new();
+        // header
+        expected.extend_from_slice(&[
+            0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        // attr 1
+        expected.extend_from_slice(&attr_bytes);
+        // dir entry 1
+        expected.extend_from_slice(&[
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+            0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00,
+        ]);
+        // attr 2 has a different ino value in two positions
+        attr_bytes[0]=0xdd;
+        attr_bytes[1]=0xcc;
+        attr_bytes[40]=0xdd;
+        attr_bytes[41]=0xcc;
+        // attr 2 has a different file permission in one position
+        let i = if cfg!(target_os = "macos") {113} else {101};
+        attr_bytes[i]=0x81; 
+        expected.extend_from_slice(&attr_bytes);
+        // dir entry 2
+        expected.extend_from_slice(&[
+            0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
+        ]);
+        // correct the header
+        expected[0] = (expected.len()) as u8;
+        // test reply will be compared to expected
+        let sender = AssertSender {expected};
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+        let ttl = Duration::new(0x8765, 0x4321);
+        let attr1 = FileAttr {
             ino: 0xaabb,
-            offset: 1,
+            size: 0x22,
+            blocks: 0x33,
+            atime: time,
+            mtime: time,
+            ctime: time,
+            crtime: time,
             kind: FileType::Directory,
-            name: ActualOsBox::Borrowed(OsStr::new("hello")),
+            perm: 0o644,
+            nlink: 0x55,
+            uid: 0x66,
+            gid: 0x77,
+            rdev: 0x88,
+            flags: 0x99,
+            blksize: 0xbb,
         };
-        let attr1_fa = crate::FileAttr { ino: 0xaabb, size: 0, blocks: 0, atime: UNIX_EPOCH, mtime: UNIX_EPOCH, ctime: UNIX_EPOCH, crtime: UNIX_EPOCH, kind: FileType::Directory, perm: 0o755, nlink: 2, uid: 1000, gid: 1000, rdev: 0, blksize: 4096, flags: 0 };
-        let attr1 = super::Attr { attr: attr1_fa, ttl: Duration::from_secs(1) };
-        let plus_data1 = DirEntryPlusData { entry_data: entry_data1, attr_entry: super::Entry { attr: attr1.attr, ttl: attr1.ttl, generation: 1 } };
-
-        let entry_data2 = super::DirEntryData {
-            ino: 0xccdd,
-            offset: 2,
-            kind: FileType::RegularFile,
-            name: ActualOsBox::Owned(OsString::from("world.rs").into_boxed_os_str()),
-        };
-        let attr2_fa = crate::FileAttr { ino: 0xccdd, size: 10, blocks: 1, atime: UNIX_EPOCH, mtime: UNIX_EPOCH, ctime: UNIX_EPOCH, crtime: UNIX_EPOCH, kind: FileType::RegularFile, perm: 0o644, nlink: 1, uid: 1000, gid: 1000, rdev: 0, blksize: 4096, flags: 0 };
-        let attr2 = super::Attr { attr: attr2_fa, ttl: Duration::from_secs(1) };
-        let plus_data2 = DirEntryPlusData { entry_data: entry_data2, attr_entry: super::Entry { attr: attr2.attr, ttl: attr2.ttl, generation: 1 } };
-
-        let containers: Vec<DirEntryPlusContainer<'static, 'static>> = vec![
-            DirEntryPlusContainer::Owned(plus_data1.clone()),
-            DirEntryPlusContainer::Owned(plus_data2.clone()),
-        ];
-
-        let entries_list = DirEntryPlusList::Owned(containers.into_boxed_slice());
-
-        replyhandler.dirplus(&entries_list, std::mem::size_of::<u8>()*256);
-
-        let sent_data_guard = sent_data_arc.lock().unwrap();
-        let sent_data_option = &*sent_data_guard;
-
-        assert!(sent_data_option.is_some(), "Data should have been sent by dirplus");
-        if let Some(data) = sent_data_option {
-            // A FUSE header is 16 bytes. If entries were added, it should be larger.
-            assert!(data.len() > 16, "Sent data should be more than just a header for non-empty entries_list. Actual length: {}", data.len());
-        }
+        let mut attr2 = attr1.clone();
+        attr2.ino = 0xccdd;
+        attr2.kind = FileType::RegularFile;
+        let generation = 0xaa;
+        let entries = vec!(
+            (
+                DirEntryData {
+                    ino: 0xaabb,
+                    offset: 1,
+                    kind: FileType::Directory,
+                    name: OsString::from("hello").into(),
+                },
+                Entry {
+                    attr: attr1, 
+                    ttl, 
+                    generation, 
+                }
+            ),
+            (
+                DirEntryData {
+                    ino: 0xccdd,
+                    offset: 2,
+                    kind: FileType::RegularFile,
+                    name: OsString::from("world.rs").into(),
+                },
+                Entry {
+                    attr: attr2, 
+                    ttl, 
+                    generation, 
+                }
+            )
+        );
+        replyhandler.dirplus(&entries.into(), std::mem::size_of::<u8>()*4096);
     }
 
     #[test]
@@ -1010,8 +1082,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        let data_vec = vec![0x11, 0x22, 0x33, 0x44];
-        replyhandler.xattr(Xattr::Data(ByteBox::from(data_vec)));
+        replyhandler.xattr(Xattr::Data([0x11, 0x22, 0x33, 0x44].to_vec().into()));
     }
 
     impl super::ReplySender for SyncSender<()> {

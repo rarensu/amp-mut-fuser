@@ -236,6 +236,22 @@ impl<'entry_lt, 'name_lt> From<Arc<[DirEntryContainer<'entry_lt, 'name_lt>]>>
     }
 }
 
+impl<'entry_lt, 'name_lt> From<Vec<DirEntryData<'name_lt>>>
+    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
+    fn from(vec: Vec<DirEntryData<'name_lt>>) -> Self {
+        let boxed_slice = vec.into_iter().map(DirEntryContainer::Owned).collect::<Box<[DirEntryContainer<'entry_lt, 'name_lt>]>>();
+        DirEntriesList::Owned(boxed_slice)
+    }
+}
+
+impl<'entry_lt, 'name_lt> From<Vec<Arc<DirEntryData<'name_lt>>>>
+    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
+    fn from(vec: Vec<Arc<DirEntryData<'name_lt>>>) -> Self {
+        let boxed_slice = vec.into_iter().map(DirEntryContainer::Shared).collect::<Box<[DirEntryContainer<'entry_lt, 'name_lt>]>>();
+        DirEntriesList::Owned(boxed_slice)
+    }
+}
+
 // --- Types for readdirplus ---
 
 /// Data for a single directory entry, including its attributes, for `readdirplus`.
@@ -362,6 +378,16 @@ impl<'entry_lt, 'name_lt> From<Arc<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>
     }
 }
 
+impl<'entry_lt, 'name_lt> From<Vec<(DirEntryData<'name_lt>, crate::reply::Entry)>>
+    for DirEntryPlusList<'static, 'entry_lt, 'name_lt> {
+    fn from(vec: Vec<(DirEntryData<'name_lt>, crate::reply::Entry)>) -> Self {
+        let boxed_slice = vec.into_iter()
+        .map( | tuple | DirEntryPlusData{entry_data: tuple.0, attr_entry: tuple.1})
+        .map(DirEntryPlusContainer::Owned)
+        .collect::<Box<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>>();
+        DirEntryPlusList::Owned(boxed_slice)
+    }
+}
 
 #[cfg(test)]
 mod tests_byte_box { // Renamed from "tests" to be specific
