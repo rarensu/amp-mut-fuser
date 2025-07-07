@@ -127,7 +127,6 @@ impl<'a> Clone for OsBox<'a> {
 // For DirEntryPlusData, we need fuser::Entry for attributes
 use crate::reply::DirEntryData;
 use crate::Entry as FuserEntry;
-use crate::FileType; // For test helpers
 
 /// `DirEntryContainer` allows a single directory entry (`DirEntryData`) to be returned
 /// with flexible ownership, enabling borrowing of static/cached entries or returning owned ones.

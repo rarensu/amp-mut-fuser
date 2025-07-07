@@ -27,11 +27,10 @@ use zerocopy::IntoBytes;
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
 
-use crate::{
-    ByteBox, FileAttr, FileType, KernelConfig, OsBox,
-    DirEntriesList, DirEntryContainer, // For dir
-    DirEntryPlusList, DirEntryPlusContainer, DirEntryPlusData, // For dirplus
-};
+use crate::{ByteBox, FileAttr, FileType, KernelConfig, OsBox, DirEntriesList};
+#[cfg(feature = "abi-7-21")]
+use crate::DirEntryPlusList;
+
 
 /// Generic reply callback to send data
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
