@@ -31,25 +31,25 @@ impl<'a> From<&'a [u8]> for ByteBox<'a> {
     }
 }
 
-impl<'a> From<Vec<u8>> for ByteBox<'a> {
+impl From<Vec<u8>> for ByteBox<'_> {
     fn from(vec: Vec<u8>) -> Self {
         ByteBox::Owned(vec.into_boxed_slice())
     }
 }
 
-impl<'a> From<Box<[u8]>> for ByteBox<'a> {
+impl From<Box<[u8]>> for ByteBox<'_> {
     fn from(boxed_slice: Box<[u8]>) -> Self {
         ByteBox::Owned(boxed_slice)
     }
 }
 
-impl<'a> From<Arc<[u8]>> for ByteBox<'a> {
+impl From<Arc<[u8]>> for ByteBox<'_> {
     fn from(arc_slice: Arc<[u8]>) -> Self {
         ByteBox::Shared(arc_slice)
     }
 }
 
-impl<'a> AsRef<[u8]> for ByteBox<'a> {
+impl AsRef<[u8]> for ByteBox<'_> {
     fn as_ref(&self) -> &[u8] {
         match self {
             ByteBox::Borrowed(slice) => slice,
@@ -59,7 +59,7 @@ impl<'a> AsRef<[u8]> for ByteBox<'a> {
     }
 }
 
-impl<'a> Deref for ByteBox<'a> {
+impl Deref for ByteBox<'_> {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
         self.as_ref()
@@ -89,16 +89,16 @@ pub enum OsBox<'a> {
 impl<'a> From<&'a OsStr> for OsBox<'a> {
     fn from(s: &'a OsStr) -> Self { OsBox::Borrowed(s) }
 }
-impl<'a> From<OsString> for OsBox<'a> {
+impl From<OsString> for OsBox<'_> {
     fn from(s: OsString) -> Self { OsBox::Owned(s.into_boxed_os_str()) }
 }
-impl<'a> From<Box<OsStr>> for OsBox<'a> {
+impl From<Box<OsStr>> for OsBox<'_> {
     fn from(b: Box<OsStr>) -> Self { OsBox::Owned(b) }
 }
-impl<'a> From<Arc<OsStr>> for OsBox<'a> {
+impl From<Arc<OsStr>> for OsBox<'_> {
     fn from(a: Arc<OsStr>) -> Self { OsBox::Shared(a) }
 }
-impl<'a> AsRef<OsStr> for OsBox<'a> {
+impl AsRef<OsStr> for OsBox<'_> {
     fn as_ref(&self) -> &OsStr {
         match self {
             OsBox::Borrowed(s) => s,
@@ -107,11 +107,11 @@ impl<'a> AsRef<OsStr> for OsBox<'a> {
         }
     }
 }
-impl<'a> Deref for OsBox<'a> {
+impl Deref for OsBox<'_> {
     type Target = OsStr;
     fn deref(&self) -> &Self::Target { self.as_ref() }
 }
-impl<'a> Clone for OsBox<'a> {
+impl Clone for OsBox<'_> {
     fn clone(&self) -> Self {
         match self {
             OsBox::Borrowed(s) => OsBox::Borrowed(s),
@@ -131,20 +131,22 @@ use crate::Entry as FuserEntry;
 /// `DirEntryContainer` allows a single directory entry (`DirEntryData`) to be returned
 /// with flexible ownership, enabling borrowing of static/cached entries or returning owned ones.
 ///
-/// The `'entry_lt` lifetime is for the `DirEntryData` if it's borrowed.
-/// The `'name_lt` lifetime is for the name within the `DirEntryData` if that name is borrowed.
+/// The `'entry` lifetime is for the `DirEntryData` if it's borrowed.
+/// The `'name` lifetime is for the name within the `DirEntryData` if that name is borrowed.
 #[derive(Debug, Clone)]
-pub enum DirEntryContainer<'entry_lt, 'name_lt> {
-    /// A borrowed `DirEntryData` struct. The lifetime `'entry_lt` applies to this borrow.
-    Borrowed(&'entry_lt DirEntryData<'name_lt>),
+pub enum DirEntryContainer<'entry, 'name> {
+    // 'entry is the lifetime of a borrowed entry: DirEntry. 
+    // 'name is the lifetime of a borrowed name: OsString.
+    /// A borrowed `DirEntryData` struct. The lifetime `'entry` applies to this borrow.
+    Borrowed(&'entry DirEntryData<'name>),
     /// An owned `DirEntryData` struct.
-    Owned(DirEntryData<'name_lt>),
+    Owned(DirEntryData<'name>),
     /// A shared, atomically reference-counted `DirEntryData` struct.
-    Shared(Arc<DirEntryData<'name_lt>>),
+    Shared(Arc<DirEntryData<'name>>),
 }
 
-impl<'entry_lt, 'name_lt> AsRef<DirEntryData<'name_lt>> for DirEntryContainer<'entry_lt, 'name_lt> {
-    fn as_ref(&self) -> &DirEntryData<'name_lt> {
+impl<'name> AsRef<DirEntryData<'name>> for DirEntryContainer<'_, 'name> {
+    fn as_ref(&self) -> &DirEntryData<'name> {
         match self {
             DirEntryContainer::Borrowed(entry_data) => entry_data,
             DirEntryContainer::Owned(entry_data) => entry_data,
@@ -153,25 +155,25 @@ impl<'entry_lt, 'name_lt> AsRef<DirEntryData<'name_lt>> for DirEntryContainer<'e
     }
 }
 
-impl<'entry_lt, 'name_lt> Deref for DirEntryContainer<'entry_lt, 'name_lt> {
-    type Target = DirEntryData<'name_lt>;
+impl<'name> Deref for DirEntryContainer<'_, 'name> {
+    type Target = DirEntryData<'name>;
     fn deref(&self) -> &Self::Target { self.as_ref() }
 }
 
-impl<'entry_lt, 'name_lt> From<&'entry_lt DirEntryData<'name_lt>> for DirEntryContainer<'entry_lt, 'name_lt> {
-    fn from(entry_data_ref: &'entry_lt DirEntryData<'name_lt>) -> Self {
+impl<'entry, 'name> From<&'entry DirEntryData<'name>> for DirEntryContainer<'entry, 'name> {
+    fn from(entry_data_ref: &'entry DirEntryData<'name>) -> Self {
         DirEntryContainer::Borrowed(entry_data_ref)
     }
 }
 
-impl<'name_lt> From<DirEntryData<'name_lt>> for DirEntryContainer<'static, 'name_lt> {
-    fn from(entry_data: DirEntryData<'name_lt>) -> Self {
+impl<'name> From<DirEntryData<'name>> for DirEntryContainer<'_, 'name> {
+    fn from(entry_data: DirEntryData<'name>) -> Self {
         DirEntryContainer::Owned(entry_data)
     }
 }
 
-impl<'name_lt> From<Arc<DirEntryData<'name_lt>>> for DirEntryContainer<'static, 'name_lt> {
-    fn from(arc_entry_data: Arc<DirEntryData<'name_lt>>) -> Self {
+impl<'name> From<Arc<DirEntryData<'name>>> for DirEntryContainer<'_, 'name> {
+    fn from(arc_entry_data: Arc<DirEntryData<'name>>) -> Self {
         DirEntryContainer::Shared(arc_entry_data)
     }
 }
@@ -182,25 +184,26 @@ impl<'name_lt> From<Arc<DirEntryData<'name_lt>>> for DirEntryContainer<'static, 
 /// flexibility for filesystem implementations to optimize data handling.
 ///
 /// The lifetimes are:
-/// - `'list_lt`: Lifetime of the slice itself if `Borrowed`.
-/// - `'entry_lt`: Lifetime of borrowed `DirEntryData` within a `DirEntryContainer`.
-/// - `'name_lt`: Lifetime of borrowed names (`OsStr`) within `DirEntryData`.
+/// - `'dir`: Lifetime of the slice itself if `Borrowed`.
+/// - `'entry`: Lifetime of borrowed `DirEntryData` within a `DirEntryContainer`.
+/// - `'name`: Lifetime of borrowed names (`OsStr`) within `DirEntryData`.
 #[derive(Debug)]
-pub enum DirEntriesList<'list_lt, 'entry_lt, 'name_lt> {
+pub enum DirEntriesList<'dir, 'entry, 'name> {
+    // 'dir is the lifetime of a borrowed list of directory entries: DirEntries.
+    // 'entry is the lifetime of a borrowed entry: DirEntry.
     /// A borrowed slice of `DirEntryContainer`s. This is suitable when the list of
-    /// directory entry containers is already available with a lifetime `'list_lt`.
-    Borrowed(&'list_lt [DirEntryContainer<'entry_lt, 'name_lt>]),
+    /// directory entry containers is already available with a lifetime `'dir`.
+    Borrowed(&'dir [DirEntryContainer<'entry, 'name>]),
     /// An owned, heap-allocated slice of `DirEntryContainer`s. This is used when
     /// the list of entries is created dynamically for the current request.
-    Owned(Box<[DirEntryContainer<'entry_lt, 'name_lt>]>),
+    Owned(Box<[DirEntryContainer<'entry, 'name>]>),
     /// A shared, atomically reference-counted slice of `DirEntryContainer`s. This allows
     /// the list to be shared across multiple contexts or to outlive the immediate request.
-    Shared(Arc<[DirEntryContainer<'entry_lt, 'name_lt>]>),
+    Shared(Arc<[DirEntryContainer<'entry, 'name>]>),
 }
 
-impl<'list_lt, 'entry_lt, 'name_lt> AsRef<[DirEntryContainer<'entry_lt, 'name_lt>]>
-    for DirEntriesList<'list_lt, 'entry_lt, 'name_lt> {
-    fn as_ref(&self) -> &[DirEntryContainer<'entry_lt, 'name_lt>] {
+impl<'entry, 'name> AsRef<[DirEntryContainer<'entry, 'name>]> for DirEntriesList<'_, 'entry, 'name> {
+    fn as_ref(&self) -> &[DirEntryContainer<'entry, 'name>] {
         match self {
             DirEntriesList::Borrowed(s) => s,
             DirEntriesList::Owned(b) => b.as_ref(),
@@ -209,44 +212,43 @@ impl<'list_lt, 'entry_lt, 'name_lt> AsRef<[DirEntryContainer<'entry_lt, 'name_lt
     }
 }
 
-impl<'list_lt, 'entry_lt, 'name_lt> Deref for DirEntriesList<'list_lt, 'entry_lt, 'name_lt> {
-    type Target = [DirEntryContainer<'entry_lt, 'name_lt>];
+impl<'entry, 'name> Deref for DirEntriesList<'_, 'entry, 'name> {
+    type Target = [DirEntryContainer<'entry, 'name>];
     fn deref(&self) -> &Self::Target { self.as_ref() }
 }
 
-impl<'entry_lt, 'name_lt> From<Vec<DirEntryContainer<'entry_lt, 'name_lt>>>
-    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
-    fn from(vec: Vec<DirEntryContainer<'entry_lt, 'name_lt>>) -> Self {
+impl<'entry, 'name> From<Vec<DirEntryContainer<'entry, 'name>>> for DirEntriesList<'_, 'entry, 'name> {
+    fn from(vec: Vec<DirEntryContainer<'entry, 'name>>) -> Self {
         DirEntriesList::Owned(vec.into_boxed_slice())
     }
 }
 
-impl<'entry_lt, 'name_lt> From<Box<[DirEntryContainer<'entry_lt, 'name_lt>]>>
-    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
-    fn from(b: Box<[DirEntryContainer<'entry_lt, 'name_lt>]>) -> Self {
+impl<'entry, 'name> From<Box<[DirEntryContainer<'entry, 'name>]>> for DirEntriesList<'_, 'entry, 'name> {
+    fn from(b: Box<[DirEntryContainer<'entry, 'name>]>) -> Self {
         DirEntriesList::Owned(b)
     }
 }
 
-impl<'entry_lt, 'name_lt> From<Arc<[DirEntryContainer<'entry_lt, 'name_lt>]>>
-    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
-    fn from(a: Arc<[DirEntryContainer<'entry_lt, 'name_lt>]>) -> Self {
+impl<'entry, 'name> From<Arc<[DirEntryContainer<'entry, 'name>]>> for DirEntriesList<'_, 'entry, 'name> {
+    fn from(a: Arc<[DirEntryContainer<'entry, 'name>]>) -> Self {
         DirEntriesList::Shared(a)
     }
 }
 
-impl<'entry_lt, 'name_lt> From<Vec<DirEntryData<'name_lt>>>
-    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
-    fn from(vec: Vec<DirEntryData<'name_lt>>) -> Self {
-        let boxed_slice = vec.into_iter().map(DirEntryContainer::Owned).collect::<Box<[DirEntryContainer<'entry_lt, 'name_lt>]>>();
+impl<'entry, 'name> From<Vec<DirEntryData<'name>>> for DirEntriesList<'_, 'entry, 'name> {
+    fn from(vec: Vec<DirEntryData<'name>>) -> Self {
+        let boxed_slice = vec.into_iter()
+            .map(DirEntryContainer::Owned)
+            .collect::<Box<[DirEntryContainer<'entry, 'name>]>>();
         DirEntriesList::Owned(boxed_slice)
     }
 }
 
-impl<'entry_lt, 'name_lt> From<Vec<Arc<DirEntryData<'name_lt>>>>
-    for DirEntriesList<'static, 'entry_lt, 'name_lt> {
-    fn from(vec: Vec<Arc<DirEntryData<'name_lt>>>) -> Self {
-        let boxed_slice = vec.into_iter().map(DirEntryContainer::Shared).collect::<Box<[DirEntryContainer<'entry_lt, 'name_lt>]>>();
+impl<'entry, 'name> From<Vec<Arc<DirEntryData<'name>>>> for DirEntriesList<'_, 'entry, 'name> {
+    fn from(vec: Vec<Arc<DirEntryData<'name>>>) -> Self {
+        let boxed_slice = vec.into_iter()
+            .map(DirEntryContainer::Shared)
+            .collect::<Box<[DirEntryContainer<'entry, 'name>]>>();
         DirEntriesList::Owned(boxed_slice)
     }
 }
@@ -257,13 +259,13 @@ impl<'entry_lt, 'name_lt> From<Vec<Arc<DirEntryData<'name_lt>>>>
 /// This structure combines the basic directory entry information (`DirEntryData`)
 /// with its full FUSE attributes (`fuser::Entry`).
 ///
-/// The `'name_lt` lifetime parameter is associated with the `name` field within
+/// The `'name` lifetime parameter is associated with the `name` field within
 /// `entry_data` if that name is a borrowed `OsStr`.
 #[derive(Debug, Clone)]
-pub struct DirEntryPlusData<'name_lt> {
+pub struct DirEntryPlusData<'name> {
     /// The core directory entry data (inode, offset, kind, name).
-    /// The name within `entry_data` is an `OsBox<'name_lt>`.
-    pub entry_data: DirEntryData<'name_lt>,
+    /// The name within `entry_data` is an `OsBox<'name>`.
+    pub entry_data: DirEntryData<'name>,
     /// The full attributes of the directory entry, as defined by `fuser::Entry`.
     /// This includes metadata like size, permissions, timestamps, etc.
     pub attr_entry: FuserEntry,
@@ -274,20 +276,20 @@ pub struct DirEntryPlusData<'name_lt> {
 /// This is used for entries returned by `Filesystem::readdirplus`.
 ///
 /// The lifetimes are:
-/// - `'entry_lt`: Lifetime of the `DirEntryPlusData` if `Borrowed`.
-/// - `'name_lt`: Lifetime of borrowed names (`OsStr`) within the nested `DirEntryData`.
+/// - `'entry`: Lifetime of the `DirEntryPlusData` if `Borrowed`.
+/// - `'name`: Lifetime of borrowed names (`OsStr`) within the nested `DirEntryData`.
 #[derive(Debug, Clone)]
-pub enum DirEntryPlusContainer<'entry_lt, 'name_lt> {
-    /// A borrowed `DirEntryPlusData` struct. The lifetime `'entry_lt` applies to this borrow.
-    Borrowed(&'entry_lt DirEntryPlusData<'name_lt>),
+pub enum DirEntryPlusContainer<'entry, 'name> {
+    /// A borrowed `DirEntryPlusData` struct. The lifetime `'entry` applies to this borrow.
+    Borrowed(&'entry DirEntryPlusData<'name>),
     /// An owned `DirEntryPlusData` struct.
-    Owned(DirEntryPlusData<'name_lt>),
+    Owned(DirEntryPlusData<'name>),
     /// A shared, atomically reference-counted `DirEntryPlusData` struct.
-    Shared(Arc<DirEntryPlusData<'name_lt>>),
+    Shared(Arc<DirEntryPlusData<'name>>),
 }
 
-impl<'entry_lt, 'name_lt> AsRef<DirEntryPlusData<'name_lt>> for DirEntryPlusContainer<'entry_lt, 'name_lt> {
-    fn as_ref(&self) -> &DirEntryPlusData<'name_lt> {
+impl<'name> AsRef<DirEntryPlusData<'name>> for DirEntryPlusContainer<'_, 'name> {
+    fn as_ref(&self) -> &DirEntryPlusData<'name> {
         match self {
             DirEntryPlusContainer::Borrowed(data) => data,
             DirEntryPlusContainer::Owned(data) => data,
@@ -296,25 +298,25 @@ impl<'entry_lt, 'name_lt> AsRef<DirEntryPlusData<'name_lt>> for DirEntryPlusCont
     }
 }
 
-impl<'entry_lt, 'name_lt> Deref for DirEntryPlusContainer<'entry_lt, 'name_lt> {
-    type Target = DirEntryPlusData<'name_lt>;
+impl<'name> Deref for DirEntryPlusContainer<'_, 'name> {
+    type Target = DirEntryPlusData<'name>;
     fn deref(&self) -> &Self::Target { self.as_ref() }
 }
 
-impl<'entry_lt, 'name_lt> From<&'entry_lt DirEntryPlusData<'name_lt>> for DirEntryPlusContainer<'entry_lt, 'name_lt> {
-    fn from(data_ref: &'entry_lt DirEntryPlusData<'name_lt>) -> Self {
+impl<'entry, 'name> From<&'entry DirEntryPlusData<'name>> for DirEntryPlusContainer<'entry, 'name> {
+    fn from(data_ref: &'entry DirEntryPlusData<'name>) -> Self {
         DirEntryPlusContainer::Borrowed(data_ref)
     }
 }
 
-impl<'name_lt> From<DirEntryPlusData<'name_lt>> for DirEntryPlusContainer<'static, 'name_lt> {
-    fn from(data: DirEntryPlusData<'name_lt>) -> Self {
+impl<'name> From<DirEntryPlusData<'name>> for DirEntryPlusContainer<'_, 'name> {
+    fn from(data: DirEntryPlusData<'name>) -> Self {
         DirEntryPlusContainer::Owned(data)
     }
 }
 
-impl<'name_lt> From<Arc<DirEntryPlusData<'name_lt>>> for DirEntryPlusContainer<'static, 'name_lt> {
-    fn from(arc_data: Arc<DirEntryPlusData<'name_lt>>) -> Self {
+impl<'name> From<Arc<DirEntryPlusData<'name>>> for DirEntryPlusContainer<'_, 'name> {
+    fn from(arc_data: Arc<DirEntryPlusData<'name>>) -> Self {
         DirEntryPlusContainer::Shared(arc_data)
     }
 }
@@ -324,25 +326,24 @@ impl<'name_lt> From<Arc<DirEntryPlusData<'name_lt>>> for DirEntryPlusContainer<'
 /// This allows the entire list of "plus" containers to be borrowed, owned, or shared.
 ///
 /// The lifetimes are:
-/// - `'list_lt`: Lifetime of the slice itself if `Borrowed`.
-/// - `'entry_lt`: Lifetime of borrowed `DirEntryPlusData` within a `DirEntryPlusContainer`.
-/// - `'name_lt`: Lifetime of borrowed names (`OsStr`) within the nested `DirEntryData`.
+/// - `'dir`: Lifetime of the slice itself if `Borrowed`.
+/// - `'entry`: Lifetime of borrowed `DirEntryPlusData` within a `DirEntryPlusContainer`.
+/// - `'name`: Lifetime of borrowed names (`OsStr`) within the nested `DirEntryData`.
 #[derive(Debug)]
-pub enum DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt> {
+pub enum DirEntryPlusList<'dir, 'entry, 'name> {
     /// A borrowed slice of `DirEntryPlusContainer`s. This is suitable when the list of
-    /// "plus" directory entry containers is already available with a lifetime `'list_lt`.
-    Borrowed(&'list_lt [DirEntryPlusContainer<'entry_lt, 'name_lt>]),
+    /// "plus" directory entry containers is already available with a lifetime `'dir`.
+    Borrowed(&'dir [DirEntryPlusContainer<'entry, 'name>]),
     /// An owned, heap-allocated slice of `DirEntryPlusContainer`s. This is used when
     /// the list of "plus" entries is created dynamically for the current request.
-    Owned(Box<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>),
+    Owned(Box<[DirEntryPlusContainer<'entry, 'name>]>),
     /// A shared, atomically reference-counted slice of `DirEntryPlusContainer`s. This allows
     /// the list to be shared across multiple contexts or to outlive the immediate request.
-    Shared(Arc<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>),
+    Shared(Arc<[DirEntryPlusContainer<'entry, 'name>]>),
 }
 
-impl<'list_lt, 'entry_lt, 'name_lt> AsRef<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>
-    for DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt> {
-    fn as_ref(&self) -> &[DirEntryPlusContainer<'entry_lt, 'name_lt>] {
+impl<'entry, 'name> AsRef<[DirEntryPlusContainer<'entry, 'name>]> for DirEntryPlusList<'_, 'entry, 'name> {
+    fn as_ref(&self) -> &[DirEntryPlusContainer<'entry, 'name>] {
         match self {
             DirEntryPlusList::Borrowed(s) => s,
             DirEntryPlusList::Owned(b) => b.as_ref(),
@@ -351,39 +352,36 @@ impl<'list_lt, 'entry_lt, 'name_lt> AsRef<[DirEntryPlusContainer<'entry_lt, 'nam
     }
 }
 
-impl<'list_lt, 'entry_lt, 'name_lt> Deref for DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt> {
-    type Target = [DirEntryPlusContainer<'entry_lt, 'name_lt>];
+impl<'entry, 'name> Deref for DirEntryPlusList<'_, 'entry, 'name> {
+    type Target = [DirEntryPlusContainer<'entry, 'name>];
     fn deref(&self) -> &Self::Target { self.as_ref() }
 }
 
-impl<'entry_lt, 'name_lt> From<Vec<DirEntryPlusContainer<'entry_lt, 'name_lt>>>
-    for DirEntryPlusList<'static, 'entry_lt, 'name_lt> {
-    fn from(vec: Vec<DirEntryPlusContainer<'entry_lt, 'name_lt>>) -> Self {
+impl<'entry, 'name> From<Vec<DirEntryPlusContainer<'entry, 'name>>> for DirEntryPlusList<'_, 'entry, 'name> {
+    fn from(vec: Vec<DirEntryPlusContainer<'entry, 'name>>) -> Self {
         DirEntryPlusList::Owned(vec.into_boxed_slice())
     }
 }
 
-impl<'entry_lt, 'name_lt> From<Box<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>>
-    for DirEntryPlusList<'static, 'entry_lt, 'name_lt> {
-    fn from(b: Box<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>) -> Self {
+impl<'entry, 'name> From<Box<[DirEntryPlusContainer<'entry, 'name>]>> for DirEntryPlusList<'_, 'entry, 'name> {
+    fn from(b: Box<[DirEntryPlusContainer<'entry, 'name>]>) -> Self {
         DirEntryPlusList::Owned(b)
     }
 }
 
-impl<'entry_lt, 'name_lt> From<Arc<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>>
-    for DirEntryPlusList<'static, 'entry_lt, 'name_lt> {
-    fn from(a: Arc<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>) -> Self {
+impl<'entry, 'name> From<Arc<[DirEntryPlusContainer<'entry, 'name>]>> for DirEntryPlusList<'_, 'entry, 'name> {
+    fn from(a: Arc<[DirEntryPlusContainer<'entry, 'name>]>) -> Self {
         DirEntryPlusList::Shared(a)
     }
 }
 
-impl<'entry_lt, 'name_lt> From<Vec<(DirEntryData<'name_lt>, crate::reply::Entry)>>
-    for DirEntryPlusList<'static, 'entry_lt, 'name_lt> {
-    fn from(vec: Vec<(DirEntryData<'name_lt>, crate::reply::Entry)>) -> Self {
+impl<'entry, 'name> From<Vec<(DirEntryData<'name>, crate::reply::Entry)>>
+    for DirEntryPlusList<'_, 'entry, 'name> {
+    fn from(vec: Vec<(DirEntryData<'name>, crate::reply::Entry)>) -> Self {
         let boxed_slice = vec.into_iter()
         .map( | tuple | DirEntryPlusData{entry_data: tuple.0, attr_entry: tuple.1})
         .map(DirEntryPlusContainer::Owned)
-        .collect::<Box<[DirEntryPlusContainer<'entry_lt, 'name_lt>]>>();
+        .collect::<Box<[DirEntryPlusContainer<'entry, 'name>]>>();
         DirEntryPlusList::Owned(boxed_slice)
     }
 }
@@ -566,7 +564,7 @@ mod tests_dir_entry_containers {
     use std::sync::Arc;
     use std::time::{Duration, UNIX_EPOCH};
 
-    fn create_dir_entry_data<'name_lt>(ino: u64, name: OsBox<'name_lt>) -> DirEntryData<'name_lt> {
+    fn create_dir_entry_data(ino: u64, name: OsBox<'_>) -> DirEntryData<'_> {
         DirEntryData {
             ino,
             offset: ino as i64,

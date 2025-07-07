@@ -369,9 +369,9 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with a filled directory buffer
-    pub fn dir<'list_lt, 'entry_lt, 'name_lt>(
+    pub fn dir(
         self,
-        entries_list: &DirEntriesList<'list_lt, 'entry_lt, 'name_lt>,
+        entries_list: &DirEntriesList<'_, '_, '_>,
         size: usize
     ) {
         let mut buf = DirEntList::new(size);
@@ -392,9 +392,9 @@ impl ReplyHandler {
 
     #[cfg(feature = "abi-7-21")]
     // Reply to a request with a filled directory plus buffer
-    pub fn dirplus<'list_lt, 'entry_lt, 'name_lt>(
+    pub fn dirplus(
         self,
-        entries_plus_list: &DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt>,
+        entries_plus_list: &DirEntryPlusList<'_, '_, '_>,
         size: usize
     ) {
         let mut buf = DirEntPlusList::new(size);
@@ -1025,7 +1025,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let mut attr2 = attr1.clone();
+        let mut attr2 = attr1; //implicit copy
         attr2.ino = 0xccdd;
         attr2.kind = FileType::RegularFile;
         let generation = 0xaa;
