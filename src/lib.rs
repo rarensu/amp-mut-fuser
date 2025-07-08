@@ -692,14 +692,14 @@ pub trait Filesystem {
     /// An empty list indicates the end of the stream.
     /// `fh` will contain the value set by the opendir method, or will be undefined if the
     /// opendir method didn't set any value.
-    fn readdir<'list_lt, 'entry_lt, 'name_lt>(
+    fn readdir<'dir, 'entry, 'name>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32
-    ) -> Result<DirEntriesList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
+    ) -> Result<DirEntriesList<'dir, 'entry, 'name>, Errno> {
         warn!(
             "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
@@ -717,14 +717,14 @@ pub trait Filesystem {
     /// The returned `DirEntryPlusList` allows for flexible ownership of the list, the containers,
     /// and the names within the directory entry data.
     #[cfg(feature = "abi-7-21")]
-    fn readdirplus<'list_lt, 'entry_lt, 'name_lt>( // 'attr_lt removed as fuser::Entry has no lifetimes for now
+    fn readdirplus<'dir, 'entry, 'name>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32,
-    ) -> Result<DirEntryPlusList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
+    ) -> Result<DirEntryPlusList<'dir, 'entry, 'name>, Errno> {
         warn!(
             "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes

@@ -372,10 +372,10 @@ impl<'entry, 'name> From<Arc<[DirEntryPlusContainer<'entry, 'name>]>> for DirEnt
     }
 }
 
-impl<'dir, 'entry, 'name> DirEntryPlusList<'dir, 'entry, 'name> {
+impl<'name> DirEntryPlusList<'_, '_, 'name> {
     /// Returns an iterator that yields references to the underlying `DirEntryPlusData` tuples.
     /// Each item in the iterator is `&(DirEntryData<'name>, FuserEntry)`.
-    pub fn to_tuples_iter(&'dir self) -> impl Iterator<Item = &DirEntryPlusData<'name>> + 'dir {
+    pub fn to_tuples_iter(&self) -> impl Iterator<Item = &DirEntryPlusData<'name>> {
         self.as_ref()
             .iter()
             .map(|container| container.as_ref())
