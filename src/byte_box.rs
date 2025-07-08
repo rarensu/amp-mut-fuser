@@ -256,67 +256,64 @@ impl<'entry, 'name> From<Vec<Arc<DirEntryData<'name>>>> for DirEntriesList<'_, '
 // --- Types for readdirplus ---
 
 /// Data for a single directory entry, including its attributes, for `readdirplus`.
-/// This structure combines the basic directory entry information (`DirEntryData`)
+/// This is now a type alias for a tuple: `(DirEntryData<'name>, FuserEntry)`.
+/// It combines the basic directory entry information (`DirEntryData`)
 /// with its full FUSE attributes (`fuser::Entry`).
 ///
 /// The `'name` lifetime parameter is associated with the `name` field within
-/// `entry_data` if that name is a borrowed `OsStr`.
-#[derive(Debug, Clone)]
-pub struct DirEntryPlusData<'name> {
-    /// The core directory entry data (inode, offset, kind, name).
-    /// The name within `entry_data` is an `OsBox<'name>`.
-    pub entry_data: DirEntryData<'name>,
-    /// The full attributes of the directory entry, as defined by `fuser::Entry`.
-    /// This includes metadata like size, permissions, timestamps, etc.
-    pub attr_entry: FuserEntry,
-}
+/// `entry_data` (the first element of the tuple) if that name is a borrowed `OsStr`.
+pub type DirEntryPlusData<'name> = (DirEntryData<'name>, FuserEntry);
 
-/// `DirEntryPlusContainer` allows a single "plus" directory entry (`DirEntryPlusData`)
+// Keep FuserEntry import if it's not already globally available or aliased elsewhere.
+// use crate::Entry as FuserEntry; // This line might be redundant if FuserEntry is already in scope.
+// It was previously used for the struct field, now it's part of the tuple alias.
+
+/// `DirEntryPlusContainer` allows a single "plus" directory entry (`DirEntryPlusData`, which is a tuple)
 /// to be returned with flexible ownership, similar to `DirEntryContainer`.
 /// This is used for entries returned by `Filesystem::readdirplus`.
 ///
 /// The lifetimes are:
-/// - `'entry`: Lifetime of the `DirEntryPlusData` if `Borrowed`.
-/// - `'name`: Lifetime of borrowed names (`OsStr`) within the nested `DirEntryData`.
-#[derive(Debug, Clone)]
+/// - `'entry`: Lifetime of the `DirEntryPlusData` tuple if `Borrowed`.
+/// - `'name`: Lifetime of borrowed names (`OsStr`) within the `DirEntryData` part of the tuple.
+#[derive(Debug, Clone)] // Assuming the tuple (DirEntryData<'name>, FuserEntry) is Clone and Debug
 pub enum DirEntryPlusContainer<'entry, 'name> {
-    /// A borrowed `DirEntryPlusData` struct. The lifetime `'entry` applies to this borrow.
-    Borrowed(&'entry DirEntryPlusData<'name>),
-    /// An owned `DirEntryPlusData` struct.
-    Owned(DirEntryPlusData<'name>),
-    /// A shared, atomically reference-counted `DirEntryPlusData` struct.
-    Shared(Arc<DirEntryPlusData<'name>>),
+    /// A borrowed `DirEntryPlusData` tuple. The lifetime `'entry` applies to this borrow.
+    Borrowed(&'entry DirEntryPlusData<'name>), // Now &'entry (DirEntryData<'name>, FuserEntry)
+    /// An owned `DirEntryPlusData` tuple.
+    Owned(DirEntryPlusData<'name>),            // Now (DirEntryData<'name>, FuserEntry)
+    /// A shared, atomically reference-counted `DirEntryPlusData` tuple.
+    Shared(Arc<DirEntryPlusData<'name>>),      // Now Arc<(DirEntryData<'name>, FuserEntry)>
 }
 
 impl<'name> AsRef<DirEntryPlusData<'name>> for DirEntryPlusContainer<'_, 'name> {
-    fn as_ref(&self) -> &DirEntryPlusData<'name> {
+    fn as_ref(&self) -> &DirEntryPlusData<'name> { // Returns &(DirEntryData<'name>, FuserEntry)
         match self {
             DirEntryPlusContainer::Borrowed(data) => data,
-            DirEntryPlusContainer::Owned(data) => data,
-            DirEntryPlusContainer::Shared(arc_data) => arc_data.as_ref(),
+            DirEntryPlusContainer::Owned(data) => data, // data is already the tuple
+            DirEntryPlusContainer::Shared(arc_data) => arc_data.as_ref(), // Arc::as_ref returns &T
         }
     }
 }
 
 impl<'name> Deref for DirEntryPlusContainer<'_, 'name> {
-    type Target = DirEntryPlusData<'name>;
+    type Target = DirEntryPlusData<'name>; // Target is (DirEntryData<'name>, FuserEntry)
     fn deref(&self) -> &Self::Target { self.as_ref() }
 }
 
 impl<'entry, 'name> From<&'entry DirEntryPlusData<'name>> for DirEntryPlusContainer<'entry, 'name> {
-    fn from(data_ref: &'entry DirEntryPlusData<'name>) -> Self {
+    fn from(data_ref: &'entry DirEntryPlusData<'name>) -> Self { // data_ref is &'entry (DirEntryData<'name>, FuserEntry)
         DirEntryPlusContainer::Borrowed(data_ref)
     }
 }
 
 impl<'name> From<DirEntryPlusData<'name>> for DirEntryPlusContainer<'_, 'name> {
-    fn from(data: DirEntryPlusData<'name>) -> Self {
+    fn from(data: DirEntryPlusData<'name>) -> Self { // data is (DirEntryData<'name>, FuserEntry)
         DirEntryPlusContainer::Owned(data)
     }
 }
 
 impl<'name> From<Arc<DirEntryPlusData<'name>>> for DirEntryPlusContainer<'_, 'name> {
-    fn from(arc_data: Arc<DirEntryPlusData<'name>>) -> Self {
+    fn from(arc_data: Arc<DirEntryPlusData<'name>>) -> Self { // arc_data is Arc<(DirEntryData<'name>, FuserEntry)>
         DirEntryPlusContainer::Shared(arc_data)
     }
 }
@@ -375,11 +372,12 @@ impl<'entry, 'name> From<Arc<[DirEntryPlusContainer<'entry, 'name>]>> for DirEnt
     }
 }
 
-impl<'entry, 'name> From<Vec<(DirEntryData<'name>, crate::reply::Entry)>>
+impl<'entry, 'name> From<Vec<(DirEntryData<'name>, crate::reply::Entry)>> // This is Vec<DirEntryPlusData<'name>>
     for DirEntryPlusList<'_, 'entry, 'name> {
-    fn from(vec: Vec<(DirEntryData<'name>, crate::reply::Entry)>) -> Self {
+    fn from(vec: Vec<DirEntryPlusData<'name>>) -> Self { // vec is of type Vec<(DirEntryData<'name>, crate::Entry)>
         let boxed_slice = vec.into_iter()
-        .map( | tuple | DirEntryPlusData{entry_data: tuple.0, attr_entry: tuple.1})
+        // The previous .map to construct DirEntryPlusData struct is no longer needed
+        // as DirEntryPlusContainer::Owned now takes the tuple directly.
         .map(DirEntryPlusContainer::Owned)
         .collect::<Box<[DirEntryPlusContainer<'entry, 'name>]>>();
         DirEntryPlusList::Owned(boxed_slice)
@@ -703,16 +701,17 @@ mod tests_dir_entry_containers {
         let name_os_string = OsString::from("plus_owned_name");
         let entry_data = create_dir_entry_data(100, OsBox::Owned(name_os_string.into_boxed_os_str()));
         let attr_entry = create_fuser_entry(dummy_file_attr(100));
-        let plus_data = DirEntryPlusData { entry_data, attr_entry: attr_entry.clone() };
+        // DirEntryPlusData is now a tuple (DirEntryData<'name>, FuserEntry)
+        let plus_data: DirEntryPlusData<'static> = (entry_data, attr_entry.clone());
 
-        let container = DirEntryPlusContainer::Owned(plus_data.clone());
-        assert_eq!(container.as_ref().entry_data.ino, 100);
-        assert_eq!(container.as_ref().attr_entry.attr.ino, 100);
-        assert_eq!(container.as_ref().entry_data.name.as_ref(), OsStr::new("plus_owned_name"));
+        let container = DirEntryPlusContainer::Owned(plus_data.clone()); // plus_data is already a tuple
+        assert_eq!(container.as_ref().0.ino, 100); // Access via .0
+        assert_eq!(container.as_ref().1.attr.ino, 100); // Access via .1
+        assert_eq!(container.as_ref().0.name.as_ref(), OsStr::new("plus_owned_name"));
 
         // Test From<DirEntryPlusData>
         let container_from: DirEntryPlusContainer<'static, 'static> = DirEntryPlusContainer::from(plus_data);
-        assert_eq!(container_from.as_ref().entry_data.ino, 100);
+        assert_eq!(container_from.as_ref().0.ino, 100); // Access via .0
     }
 
     #[test]
@@ -720,21 +719,23 @@ mod tests_dir_entry_containers {
         let name1_static = OsStr::new("plus_entry1_static");
         let entry_data1 = create_dir_entry_data(110, OsBox::Borrowed(name1_static));
         let attr_entry1 = create_fuser_entry(dummy_file_attr(110));
-        let plus_data1 = DirEntryPlusData { entry_data: entry_data1, attr_entry: attr_entry1 };
+        // DirEntryPlusData is now a tuple
+        let plus_data1: DirEntryPlusData<'static> = (entry_data1, attr_entry1);
         let container1 = DirEntryPlusContainer::Borrowed(&plus_data1);
 
         let name2_owned = OsString::from("plus_entry2_owned");
         let entry_data2 = create_dir_entry_data(111, OsBox::Owned(name2_owned.into_boxed_os_str()));
         let attr_entry2 = create_fuser_entry(dummy_file_attr(111));
-        let plus_data2 = DirEntryPlusData { entry_data: entry_data2, attr_entry: attr_entry2 };
+        // DirEntryPlusData is now a tuple
+        let plus_data2: DirEntryPlusData<'static> = (entry_data2, attr_entry2);
         let container2_owned = DirEntryPlusContainer::Owned(plus_data2);
 
         let containers_slice: &[DirEntryPlusContainer<'_, 'static>] = &[container1, container2_owned];
         let list = DirEntryPlusList::Borrowed(containers_slice);
 
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].as_ref().entry_data.ino, 110);
-        assert_eq!(list[1].as_ref().entry_data.ino, 111);
+        assert_eq!(list[0].as_ref().0.ino, 110); // Access via .0
+        assert_eq!(list[1].as_ref().0.ino, 111); // Access via .0
     }
 
     #[test]
@@ -742,13 +743,15 @@ mod tests_dir_entry_containers {
         let name1_static: &'static OsStr = OsStr::new("plus_vec_static_name");
         let entry_data1 = create_dir_entry_data(120, OsBox::Borrowed(name1_static));
         let attr_entry1 = create_fuser_entry(dummy_file_attr(120));
-        let plus_data1 = DirEntryPlusData { entry_data: entry_data1, attr_entry: attr_entry1 };
+        // DirEntryPlusData is now a tuple
+        let plus_data1: DirEntryPlusData<'static> = (entry_data1, attr_entry1);
         let container1: DirEntryPlusContainer<'static, 'static> = DirEntryPlusContainer::Owned(plus_data1);
 
         let name2_owned = OsString::from("plus_vec_owned_name");
         let entry_data2 = create_dir_entry_data(121, OsBox::Owned(name2_owned.into_boxed_os_str()));
         let attr_entry2 = create_fuser_entry(dummy_file_attr(121));
-        let plus_data2 = DirEntryPlusData { entry_data: entry_data2, attr_entry: attr_entry2 };
+        // DirEntryPlusData is now a tuple
+        let plus_data2: DirEntryPlusData<'static> = (entry_data2, attr_entry2);
         let container2: DirEntryPlusContainer<'static, 'static> = DirEntryPlusContainer::Owned(plus_data2);
 
         let containers_vec: Vec<DirEntryPlusContainer<'static, 'static>> = vec![container1, container2];
@@ -757,8 +760,8 @@ mod tests_dir_entry_containers {
         match list {
             DirEntryPlusList::Owned(ref b_slice) => {
                 assert_eq!(b_slice.len(), 2);
-                assert_eq!(b_slice[0].as_ref().entry_data.ino, 120);
-                assert_eq!(b_slice[1].as_ref().entry_data.ino, 121);
+                assert_eq!(b_slice[0].as_ref().0.ino, 120); // Access via .0
+                assert_eq!(b_slice[1].as_ref().0.ino, 121); // Access via .0
             }
             _ => panic!("Expected DirEntryPlusList::Owned"),
         }
