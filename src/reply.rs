@@ -400,25 +400,29 @@ impl ReplyHandler {
         let mut buf = DirEntPlusList::new(size);
         log::debug!("ReplyHandler::dirplus: initial buf max_size: {}, size passed_to_fn: {}", size, size);
         let mut count = 0;
-        for container in entries_plus_list.as_ref().iter() {
+    // Use the new to_tuples_iter() method
+    for (item_data, item_attr) in entries_plus_list.to_tuples_iter() {
+        // item_data is &DirEntryData<'name>
+        // item_attr is &FuserEntry
             count += 1;
-            log::debug!("ReplyHandler::dirplus: processing container {}", count);
-            let plus_data = container.as_ref(); // plus_data is &(DirEntryData<'name>, FuserEntry)
-            let item_data = &plus_data.0;       // This is &DirEntryData<'name>
-            let item_attr = &plus_data.1;       // This is &FuserEntry
+        log::debug!("ReplyHandler::dirplus: processing item {}", count);
+        // The following lines are no longer needed:
+        // let plus_data = container.as_ref();
+        // let item_data = &plus_data.0;
+        // let item_attr = &plus_data.1;
 
             let full = buf.push(&DirEntryPlus::new(
-                INodeNo(item_data.ino),            // from DirEntryData
-                Generation(item_attr.generation),  // from FuserEntry
-                DirEntOffset(item_data.offset),    // from DirEntryData
-                item_data.name.as_ref(),           // from DirEntryData
-                item_attr.ttl,                     // from FuserEntry (entry_out_ttl)
-                item_attr.attr.into(),             // from FuserEntry (FuserEntry.attr is FileAttr)
-                item_attr.ttl,                     // from FuserEntry (attr_out_ttl)
+            INodeNo(item_data.ino),            // from &DirEntryData
+            Generation(item_attr.generation),  // from &FuserEntry
+            DirEntOffset(item_data.offset),    // from &DirEntryData
+            item_data.name.as_ref(),           // from &DirEntryData
+            item_attr.ttl,                     // from &FuserEntry (entry_out_ttl)
+            item_attr.attr.into(),             // from &FuserEntry (FuserEntry.attr is FileAttr)
+            item_attr.ttl,                     // from &FuserEntry (attr_out_ttl)
             ));
             if full {
                 break;
-            }     
+        }
         }
         self.send_ll(&buf.into());
     }

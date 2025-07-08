@@ -372,6 +372,16 @@ impl<'entry, 'name> From<Arc<[DirEntryPlusContainer<'entry, 'name>]>> for DirEnt
     }
 }
 
+impl<'dir, 'entry, 'name> DirEntryPlusList<'dir, 'entry, 'name> {
+    /// Returns an iterator that yields references to the underlying `DirEntryPlusData` tuples.
+    /// Each item in the iterator is `&(DirEntryData<'name>, FuserEntry)`.
+    pub fn to_tuples_iter(&'dir self) -> impl Iterator<Item = &DirEntryPlusData<'name>> + 'dir {
+        self.as_ref()
+            .iter()
+            .map(|container| container.as_ref())
+    }
+}
+
 impl<'entry, 'name> From<Vec<(DirEntryData<'name>, crate::reply::Entry)>> // This is Vec<DirEntryPlusData<'name>>
     for DirEntryPlusList<'_, 'entry, 'name> {
     fn from(vec: Vec<DirEntryPlusData<'name>>) -> Self { // vec is of type Vec<(DirEntryData<'name>, crate::Entry)>
@@ -765,5 +775,53 @@ mod tests_dir_entry_containers {
             }
             _ => panic!("Expected DirEntryPlusList::Owned"),
         }
+    }
+
+    #[test]
+    fn dir_entry_plus_list_to_tuples_iter() {
+        // Setup: Create a DirEntryPlusList (Owned variant for simplicity in test)
+        let name1_static: &'static OsStr = OsStr::new("iter_name1");
+        let entry_data1 = create_dir_entry_data(200, OsBox::Borrowed(name1_static));
+        let attr_entry1 = create_fuser_entry(dummy_file_attr(200));
+        let plus_data1: DirEntryPlusData<'static> = (entry_data1, attr_entry1);
+        let container1: DirEntryPlusContainer<'static, 'static> = DirEntryPlusContainer::Owned(plus_data1);
+
+        let name2_owned = OsString::from("iter_name2");
+        let entry_data2 = create_dir_entry_data(201, OsBox::Owned(name2_owned.into_boxed_os_str()));
+        let attr_entry2 = create_fuser_entry(dummy_file_attr(201));
+        let plus_data2: DirEntryPlusData<'static> = (entry_data2, attr_entry2);
+        let container2: DirEntryPlusContainer<'static, 'static> = DirEntryPlusContainer::Owned(plus_data2);
+
+        let containers_vec: Vec<DirEntryPlusContainer<'static, 'static>> = vec![container1, container2];
+        let list = DirEntryPlusList::from(containers_vec); // This creates an Owned list
+
+        // Test the iterator
+        let mut iter_count = 0;
+        for (idx, plus_tuple_ref) in list.to_tuples_iter().enumerate() {
+            iter_count += 1;
+            match idx {
+                0 => {
+                    assert_eq!(plus_tuple_ref.0.ino, 200);
+                    assert_eq!(plus_tuple_ref.0.name.as_ref(), name1_static);
+                    assert_eq!(plus_tuple_ref.1.attr.ino, 200);
+                }
+                1 => {
+                    assert_eq!(plus_tuple_ref.0.ino, 201);
+                    assert_eq!(plus_tuple_ref.0.name.as_ref(), OsStr::new("iter_name2"));
+                    assert_eq!(plus_tuple_ref.1.attr.ino, 201);
+                }
+                _ => panic!("Iterator yielded too many items"),
+            }
+        }
+        assert_eq!(iter_count, 2, "Iterator didn't yield the expected number of items");
+
+        // Test with an empty list
+        let empty_containers_vec: Vec<DirEntryPlusContainer<'static, 'static>> = vec![];
+        let empty_list = DirEntryPlusList::from(empty_containers_vec);
+        iter_count = 0;
+        for _ in empty_list.to_tuples_iter() {
+            iter_count +=1;
+        }
+        assert_eq!(iter_count, 0, "Iterator on empty list should yield no items");
     }
 }
