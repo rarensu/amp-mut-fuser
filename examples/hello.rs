@@ -1,10 +1,11 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    Filesystem, MountOption, Attr, DirEntry,
-    Entry, Errno, RequestMeta, FileType, FileAttr
+    Attr, ByteBox, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno, FileAttr,
+    Filesystem, FileType, MountOption, OsBox, RequestMeta,
 };
 use std::ffi::{OsStr, OsString};
 use std::time::{Duration, UNIX_EPOCH};
+use std::sync::Arc;
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
@@ -46,9 +47,45 @@ const HELLO_TXT_ATTR: FileAttr = FileAttr {
     blksize: 512,
 };
 
-struct HelloFS;
+// Entry 1: "."
+// An example of reusable Borrowed data.
+// This DirEntry derives its lifetime from string literal, 
+// which is 'static.
+const DOT_ENTRY: DirEntryData<'static> = DirEntryData {
+    ino: 1,
+    offset: 1,
+    kind: FileType::Directory,
+    name: OsBox::Borrowed(
+            "." /* &'static str */ 
+    ), 
+};
 
-impl Filesystem for HelloFS {
+/// Example Filesystem data
+struct HelloFS<'a> {
+    hello_entry: Arc<DirEntryData<'a>>,
+}
+
+impl HelloFS<'_> {
+    fn new() -> Self {
+        HelloFS{
+            // Entry 3: "hello.txt"
+            // An example of multi-use Sharable data.
+            // This DirEntry is re-allocated only when it needs to be replaced. 
+            hello_entry: Arc::new(
+            DirEntryData {
+                    ino: 2,
+                    offset: 3,
+                    kind: FileType::RegularFile,
+                    name: OsBox::from(OsString::from("hello.txt")),
+                }
+            )
+        }
+    }
+}
+
+impl Filesystem for HelloFS<'static> {
+    // Must specify HelloFS lifetime ('static) here 
+    // to enable its methods to return borrowed data
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent == 1 && name == OsStr::new("hello.txt") {
             Ok(Entry{attr: HELLO_TXT_ATTR, ttl: TTL, generation: 0})
@@ -70,7 +107,7 @@ impl Filesystem for HelloFS {
         }
     }
 
-    fn read(
+    fn read<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -79,38 +116,69 @@ impl Filesystem for HelloFS {
         _size: u32,
         _flags: i32,
         _lock: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         if ino == 2 {
-            Ok(HELLO_TXT_CONTENT.as_bytes()[offset as usize..].to_vec())
+            // HELLO_TXT_CONTENT is &'static str, so its bytes are &'static [u8]
+            let bytes = HELLO_TXT_CONTENT.as_bytes();
+            let slice_len = bytes.len();
+            let offset = offset as usize;
+            if offset >= slice_len {
+                Ok(ByteBox::Borrowed(&[]))
+            } else {
+                // Returning as Borrowed to avoid a copy.
+                Ok(ByteBox::Borrowed(&bytes[offset..]))
+            }
         } else {
             Err(Errno::ENOENT)
         }
     }
 
-    fn readdir(
+    fn readdir<'dir, 'entry, 'name>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'dir, 'entry, 'name>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
 
-        let entries = vec![
-            DirEntry { ino: 1, offset: 1, kind: FileType::Directory, name: OsString::from(".") },
-            DirEntry { ino: 1, offset: 2, kind: FileType::Directory, name: OsString::from("..") },
-            DirEntry { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsString::from("hello.txt") },
-        ];
+        let mut entries= Vec::new();
 
-        let mut result = Vec::new();
-        for entry in entries.into_iter().skip(offset as usize) {
-            // example loop where additional logic could be inserted
-            result.push(entry);
-        }
-        Ok(result)
+        // Entry 1: "."
+        // the "." entry can be borrowed because its lifetime is 'static
+        entries.push(DirEntryContainer::Borrowed(&DOT_ENTRY));
+
+        // Entry 2: ".."
+        // An example of single-use Owned data.
+        // This DirEntry will be reallocated on each readdir()
+        let dotdot_entry = DirEntryData {
+                ino: 1, // Parent of root is root itself for simplicity
+                offset: 2,
+                kind: FileType::Directory,
+                // ownership of the string is moved into the DirEntry
+                name: OsBox::Owned(
+                    OsString::from("..") /* allocated on the heap */
+                    .into_boxed_os_str() 
+                ) 
+            };
+        // Ownership of the ".." entry is passed along
+        entries.push(DirEntryContainer::Owned(dotdot_entry));
+
+        // Entry 3: "hello.txt"
+        // An example of shared data.
+        entries.push(DirEntryContainer::Shared(
+            // A new reference to the hello_entry is created on each readdir()
+            // Ownership of the new reference is passed along.
+            self.hello_entry.clone()
+        ));
+
+        // Slice the collected entries based on the requested offset.
+        let entries: Vec<DirEntryContainer> = entries.into_iter().skip(offset as usize).collect();
+
+        Ok(DirEntriesList::Owned(entries.into_boxed_slice()))
     }
 }
 
@@ -146,13 +214,14 @@ fn main() {
     if matches.get_flag("allow-root") {
         options.push(MountOption::AllowRoot);
     }
-    fuser::mount2(HelloFS, mountpoint, &options).unwrap();
+    let hellofs = HelloFS::new();
+    fuser::mount2(hellofs, mountpoint, &options).unwrap();
 }
 
 #[cfg(test)]
 mod test {
     use fuser::{Filesystem, RequestMeta, Errno, FileType};
-    use std::ffi::OsString;
+    use std::ffi::{OsString, OsStr}; // Added OsStr
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta { unique: 0, uid: 1000, gid: 1000, pid: 2000 }
@@ -160,7 +229,7 @@ mod test {
 
     #[test]
     fn test_lookup_hello_txt() {
-        let mut hellofs = super::HelloFS {};
+        let mut hellofs = super::HelloFS::new();
         let req = dummy_meta();
         let result = hellofs.lookup(req, 1, OsString::from("hello.txt"));
         assert!(result.is_ok(), "Lookup for hello.txt should succeed");
@@ -173,7 +242,7 @@ mod test {
 
     #[test]
     fn test_read_hello_txt() {
-        let mut hellofs = super::HelloFS {};
+        let mut hellofs = super::HelloFS::new();
         let req = dummy_meta();
         let result = hellofs.read(req, 2, 0, 0, 13, 0, None);
         assert!(result.is_ok(), "Read for hello.txt should succeed");
@@ -184,24 +253,40 @@ mod test {
 
     #[test]
     fn test_readdir_root() {
-        let mut hellofs = super::HelloFS {};
+        let mut hellofs = super::HelloFS::new();
         let req = dummy_meta();
         let result = hellofs.readdir(req, 1, 0, 0, 4096);
         assert!(result.is_ok(), "Readdir on root should succeed");
-        if let Ok(entries) = result {
-            assert_eq!(entries.len(), 3, "Root directory should contain exactly 3 entries");
-            assert_eq!(entries[0].name, OsString::from("."), "First entry should be '.'");
-            assert_eq!(entries[0].ino, 1, "Inode for '.' should be 1");
-            assert_eq!(entries[1].name, OsString::from(".."), "Second entry should be '..'");
-            assert_eq!(entries[1].ino, 1, "Inode for '..' should be 1");
-            assert_eq!(entries[2].name, OsString::from("hello.txt"), "Third entry should be 'hello.txt'");
-            assert_eq!(entries[2].ino, 2, "Inode for 'hello.txt' should be 2");
+        if let Ok(entries_list) = result {
+            let entries_slice = entries_list.as_ref();
+            assert_eq!(entries_slice.len(), 3, "Root directory should contain exactly 3 entries");
+
+            // Check entry 0: "."
+            let entry0_data = entries_slice[0].as_ref();
+            assert_eq!(entry0_data.name.as_ref(), OsStr::new("."), "First entry should be '.'");
+            assert_eq!(entry0_data.ino, 1, "Inode for '.' should be 1");
+            assert_eq!(entry0_data.offset, 1, "Offset for '.' should be 1");
+            assert_eq!(entry0_data.kind, FileType::Directory, "'.' should be a directory");
+
+            // Check entry 1: ".."
+            let entry1_data = entries_slice[1].as_ref();
+            assert_eq!(entry1_data.name.as_ref(), OsStr::new(".."), "Second entry should be '..'");
+            assert_eq!(entry1_data.ino, 1, "Inode for '..' should be 1");
+            assert_eq!(entry1_data.offset, 2, "Offset for '..' should be 2");
+            assert_eq!(entry1_data.kind, FileType::Directory, "'..' should be a directory");
+
+            // Check entry 2: "hello.txt"
+            let entry2_data = entries_slice[2].as_ref();
+            assert_eq!(entry2_data.name.as_ref(), OsStr::new("hello.txt"), "Third entry should be 'hello.txt'");
+            assert_eq!(entry2_data.ino, 2, "Inode for 'hello.txt' should be 2");
+            assert_eq!(entry2_data.offset, 3, "Offset for 'hello.txt' should be 3");
+            assert_eq!(entry2_data.kind, FileType::RegularFile, "'hello.txt' should be a regular file");
         }
     }
 
     #[test]
     fn test_create_fails_readonly() {
-        let mut hellofs = super::HelloFS {};
+        let mut hellofs = super::HelloFS::new();
         let req = dummy_meta();
         let result = hellofs.create(req, 1, OsString::from("newfile.txt"), 0o644, 0, 0);
         assert!(result.is_err(), "Create should fail for read-only filesystem");

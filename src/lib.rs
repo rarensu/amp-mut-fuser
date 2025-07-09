@@ -32,10 +32,19 @@ pub use reply::Ioctl;
 pub use passthrough::BackingId;
 #[cfg(target_os = "macos")]
 pub use reply::XTimes;
-pub use reply::{Entry, Attr, DirEntry, Open, Statfs, Xattr, Lock};
+pub use reply::{Entry, Attr, DirEntryData, Open, Statfs, Xattr, Lock}; // Changed DirEntry to DirEntryData
 pub use ll::Errno;
 pub use request::RequestMeta;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
+
+mod byte_box;
+pub use byte_box::{
+    ByteBox, OsBox,
+    // DirEntryData, // Removed: DirEntryData is pub use'd from reply module directly
+    DirEntryContainer, DirEntriesList,
+    DirEntryPlusData, DirEntryPlusContainer, DirEntryPlusList,
+};
+
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
 #[cfg(feature = "abi-7-13")]
@@ -410,8 +419,10 @@ pub trait Filesystem {
     }
 
     /// Read symbolic link.
-    /// The method should return `Ok(Vec<u8>)` with the link target, or `Err(Errno)` otherwise.
-    fn readlink(&mut self, req: RequestMeta, ino: u64) -> Result<Vec<u8>, Errno> {
+    /// The method should return `Ok(OsBox<'a>)` with the link target (an OS native string),
+    /// or `Err(Errno)` otherwise.
+    /// `OsBox` allows for returning borrowed or owned `OsStr` data, potentially avoiding data copies.
+    fn readlink<'a>(&mut self, req: RequestMeta, ino: u64) -> Result<OsBox<'a>, Errno> {
         warn!("[Not Implemented] readlink(ino: {:#x?})", ino);
         Err(Errno::ENOSYS)
     }
@@ -546,11 +557,12 @@ pub trait Filesystem {
     /// return value of the read system call will reflect the return value of this
     /// operation. `fh` will contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
-    /// The method should return `Ok(Vec<u8>)` with the read data, or `Err(Errno)` otherwise.
+    /// The method should return `Ok(ByteBox<'a>)` with the read data, or `Err(Errno)` otherwise.
+    /// `ByteBox` allows for returning borrowed or owned data, potentially avoiding data copies.
     ///
     /// `flags`: these are the file flags, such as O_SYNC. Only supported with ABI >= 7.9
     /// `lock_owner`: only supported with ABI >= 7.9
-    fn read(
+    fn read<'a>(
         &mut self,
         req: RequestMeta,
         ino: u64,
@@ -559,7 +571,7 @@ pub trait Filesystem {
         size: u32,
         flags: i32,
         lock_owner: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         warn!(
             "[Not Implemented] read(ino: {:#x?}, fh: {}, offset: {}, size: {}, \
             flags: {:#x?}, lock_owner: {:?})",
@@ -673,19 +685,21 @@ pub trait Filesystem {
     }
 
     /// Read directory.
-    /// The filesystem should return a buffer filled with directory entries. The buffer
-    /// must not exceed the `max_bytes` parameter. An empty buffer indicates the end of
-    /// the stream. `fh` will contain the value set by the opendir method, or will be
-    /// undefined if the opendir method didn't set any value.
-    /// The method should return `Ok(Vec<DirEntry>)` with the directory entries, or `Err(Errno)` otherwise.
-    fn readdir(
+    /// The filesystem should return a list of directory entries.
+    /// The returned `DirEntriesList` allows for flexible ownership of the list itself,
+    /// the `DirEntryContainer`s within it, and the names within the `DirEntryData`.
+    /// The buffer generated from this list must not exceed `max_bytes`.
+    /// An empty list indicates the end of the stream.
+    /// `fh` will contain the value set by the opendir method, or will be undefined if the
+    /// opendir method didn't set any value.
+    fn readdir<'dir, 'entry, 'name>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'dir, 'entry, 'name>, Errno> {
         warn!(
             "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
@@ -695,20 +709,22 @@ pub trait Filesystem {
 
     /// Read directory.
     /// Similar to `readdir`, but also returns the attributes of each directory entry.
-    /// The filesystem should return a buffer filled with directory entries and their attributes.
+    /// The filesystem should return a list of directory entries and their attributes.
+    /// The returned `DirEntryPlusList` allows for flexible ownership.
     /// The buffer must not exceed the `max_bytes` parameter. An empty buffer indicates the end of
     /// the stream. `fh` will contain the value set by the opendir method, or will be
     /// undefined if the opendir method didn't set any value.
-    /// The method should return `Ok(Vec<(DirEntry, Entry)>)` with the directory entries and their attributes, or `Err(Errno)` otherwise.
+    /// The returned `DirEntryPlusList` allows for flexible ownership of the list, the containers,
+    /// and the names within the directory entry data.
     #[cfg(feature = "abi-7-21")]
-    fn readdirplus(
+    fn readdirplus<'dir, 'entry, 'name>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32,
-    ) -> Result<Vec<(DirEntry, Entry)>, Errno>{
+    ) -> Result<DirEntryPlusList<'dir, 'entry, 'name>, Errno> {
         warn!(
             "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
@@ -778,16 +794,17 @@ pub trait Filesystem {
 
     /// Get an extended attribute.
     /// If `size` is 0, the size of the value should be returned in `Xattr::Size(u32)`.
-    /// If `size` is not 0, and the value fits, the value should be returned in `Xattr::Data(Vec<u8>)`.
+    /// If `size` is not 0, and the value fits, the value should be returned in `Xattr::Data(ByteBox<'a>)`.
+    /// `ByteBox` allows for returning borrowed or owned data for the attribute value.
     /// If the value does not fit, `Err(Errno::ERANGE)` should be returned.
-    /// The method should return `Ok(Xattr)` on success, or `Err(Errno)` otherwise.
-    fn getxattr(
+    /// The method should return `Ok(Xattr<'a>)` on success, or `Err(Errno)` otherwise.
+    fn getxattr<'a>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         name: OsString,
         size: u32,
-    ) -> Result<Xattr, Errno> {
+    ) -> Result<Xattr<'a>, Errno> {
         warn!(
             "[Not Implemented] getxattr(ino: {:#x?}, name: {:?}, size: {})",
             ino, name, size
@@ -797,15 +814,16 @@ pub trait Filesystem {
 
     /// List extended attribute names.
     /// If `size` is 0, the size of the names list should be returned in `Xattr::Size(u32)`.
-    /// If `size` is not 0, and the names list fits, it should be returned in `Xattr::Data(Vec<u8>)`.
+    /// If `size` is not 0, and the names list fits, it should be returned in `Xattr::Data(ByteBox<'a>)`.
+    /// `ByteBox` allows for returning borrowed or owned data for the concatenated list of names.
     /// If the list does not fit, `Err(Errno::ERANGE)` should be returned.
-    /// The method should return `Ok(Xattr)` on success, or `Err(Errno)` otherwise.
-    fn listxattr(
+    /// The method should return `Ok(Xattr<'a>)` on success, or `Err(Errno)` otherwise.
+    fn listxattr<'a>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         size: u32,
-    ) -> Result<Xattr, Errno> {
+    ) -> Result<Xattr<'a>, Errno> {
         warn!(
             "[Not Implemented] listxattr(ino: {:#x?}, size: {})",
             ino, size

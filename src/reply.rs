@@ -17,7 +17,7 @@ use crate::ll::Generation;
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
 use log::{error, warn};
-use std::ffi::OsString;
+// use std::ffi::OsString; // Keep for tests only if needed
 use std::fmt;
 use std::io::IoSlice;
 #[cfg(feature = "abi-7-40")]
@@ -27,7 +27,10 @@ use zerocopy::IntoBytes;
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
 
-use crate::{FileAttr, FileType, KernelConfig};
+use crate::{ByteBox, FileAttr, FileType, KernelConfig, OsBox, DirEntriesList};
+#[cfg(feature = "abi-7-21")]
+use crate::DirEntryPlusList;
+
 
 /// Generic reply callback to send data
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
@@ -114,7 +117,7 @@ pub struct Attr {
     pub ttl: Duration
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// File entry response data
 pub struct Entry {
     /// Describes a file
@@ -125,7 +128,7 @@ pub struct Entry {
     pub generation: u64
 }
 
-#[derive(Debug)] //TODO #[derive(Copy)]
+#[derive(Debug, Clone)] //TODO #[derive(Copy)]
 /// Open file handle response data
 pub struct Open {
     /// File handle for the opened file
@@ -166,17 +169,19 @@ pub struct Statfs {
     pub frsize: u32
 }
 
-#[derive(Debug)]
-/// Directory listing response data
-pub struct DirEntry {
+#[derive(Debug, Clone)]
+/// Directory listing response data.
+/// This structure holds the data for a single directory entry.
+/// The `'name_lt` lifetime parameter is associated with the `name` field if it's a borrowed `OsStr`.
+pub struct DirEntryData<'name_lt> {
     /// file inode number
     pub ino: u64,
     /// entry number in directory
     pub offset: i64,
     /// kind of file
-    pub kind: FileType, 
+    pub kind: FileType,
     /// name of file
-    pub name: OsString
+    pub name: OsBox<'name_lt>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -194,13 +199,17 @@ pub struct Lock {
     pub pid: u32, 
 }
 
+/// `Xattr` represents the response for extended attribute operations (`getxattr`, `listxattr`).
+/// It can either indicate the size of the attribute data or provide the data itself
+/// using `ByteBox` for flexible ownership.
 #[derive(Debug)]
-/// Extended attribute response data
-pub enum Xattr{
-    /// Reply to a request with the size of the xattr.
+pub enum Xattr<'a> {
+    /// Indicates the size of the extended attribute data. Used when the caller
+    /// provides a zero-sized buffer to query the required buffer size.
     Size(u32),
-    /// Reply to a request with the data in the xattr.
-    Data(Vec<u8>)
+    /// Contains the extended attribute data. `ByteBox` allows this data to be
+    /// returned via a zero-copy borrow or an owned allocation.
+    Data(ByteBox<'a>),
 }
 
 #[cfg(feature = "abi-7-11")]
@@ -236,7 +245,7 @@ impl ReplyHandler {
 
     // Reply to an init request with available features
     pub fn config(self, capabilities: u64, config: KernelConfig) {
-        let flags = capabilities & config.requested; // use requested features and reported as capable
+        let flags = capabilities & config.requested; // use features requested by fs and reported as capable by kernel
 
         let init = ll::fuse_abi::fuse_init_out {
             major: ll::fuse_abi::FUSE_KERNEL_VERSION,
@@ -362,16 +371,17 @@ impl ReplyHandler {
     /// Reply to a request with a filled directory buffer
     pub fn dir(
         self,
-        entries: Vec<DirEntry>,
+        entries_list: &DirEntriesList<'_, '_, '_>,
         size: usize
     ) {
         let mut buf = DirEntList::new(size);
-        for item in entries.into_iter() {
+        for container in entries_list.as_ref().iter() {
+            let item_data = container.as_ref();
             let full= buf.push(&ll_DirEntry::new(
-                INodeNo(item.ino),
-                DirEntOffset(item.offset),
-                item.kind,
-                item.name
+                INodeNo(item_data.ino),
+                DirEntOffset(item_data.offset),
+                item_data.kind,
+                item_data.name.as_ref()
             ));
             if full {
                 break;
@@ -384,33 +394,45 @@ impl ReplyHandler {
     // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
         self,
-        entries: Vec<(DirEntry, Entry)>,
+        entries_plus_list: &DirEntryPlusList<'_, '_, '_>,
         size: usize
     ) {
         let mut buf = DirEntPlusList::new(size);
-        for (item, plus) in entries.into_iter() {
+        log::debug!("ReplyHandler::dirplus: initial buf max_size: {}, size passed_to_fn: {}", size, size);
+        let mut count = 0;
+    // Use the new to_tuples_iter() method
+    for (item_data, item_attr) in entries_plus_list.to_tuples_iter() {
+        // item_data is &DirEntryData<'name>
+        // item_attr is &FuserEntry
+            count += 1;
+        log::debug!("ReplyHandler::dirplus: processing item {}", count);
+        // The following lines are no longer needed:
+        // let plus_data = container.as_ref();
+        // let item_data = &plus_data.0;
+        // let item_attr = &plus_data.1;
+
             let full = buf.push(&DirEntryPlus::new(
-                INodeNo(item.ino),
-                Generation(plus.generation),
-                DirEntOffset(item.offset),
-                item.name,
-                plus.ttl,
-                plus.attr.into(),
-                plus.ttl,
+            INodeNo(item_data.ino),            // from &DirEntryData
+            Generation(item_attr.generation),  // from &FuserEntry
+            DirEntOffset(item_data.offset),    // from &DirEntryData
+            item_data.name.as_ref(),           // from &DirEntryData
+            item_attr.ttl,                     // from &FuserEntry (entry_out_ttl)
+            item_attr.attr.into(),             // from &FuserEntry (FuserEntry.attr is FileAttr)
+            item_attr.ttl,                     // from &FuserEntry (attr_out_ttl)
             ));
             if full {
                 break;
-            }     
+        }
         }
         self.send_ll(&buf.into());
     }
 
     /// Reply to a request with extended attributes.
-    pub fn xattr(self, reply: Xattr){
-        match reply{
-            Xattr::Size(s)=>self.xattr_size(s),
-            Xattr::Data(d)=>self.xattr_data(d)
-        };
+    pub fn xattr(self, reply: Xattr<'_>) {
+        match reply {
+            Xattr::Size(s) => self.xattr_size(s),
+            Xattr::Data(d) => self.xattr_data(d),
+        }
     }
 
     /// Reply to a request with the size of an xattr result.
@@ -419,8 +441,8 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with the data in an xattr result.
-    pub fn xattr_data(self, data: Vec<u8>) {
-        self.send_ll(&ll::Response::new_slice(&data))
+    pub fn xattr_data(self, data: ByteBox<'_>) {
+        self.send_ll(&ll::Response::new_slice(data.as_ref()))
     }
 
     #[cfg(feature = "abi-7-24")]
@@ -440,6 +462,7 @@ mod test {
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
     use zerocopy::{Immutable, IntoBytes};
+    use std::ffi::OsString;
 
     #[derive(Debug, IntoBytes, Immutable)]
     #[repr(C)]
@@ -546,41 +569,67 @@ mod test {
 
     #[test]
     fn reply_entry() {
-        let mut expected = if cfg!(target_os = "macos") {
-            vec![
-                0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56,
-                0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
-                0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x99, 0x00, 0x00, 0x00,
-            ]
-        } else {
-            vec![
-                0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00,
-                0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
-            ]
-        };
-
-        if cfg!(feature = "abi-7-9") {
-            expected.extend(vec![0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        }
+        // prepare the expected message
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&[
+                // header
+                0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00,
+                // ino
+                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                // generation
+                0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                // ttl
+                0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
+                // file attributes
+                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                // file times (s)
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        expected.extend_from_slice(&[
+                // crtime (s)
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+                // file times (ns)
+                0x78, 0x56, 0x00, 0x00,
+                0x78, 0x56, 0x00, 0x00, 
+                0x78, 0x56, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        expected.extend_from_slice([
+                // crtime (ns)
+                0x78, 0x56, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+                // file permissions
+                0xa4, 0x81, 0x00, 0x00,
+                // file owners
+                0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
+                0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        expected.extend_from_slice(&[
+                // flags
+                0x99, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(feature = "abi-7-9")]
+        expected.extend_from_slice(&[
+                // blksize
+                0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ]);
+        // correct the header
         expected[0] = (expected.len()) as u8;
-
+        // test reply will be compare with the expected message
         let sender = AssertSender { expected };
+        // prepare the test reply
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
@@ -601,6 +650,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
+        // send the test reply
         replyhandler.entry(
             Entry{
                 attr: attr, 
@@ -866,22 +916,154 @@ mod test {
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let entries = vec!(
-            DirEntry {
+            DirEntryData {
                 ino: 0xaabb,
                 offset: 1,
                 kind: FileType::Directory,
-                name: OsString::from("hello"),
+                name: OsString::from("hello").into(),
             }, 
-            DirEntry {
+            DirEntryData {
                 ino: 0xccdd,
                 offset: 2,
                 kind: FileType::RegularFile,
-                name: OsString::from("world.rs"),
+                name: OsString::from("world.rs").into(),
             }
         );
-        replyhandler.dir(entries, std::mem::size_of::<u8>()*128);
+        replyhandler.dir(&entries.into(), std::mem::size_of::<u8>()*128);
     }
+    
+    #[test]
+    #[cfg(feature = "abi-7-24")]
+    fn reply_directory_plus() {
+        // prepare the expected file attribute portion of the message
+        // see test::reply_entry() for details
+        let mut attr_bytes = Vec::new();
+        attr_bytes.extend_from_slice(&[
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        attr_bytes.extend_from_slice(&[
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        attr_bytes.extend_from_slice(&[
+            0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        attr_bytes.extend_from_slice([
+            0x78, 0x56, 0x00, 0x00,
+        ]);
+        attr_bytes.extend_from_slice(&[
+            0xa4, 0x41, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
+            0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(target_os = "macos")]
+        attr_bytes.extend_from_slice(&[
+            0x99, 0x00, 0x00, 0x00,
+        ]);
+        #[cfg(feature = "abi-7-9")]
+        attr_bytes.extend_from_slice(&[
+            0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ]);
 
+        let mut expected = Vec::new();
+        // header
+        expected.extend_from_slice(&[
+            0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        // attr 1
+        expected.extend_from_slice(&attr_bytes);
+        // dir entry 1
+        expected.extend_from_slice(&[
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+            0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00,
+        ]);
+        // attr 2 has a different ino value in two positions
+        attr_bytes[0]=0xdd;
+        attr_bytes[1]=0xcc;
+        attr_bytes[40]=0xdd;
+        attr_bytes[41]=0xcc;
+        // attr 2 has a different file permission in one position
+        let i = if cfg!(target_os = "macos") {113} else {101};
+        attr_bytes[i]=0x81; 
+        expected.extend_from_slice(&attr_bytes);
+        // dir entry 2
+        expected.extend_from_slice(&[
+            0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
+        ]);
+        // correct the header
+        expected[0] = (expected.len()) as u8;
+        // test reply will be compared to expected
+        let sender = AssertSender {expected};
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+        let ttl = Duration::new(0x8765, 0x4321);
+        let attr1 = FileAttr {
+            ino: 0xaabb,
+            size: 0x22,
+            blocks: 0x33,
+            atime: time,
+            mtime: time,
+            ctime: time,
+            crtime: time,
+            kind: FileType::Directory,
+            perm: 0o644,
+            nlink: 0x55,
+            uid: 0x66,
+            gid: 0x77,
+            rdev: 0x88,
+            flags: 0x99,
+            blksize: 0xbb,
+        };
+        let mut attr2 = attr1; //implicit copy
+        attr2.ino = 0xccdd;
+        attr2.kind = FileType::RegularFile;
+        let generation = 0xaa;
+        let entries = vec!(
+            (
+                DirEntryData {
+                    ino: 0xaabb,
+                    offset: 1,
+                    kind: FileType::Directory,
+                    name: OsString::from("hello").into(),
+                },
+                Entry {
+                    attr: attr1, 
+                    ttl, 
+                    generation, 
+                }
+            ),
+            (
+                DirEntryData {
+                    ino: 0xccdd,
+                    offset: 2,
+                    kind: FileType::RegularFile,
+                    name: OsString::from("world.rs").into(),
+                },
+                Entry {
+                    attr: attr2, 
+                    ttl, 
+                    generation, 
+                }
+            )
+        );
+        replyhandler.dirplus(&entries.into(), std::mem::size_of::<u8>()*4096);
+    }
 
     #[test]
     fn reply_xattr_size() {
@@ -904,7 +1086,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.xattr(Xattr::Data([0x11, 0x22, 0x33, 0x44].to_vec()));
+        replyhandler.xattr(Xattr::Data([0x11, 0x22, 0x33, 0x44].to_vec().into()));
     }
 
     impl super::ReplySender for SyncSender<()> {

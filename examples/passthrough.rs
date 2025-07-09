@@ -4,10 +4,11 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    consts, BackingId, FileAttr, FileType, Filesystem, KernelConfig, MountOption, Attr, DirEntry,
-    Entry, Open, Errno, RequestMeta,
+    consts, Attr, BackingId, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno,
+    FileAttr, FileType, Filesystem, KernelConfig, MountOption, Open, OsBox, RequestMeta,
 };
 use std::collections::HashMap;
+use std::ffi::OsStr; // Needed for OsStr::new
 use std::ffi::{OsString};
 use std::fs::File;
 use std::rc::{Rc, Weak};
@@ -207,35 +208,40 @@ impl Filesystem for PassthroughFs {
         Ok(())
     }
 
-    fn readdir(
+    fn readdir<'list_lt, 'entry_lt, 'name_lt>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'list_lt, 'entry_lt, 'name_lt>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
 
-        let entries = vec![
-            (1, FileType::Directory, "."),
-            (1, FileType::Directory, ".."),
-            (2, FileType::RegularFile, "passthrough"),
+        // Define entries. Since names are static, OsBox::Borrowed is ideal.
+        // The DirEntryData items themselves can be stack-allocated for this scope
+        // and then wrapped in DirEntryContainer::Owned if we are building a Vec.
+        // Or, if these were truly static DirEntryData, we could borrow them too.
+        let all_potential_entries: [DirEntryData<'static>; 3] = [
+            DirEntryData { ino: 1, offset: 1, kind: FileType::Directory, name: OsBox::Borrowed(".") },
+            DirEntryData { ino: 1, offset: 2, kind: FileType::Directory, name: OsBox::Borrowed("..") },
+            DirEntryData { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsBox::Borrowed("passthrough") },
         ];
-        let mut result=Vec::new();
 
-        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-            // i + 1 means the index of the next entry
-            result.push(DirEntry {
-                ino: entry.0,
-                offset: i as i64 + 1,
-                kind: entry.1,
-                name: OsString::from(entry.2),
-            });
+        let mut result_containers: Vec<DirEntryContainer<'static, 'static>> = Vec::new();
+        for entry_data_ref in all_potential_entries.iter().skip(offset as usize) {
+            // Since entry_data_ref is a reference to an item in all_potential_entries,
+            // which is stack-allocated and lives for this function call, we could
+            // potentially use DirEntryContainer::Borrowed(entry_data_ref) if the lifetimes
+            // were managed carefully for the returned DirEntriesList.
+            // However, to keep it simple and consistent with other examples where
+            // we are building a new Vec, we'll clone into an Owned container.
+            // This also makes 'entry_lt effectively 'static for the container.
+            result_containers.push(DirEntryContainer::Owned(entry_data_ref.clone()));
         }
-        Ok(result)
+        Ok(DirEntriesList::from(result_containers))
     }
 }
 
