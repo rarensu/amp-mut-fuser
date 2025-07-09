@@ -245,7 +245,7 @@ impl ReplyHandler {
 
     // Reply to an init request with available features
     pub fn config(self, capabilities: u64, config: KernelConfig) {
-        let flags = capabilities & config.requested; // use requested features and reported as capable
+        let flags = capabilities & config.requested; // use features requested by fs and reported as capable by kernel
 
         let init = ll::fuse_abi::fuse_init_out {
             major: ll::fuse_abi::FUSE_KERNEL_VERSION,
