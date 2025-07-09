@@ -4,7 +4,8 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, RequestMeta, Entry, Attr, Ioctl, Errno, DirEntry,
+    Attr, ByteBox, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno, FileAttr,
+    Filesystem, FileType, Ioctl, MountOption, OsBox, RequestMeta,
 };
 use log::debug;
 use std::ffi::{OsStr, OsString};
@@ -17,6 +18,13 @@ struct FiocFS {
     root_attr: FileAttr,
     fioc_file_attr: FileAttr,
 }
+
+// Constant data can be stored as Borrowed to prevent unnecessary copying
+const DIR_ENTRIES: [DirEntryContainer; 3] = [
+    DirEntryContainer::Borrowed(&DirEntryData { ino: 1, offset: 1, kind: FileType::Directory,   name: OsBox::Borrowed(".") }),
+    DirEntryContainer::Borrowed(&DirEntryData { ino: 1, offset: 2, kind: FileType::Directory,   name: OsBox::Borrowed("..") }),
+    DirEntryContainer::Borrowed(&DirEntryData { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsBox::Borrowed("fioc")}),
+];
 
 impl FiocFS {
     fn new() -> Self {
@@ -67,7 +75,7 @@ impl FiocFS {
     }
 }
 
-impl Filesystem for FiocFS {
+impl Filesystem for FiocFS{
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent == 1 && name == OsStr::new("fioc") {
             Ok(Entry {
@@ -88,7 +96,7 @@ impl Filesystem for FiocFS {
         }
     }
 
-    fn read(
+    fn read<'a>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -97,38 +105,41 @@ impl Filesystem for FiocFS {
         _size: u32,
         _flags: i32,
         _lock: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         if ino == 2 {
-            Ok(self.content[offset as usize..].to_vec())
+            let offset = offset as usize;
+            if offset >= self.content.len() {
+                // No need to allocate anything, just borrow from this 'static empty literal.
+                Ok(ByteBox::Borrowed(&[]))
+            } else {
+                /***********
+                // Option 1: Copy the bytes into a new boxed slice
+                let copy_of_bytes = self.content[offset..].to_owned().into_boxed_slice();
+                Ok(ByteBox::Owned(copy_of_bytes))
+                ***********/
+                // Option 2: Using the From<...>/Into<...> helper method
+                Ok(self.content[offset..].to_vec().into())
+            }
         } else {
             Err(Errno::ENOENT)
         }
     }
 
-    fn readdir(
+    fn readdir<'dir, 'entry, 'name>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'dir, 'entry, 'name>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
-
-        let entries = vec![
-            DirEntry { ino: 1, offset: 1, kind: FileType::Directory, name: OsString::from(".") },
-            DirEntry { ino: 1, offset: 2, kind: FileType::Directory, name: OsString::from("..") },
-            DirEntry { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsString::from("fioc") },
-        ];
-
-        let mut result = Vec::new();
-        for entry in entries.into_iter().skip(offset as usize) {
-            // example loop where additional logic could be inserted
-            result.push(entry);
-        }
-        Ok(result)
+        // In this example, send (up to) three borrowed (static) entries.
+        let entries: Vec<DirEntryContainer> = DIR_ENTRIES.into_iter().skip(offset as usize).collect();
+        // In this example, List is returned as Owned, because its length depends on `offset`.
+        Ok(DirEntriesList::from(entries))
     }
 
     #[cfg(feature = "abi-7-11")]
