@@ -4,8 +4,8 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    consts, BackingId, FileAttr, FileType, Filesystem, KernelConfig, MountOption, Attr, DirEntry,
-    Entry, Open, Errno, RequestMeta,
+    consts, Attr, BackingId, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno,
+    FileAttr, FileType, Filesystem, KernelConfig, MountOption, Open, OsBox, RequestMeta,
 };
 use std::collections::HashMap;
 use std::ffi::{OsString};
@@ -86,6 +86,12 @@ struct PassthroughFs {
     backing_cache: BackingCache,
 }
 
+const ROOT_DIR_ENTRIES: [DirEntryContainer; 3] = [
+    DirEntryContainer::Borrowed(&DirEntryData { ino: 1, offset: 1, kind: FileType::Directory,   name: OsBox::Borrowed(".") }),
+    DirEntryContainer::Borrowed(&DirEntryData { ino: 1, offset: 2, kind: FileType::Directory,   name: OsBox::Borrowed("..") }),
+    DirEntryContainer::Borrowed(&DirEntryData { ino: 2, offset: 3, kind: FileType::RegularFile, name: OsBox::Borrowed("passthrough") }),
+];
+
 impl PassthroughFs {
     fn new() -> Self {
         let uid = unsafe { libc::getuid() };
@@ -142,7 +148,8 @@ impl Filesystem for PassthroughFs {
         config: KernelConfig,
     ) -> Result<KernelConfig, Errno> {
         let mut config = config;
-        config.add_capabilities(consts::FUSE_PASSTHROUGH).unwrap();
+        config.add_capabilities(consts::FUSE_PASSTHROUGH)
+            .expect("FUSE Kernel did not advertise support for passthrough. Refused capability");
         config.set_max_stack_depth(2).unwrap();
         Ok(config)
     }
@@ -207,35 +214,24 @@ impl Filesystem for PassthroughFs {
         Ok(())
     }
 
-    fn readdir(
+    fn readdir<'dir, 'entry, 'name>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'dir, 'entry, 'name>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
-
-        let entries = vec![
-            (1, FileType::Directory, "."),
-            (1, FileType::Directory, ".."),
-            (2, FileType::RegularFile, "passthrough"),
-        ];
-        let mut result=Vec::new();
-
-        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-            // i + 1 means the index of the next entry
-            result.push(DirEntry {
-                ino: entry.0,
-                offset: i as i64 + 1,
-                kind: entry.1,
-                name: OsString::from(entry.2),
-            });
+        // Check the offset to prevent slice index panic.
+        if offset > 2 || offset < 0 {
+            Ok(DirEntriesList::Borrowed(&[]))
+        } else {
+            // Send a borrowed slice of up to three (static) entries.
+            Ok(DirEntriesList::Borrowed(&ROOT_DIR_ENTRIES[offset as usize..]))
         }
-        Ok(result)
     }
 }
 

@@ -9,20 +9,20 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Attr, DirEntry, Entry, Errno, Filesystem, Forget, KernelConfig, MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr, FUSE_ROOT_ID
+    Attr, ByteBox, DirEntriesList, DirEntryContainer, DirEntryData, Entry, Errno, Filesystem,
+    Forget, KernelConfig, MountOption, Open, OsBox, RequestMeta, Statfs, TimeOrNow, Xattr,
+    FUSE_ROOT_ID,
 };
-#[cfg(feature = "abi-7-26")]
-use log::info;
-use log::{debug, warn};
-use log::{error, LevelFilter};
+#[allow(unused_imports)]
+use log::{debug, info, warn, error, LevelFilter};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::raw::c_int;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::io::IntoRawFd;
@@ -754,7 +754,7 @@ impl Filesystem for SimpleFS {
         Ok(Attr { attr: final_attrs.into(), ttl: Duration::new(0,0), })
     }
 
-    fn readlink(&mut self, _req: RequestMeta, inode: u64) -> Result<Vec<u8>, Errno> {
+    fn readlink<'a>(&mut self, _req: RequestMeta, inode: u64) -> Result<OsBox<'a>, Errno> {
         debug!("readlink() called on {:?}", inode);
         let path = self.content_path(inode);
         match File::open(path) {
@@ -765,7 +765,11 @@ impl Filesystem for SimpleFS {
                 };
                 let mut buffer = vec![0; file_size as usize];
                 match file.read_exact(&mut buffer) {
-                    Ok(_) => Ok(buffer),
+                    Ok(_) => {
+                        let os_string = OsString::from_vec(buffer);
+                        // OsString into OsBox::Owned
+                        Ok(os_string.into())
+                    }
                     Err(_) => Err(Errno::EIO), // Or some other appropriate error
                 }
             }
@@ -1397,7 +1401,7 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn read(
+    fn read<'a>(
         &mut self,
         _req: RequestMeta,
         inode: u64,
@@ -1406,7 +1410,7 @@ impl Filesystem for SimpleFS {
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<ByteBox<'a>, Errno> {
         debug!(
             "read() called on {:?} offset={:?} size={:?}",
             inode, offset, size
@@ -1424,7 +1428,7 @@ impl Filesystem for SimpleFS {
 
             let mut buffer = vec![0; read_size as usize];
             file.read_exact_at(&mut buffer, offset as u64).unwrap();
-            Ok(buffer)
+            Ok(ByteBox::from(buffer))
         } else {
             Err(Errno::ENOENT)
         }
@@ -1531,36 +1535,42 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn readdir(
+    fn readdir<'dir, 'entry, 'name>(
         &mut self,
         _req: RequestMeta,
         inode: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirEntriesList<'dir, 'entry, 'name>, Errno> {
         debug!("readdir() called with {:?}", inode);
         assert!(offset >= 0);
-        let entries = match self.get_directory_content(inode) {
-            Ok(entries) => entries,
+        // get_directory_content() returns an owned tree structure, or an error.
+        let tree = match self.get_directory_content(inode) {
+            Ok(tree) => tree,
             Err(error_code) => {
                 return Err(Errno::from_i32(error_code));
             }
         };
-        let mut result=Vec::new();
-
-        for (index, entry) in entries.iter().skip(offset as usize).enumerate() {
-            let (name, (inode, file_type)) = entry;
-
-            result.push(DirEntry {
-                ino: *inode,
-                offset: offset + index as i64 + 1,
-                kind: (*file_type).into(),
-                name: OsStr::from_bytes(name).to_owned(),
-            });
-            // TODO stop if bytes > _max_bytes
+        // Implicit anonymous lifetime '_ because this function won't be returning any borrowed data. 
+        let mut entries = Vec::new();
+        // into_iter() moves ownership of the elements into the loop variables, to avoid a copy 
+        // This tree structure does not include an index; enumerate() adds an index 
+        for (index,(name_bytes, (ino, file_kind)))
+        in tree.into_iter().enumerate().skip(offset as usize) {
+            let name_os_string = OsString::from_vec(name_bytes);
+            let name_os_box = OsBox::Owned(name_os_string.into_boxed_os_str());
+            let dir_entry_data = DirEntryData {
+                ino,
+                offset: index as i64 + 1, // directory offsets are 1-indexed
+                kind: file_kind.into(),
+                name: name_os_box,
+            };
+            entries.push(DirEntryContainer::Owned(dir_entry_data));
+            // TODO: Optionally, stop if bytes > _max_bytes
+            // if not now, then fuser::replyhandler() will take care of it later.
         }
-        Ok(result)
+        Ok(DirEntriesList::from(entries))
     }
 
     fn releasedir(
@@ -1614,23 +1624,25 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn getxattr(
+    fn getxattr<'a>(
         &mut self,
         request: RequestMeta,
         inode: u64,
         key: OsString,
         size: u32,
-    ) -> Result<Xattr, Errno> {
-        if let Ok(attrs) = self.get_inode(inode) {
+    ) -> Result<Xattr<'a>, Errno> {
+        // attrs is declared mutable so that it can be disassembled for parts later.
+        if let Ok(mut attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::R_OK, &attrs, request) {
                 return Err(Errno::from_i32(error));
             }
-
-            if let Some(data) = attrs.xattrs.get(key.as_bytes()) {
+            // bmap.remove() takes ownership of the value, avoiding a copy. 
+            if let Some(data) = attrs.xattrs.remove(key.as_bytes()) {
                 if size == 0 {
                     return Ok(Xattr::Size(data.len() as u32));
                 } else if data.len() <= size as usize {
-                    return Ok(Xattr::Data(data.to_owned()));
+                    // vec.into_boxed_slice() takes ownership of the value, avoiding a copy.
+                    return Ok(Xattr::Data(ByteBox::Owned(data.into_boxed_slice())));
                 } else {
                     return Err(Errno::ERANGE);
                 }
@@ -1645,18 +1657,25 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn listxattr(&mut self, _req: RequestMeta, inode: u64, size: u32) -> Result<Xattr, Errno> {
+    fn listxattr<'a>(
+        &mut self,
+        _req: RequestMeta,
+        inode: u64,
+        size: u32
+    ) -> Result<Xattr<'a>, Errno> {
         if let Ok(attrs) = self.get_inode(inode) {
             let mut bytes = vec![];
-            // Convert to concatenated null-terminated strings
-            for key in attrs.xattrs.keys() {
-                bytes.extend(key);
-                bytes.push(0);
+            // into_keys() takes ownership, potentially avoiding an accidental copy
+            // but probably a copy is unavoidable during the following reorganization.
+            for key in attrs.xattrs.into_keys()
+            {
+                bytes.extend(key); // concatenate keys
+                bytes.push(0); // as null-terminated
             }
             if size == 0 {
                 return Ok(Xattr::Size(bytes.len() as u32));
             } else if bytes.len() <= size as usize {
-                return Ok(Xattr::Data(bytes));
+                return Ok(Xattr::Data(ByteBox::from(bytes)));
             } else {
                 return Err(Errno::ERANGE);
             }
@@ -2073,18 +2092,12 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use fuser::{Filesystem, RequestMeta, Errno, TimeOrNow};
-    use std::ffi::OsString;
-    use std::path::PathBuf;
-    use std::collections::BTreeMap;
-    use std::fs::File;
-    use std::io::Write;
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta { unique: 0, uid: 1000, gid: 1000, pid: 2000 }
     }
 
-    // Mock setup for SimpleFS to avoid real filesystem operations
+    // Helper function to initialize a SimpleFS without a session mount
     fn setup_test_fs(name: &str) -> SimpleFS {
         let dir_path = format!("/tmp/tests/{}", name);
         let fs = SimpleFS::new(dir_path.clone(), false, false, true);
@@ -2170,7 +2183,7 @@ mod test {
             let readlink_result = fs.readlink(req, entry.attr.ino);
             assert!(readlink_result.is_ok(), "Readlink should succeed");
             if let Ok(target_data) = readlink_result {
-                assert_eq!(target_data, target.as_os_str().as_bytes(), "Readlink should return the correct target");
+                assert_eq!(target_data.as_ref(), target.as_os_str(), "Readlink should return the correct target");
             }
         }
     }
