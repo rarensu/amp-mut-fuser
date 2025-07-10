@@ -43,6 +43,7 @@ pub use byte_box::{
     DirEntryContainer, DirEntriesList,
     DirEntryPlusData, DirEntryPlusContainer, DirEntryPlusList,
 };
+pub use container::Container; // Added this line
 
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
@@ -50,6 +51,7 @@ use std::cmp::max;
 use std::cmp::min;
 
 mod channel;
+mod container; // Added this line
 mod ll;
 mod mnt;
 #[cfg(feature = "abi-7-11")]
