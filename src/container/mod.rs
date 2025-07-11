@@ -3,6 +3,7 @@
 
 pub mod core;
 pub mod specialized;
+pub mod utils;
 
 pub use self::core::Container;
 
