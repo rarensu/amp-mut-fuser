@@ -221,3 +221,288 @@ fn test_mutating_variants_try_as_ref_error() {
     let container_arc_rw_lock_vec: Container<'static, u8> = Container::from(arc_rw_lock_vec);
     assert_eq!(container_arc_rw_lock_vec.try_as_ref(), Err("Attempted to get a reference from Container::ArcRwLockVec without the proper lock."));
 }
+
+#[cfg(test)]
+mod specialized_tests {
+    use crate::container::Container;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+    use crate::container::specialized::SpecializedError;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::{Arc, Mutex, RwLock};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::borrow::Cow;
+
+    // --- Test Data ---
+    const VALID_UTF8_STR: &str = "hello world";
+    const VALID_UTF8_BYTES: &[u8] = b"hello world";
+    // Invalid UTF-8 sequence (from Rust docs for from_utf8)
+    const INVALID_UTF8_BYTES: &[u8] = &[0xf0, 0x90, 0x80];
+
+
+    // --- Tests for From<String/&str> ---
+    #[test]
+    fn test_from_string_for_container_u8() {
+        let s = String::from(VALID_UTF8_STR);
+        let container: Container<'_, u8> = Container::from(s.clone());
+        assert_eq!(container.as_ref(), s.as_bytes());
+        match container {
+            Container::Vec(_) => {} // Expected
+            _ => panic!("Expected Container::Vec from String"),
+        }
+    }
+
+    #[test]
+    fn test_from_str_ref_for_container_u8() {
+        let s_ref: &str = VALID_UTF8_STR;
+        let container: Container<'_, u8> = Container::from(s_ref);
+        assert_eq!(container.as_ref(), s_ref.as_bytes());
+        match container {
+            Container::Ref(_) => {} // Expected
+            _ => panic!("Expected Container::Ref from &str"),
+        }
+    }
+
+    // --- Tests for From<OsString/&OsStr> ---
+    #[test]
+    fn test_from_os_string_for_container_u8() {
+        let os_string = OsString::from(VALID_UTF8_STR);
+        let container: Container<'_, u8> = Container::from(os_string.clone());
+        assert_eq!(container.as_ref(), OsStr::new(VALID_UTF8_STR).as_bytes());
+         match container {
+            Container::Vec(_) => {} // Expected
+            _ => panic!("Expected Container::Vec from OsString"),
+        }
+    }
+
+    #[test]
+    fn test_from_os_str_ref_for_container_u8() {
+        let os_str_ref = OsStr::new(VALID_UTF8_STR);
+        let container: Container<'_, u8> = Container::from(os_str_ref);
+        assert_eq!(container.as_ref(), os_str_ref.as_bytes());
+        match container {
+            Container::Ref(_) => {} // Expected
+            _ => panic!("Expected Container::Ref from &OsStr"),
+        }
+    }
+
+    // --- Helper to create containers for testing ---
+    fn create_non_locking_containers<'a>(bytes: &'a [u8]) -> Vec<Container<'a, u8>> {
+        vec![
+            Container::Ref(bytes),
+            Container::Vec(bytes.to_vec()),
+            Container::Box(bytes.to_vec().into_boxed_slice()),
+            Container::Cow(Cow::Borrowed(bytes)),
+            Container::Cow(Cow::Owned(bytes.to_vec())),
+            Container::Arc(Arc::from(bytes)),
+            Container::Rc(Rc::from(bytes)),
+        ]
+    }
+
+    fn create_locking_containers<'a>(bytes: &'a [u8]) -> Vec<Container<'a, u8>> {
+        vec![
+            Container::ArcMutexVec(Arc::new(Mutex::new(bytes.to_vec()))),
+            Container::ArcRwLockVec(Arc::new(RwLock::new(bytes.to_vec()))),
+            Container::RcRefCellVec(Rc::new(RefCell::new(bytes.to_vec()))),
+        ]
+    }
+
+    // --- Tests for String conversion methods ---
+
+    #[test]
+    fn test_to_str() {
+        // Valid UTF-8
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.to_str().unwrap(), VALID_UTF8_STR);
+        }
+        // Invalid UTF-8
+        for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
+            assert!(container.to_str().is_err());
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_to_str_panic_on_locking() {
+        let container = create_locking_containers(VALID_UTF8_BYTES).remove(0);
+        let _ = container.to_str(); // Should panic
+    }
+
+    #[test]
+    fn test_try_to_str() {
+        // Valid UTF-8, non-locking
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.try_to_str().unwrap(), VALID_UTF8_STR);
+        }
+        // Invalid UTF-8, non-locking
+        for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
+            match container.try_to_str() {
+                Err(SpecializedError::Utf8(_)) => {} // Expected
+                _ => panic!("Expected Utf8 error"),
+            }
+        }
+        // Locking containers
+        for container in create_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.try_to_str(), Err(SpecializedError::LockRequired));
+        }
+    }
+
+    #[test]
+    fn test_get_str() {
+        // Valid UTF-8, non-locking
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            let (s, guard_option) = container.get_str().unwrap();
+            assert_eq!(s, VALID_UTF8_STR);
+            assert!(guard_option.is_none());
+        }
+        // Invalid UTF-8, non-locking
+        for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
+            match container.get_str() {
+                Err(SpecializedError::Utf8(_)) => {} // Expected
+                _ => panic!("Expected Utf8 error for non-locking invalid"),
+            }
+        }
+        // Valid UTF-8, locking
+        for container in create_locking_containers(VALID_UTF8_BYTES) {
+            let (s, guard_option) = container.get_str().unwrap();
+            assert_eq!(s, VALID_UTF8_STR);
+            assert!(guard_option.is_some());
+            // Guard is dropped here, lock released
+        }
+        // Invalid UTF-8, locking
+        for container in create_locking_containers(INVALID_UTF8_BYTES) {
+             match container.get_str() {
+                Err(SpecializedError::Utf8(_)) => {} // Expected
+                res => panic!("Expected Utf8 error for locking invalid, got {:?}", res),
+            }
+        }
+        // Poisoned lock (Mutex example)
+        let data = Arc::new(Mutex::new(VALID_UTF8_BYTES.to_vec()));
+        let container_mutex_poisoned: Container<'static, u8> = Container::ArcMutexVec(data.clone());
+        // Poison the lock
+        let _ = std::thread::spawn(move || {
+            let _lock = data.lock().unwrap();
+            panic!("intentional panic to poison lock");
+        }).join(); // Wait for panic to occur
+        // Now try to use it (ArcMutexVec only)
+        match container_mutex_poisoned.get_str() {
+            Err(SpecializedError::LockPoisoned) => {} // Expected
+            res => panic!("Expected LockPoisoned error, got {:?}", res),
+        }; // Ensure temporary (Result with guard) is dropped
+    }
+
+    #[test]
+    fn test_get_string() {
+        // Valid UTF-8, non-locking
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.get_string().unwrap(), VALID_UTF8_STR);
+        }
+        // Invalid UTF-8, non-locking
+        for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
+            match container.get_string() {
+                Err(SpecializedError::FromUtf8(_)) => {} // Expected
+                _ => panic!("Expected FromUtf8 error"),
+            }
+        }
+        // Valid UTF-8, locking
+        for container in create_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.get_string().unwrap(), VALID_UTF8_STR);
+        }
+        // Invalid UTF-8, locking
+        for container in create_locking_containers(INVALID_UTF8_BYTES) {
+             match container.get_string() {
+                Err(SpecializedError::FromUtf8(_)) => {} // Expected
+                _ => panic!("Expected FromUtf8 error for locking invalid"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_string_lossy() {
+        // Valid UTF-8, non-locking
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.get_string_lossy().unwrap(), VALID_UTF8_STR);
+        }
+        // Invalid UTF-8, non-locking (should be replaced)
+        for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
+            assert_eq!(container.get_string_lossy().unwrap(), "\u{FFFD}");
+        }
+        // Valid UTF-8, locking
+        for container in create_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.get_string_lossy().unwrap(), VALID_UTF8_STR);
+        }
+        // Invalid UTF-8, locking (should be replaced)
+        for container in create_locking_containers(INVALID_UTF8_BYTES) {
+             assert_eq!(container.get_string_lossy().unwrap(), "\u{FFFD}");
+        }
+    }
+
+    // --- Tests for OsString conversion methods ---
+
+    #[test]
+    fn test_to_os_str() {
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.to_os_str(), OsStr::new(VALID_UTF8_STR));
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_to_os_str_panic_on_locking() {
+        let container = create_locking_containers(VALID_UTF8_BYTES).remove(0);
+        let _ = container.to_os_str(); // Should panic
+    }
+
+    #[test]
+    fn test_try_to_os_str() {
+        // Non-locking
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.try_to_os_str().unwrap(), OsStr::new(VALID_UTF8_STR));
+        }
+        // Locking containers
+        for container in create_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.try_to_os_str(), Err(SpecializedError::LockRequired));
+        }
+    }
+
+    #[test]
+    fn test_get_os_str() {
+        // Non-locking
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            let (s, guard_option) = container.get_os_str().unwrap();
+            assert_eq!(s, OsStr::new(VALID_UTF8_STR));
+            assert!(guard_option.is_none());
+        }
+        // Locking
+        for container in create_locking_containers(VALID_UTF8_BYTES) {
+            let (s, guard_option) = container.get_os_str().unwrap();
+            assert_eq!(s, OsStr::new(VALID_UTF8_STR));
+            assert!(guard_option.is_some());
+        }
+        // Poisoned lock (RwLock example)
+        let data = Arc::new(RwLock::new(VALID_UTF8_BYTES.to_vec()));
+        let container_rwlock_poisoned: Container<'static, u8> = Container::ArcRwLockVec(data.clone());
+        // Poison the lock (RwLock write lock)
+        let _ = std::thread::spawn(move || {
+            let _lock = data.write().unwrap(); // write lock can poison
+            panic!("intentional panic to poison rwlock");
+        }).join();
+        match container_rwlock_poisoned.get_os_str() {
+            Err(SpecializedError::LockPoisoned) => {} // Expected
+            res => panic!("Expected LockPoisoned error for RwLock, got {:?}", res),
+        }; // Ensure temporary (Result with guard) is dropped
+    }
+
+    #[test]
+    fn test_get_os_string() {
+        // Non-locking
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.get_os_string().unwrap(), OsString::from(VALID_UTF8_STR));
+        }
+        // Locking
+        for container in create_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.get_os_string().unwrap(), OsString::from(VALID_UTF8_STR));
+        }
+    }
+}
