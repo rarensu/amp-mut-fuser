@@ -8,7 +8,7 @@ impl<'a, T: Clone> Container<'a, T> {
     /// Returns a borrowed slice &[] from the container if it is an immutable variant. 
     /// Returns an error if the container is a mutating variant.
     /// Hint: use Container::get_slice() to handle mutating variants.
-    fn try_as_ref(&self) -> Result<&[T], &str> {
+    pub fn try_as_ref(&self) -> Result<&[T], &str> {
         match self {
             // ----- Simple Variants -----
             Container::Empty => Ok(&[]), // the 'static zero-length slice of type T
