@@ -372,11 +372,18 @@ impl ReplyHandler {
     pub fn dir(
         self,
         entries_list: &DirEntriesList<'_, '_, '_>,
-        size: usize
+        size: usize,
+        min_offset: i64,
     ) {
         let mut buf = DirEntList::new(size);
         for container in entries_list.as_ref().iter() {
             let item_data = container.as_ref();
+            if item_data.offset < min_offset {
+                log::debug!("ReplyHandler::dir: skipping item with offset #{}", item_data.offset);
+                continue;
+            } else {
+                log::debug!("ReplyHandler::dir: processing item with offset #{}", item_data.offset);
+            }
             let full= buf.push(&ll_DirEntry::new(
                 INodeNo(item_data.ino),
                 DirEntOffset(item_data.offset),
@@ -384,6 +391,7 @@ impl ReplyHandler {
                 item_data.name.as_ref()
             ));
             if full {
+                log::debug!("ReplyHandler::dir: buffer full!");
                 break;
             }
         }
@@ -395,12 +403,17 @@ impl ReplyHandler {
     pub fn dirplus(
         self,
         entries_plus_list: &DirEntryPlusList<'_, '_, '_>,
-        size: usize
+        size: usize,
+        min_offset: i64, 
     ) {
-        log::debug!("ReplyHandler::dirplus: initial buf max_size: {}, size passed_to_fn: {}", size, size);
         let mut buf = DirEntPlusList::new(size);
-        for (count, (item_data, item_attr)) in entries_plus_list.to_tuples_iter().enumerate() {
-            log::debug!("ReplyHandler::dirplus: processing item #{}", count+1);
+        for (item_data, item_attr) in entries_plus_list.to_tuples_iter() {            
+            if item_data.offset < min_offset {
+                log::debug!("ReplyHandler::dirplus: skipping item with offset #{}", item_data.offset);
+                continue;
+            } else {
+                log::debug!("ReplyHandler::dirplus: processing item with offset #{}", item_data.offset);
+            }
             let full = buf.push(&DirEntryPlus::new(
                 INodeNo(item_data.ino),
                 Generation(item_attr.generation),
@@ -920,7 +933,7 @@ mod test {
                 name: OsString::from("world.rs").into(),
             }
         );
-        replyhandler.dir(&entries.into(), std::mem::size_of::<u8>()*128);
+        replyhandler.dir(&entries.into(), std::mem::size_of::<u8>()*128, 0);
     }
     
     #[test]
@@ -1053,7 +1066,7 @@ mod test {
                 }
             )
         );
-        replyhandler.dirplus(&entries.into(), std::mem::size_of::<u8>()*4096);
+        replyhandler.dirplus(&entries.into(), std::mem::size_of::<u8>()*4096, 0);
     }
 
     #[test]

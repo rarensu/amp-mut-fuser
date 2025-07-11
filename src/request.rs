@@ -518,7 +518,11 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(entries_list_result)=> {
-                        self.replyhandler.dir(&entries_list_result, x.size() as usize)
+                        self.replyhandler.dir(
+                            &entries_list_result,
+                            x.size() as usize,
+                            x.offset(),
+                        )
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
@@ -833,7 +837,11 @@ impl<'a> Request<'a> {
                 );
                 match response {
                     Ok(plus_entries_list_result)=> {
-                        self.replyhandler.dirplus(&plus_entries_list_result, x.size() as usize)
+                        self.replyhandler.dirplus(
+                            &plus_entries_list_result,
+                            x.size() as usize,
+                            x.offset()
+                        )
                     }
                     Err(err)=>{
                         self.replyhandler.error(err)
