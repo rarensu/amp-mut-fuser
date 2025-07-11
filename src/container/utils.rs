@@ -7,7 +7,7 @@ use std::sync::{MutexGuard, RwLockReadGuard, PoisonError};
 impl<'a, T: Clone> Container<'a, T> {
     /// Returns a borrowed slice &[] from the container if it is an immutable variant. 
     /// Returns an error if the container is a mutating variant.
-    /// Hin: use Container::get_slice() to handle mutating variants.
+    /// Hint: use Container::get_slice() to handle mutating variants.
     fn try_as_ref(&self) -> Result<&[T], &str> {
         match self {
             // ----- Simple Variants -----
@@ -36,11 +36,34 @@ impl<'a, T: Clone> Container<'a, T> {
             Container::ArcRwLockVec(_value) => Err("Attempted to get a reference from Container::ArcRwLockVec without the proper lock."),
         }
     }
+
+    /// Returns true if the as_ref() function is guaranteed to succeed.
+    /// Returns false if the container is a mutating variant.
+    pub fn as_ref_is_safe(&self) -> bool {
+        matches!(self,
+            Container::Empty |
+            Container::Box(_) |
+            Container::Vec(_) |
+            Container::Ref(_) |
+            Container::Cow(_) |
+            Container::Rc(_) |
+            Container::Arc(_) |
+            Container::RefBox(_) |
+            Container::RefVec(_) |
+            Container::CowBox(_) |
+            Container::CowVec(_) |
+            Container::RcBox(_) |
+            Container::RcVec(_) |
+            Container::ArcBox(_) |
+            Container::ArcVec(_)
+        )
+    }
 }
 
 impl<'a, T: Clone> AsRef<[T]> for Container<'a, T> {
     /// Returns a borrowed slice &[] from the container. 
     /// Will panic if the container is a mutating variant.
+    /// Hint: use Container::get_slice() to handle mutating variants.
     fn as_ref(&self) -> &[T] {
         self.try_as_ref().unwrap()
     }
@@ -51,6 +74,7 @@ impl<'a, T: Clone> Deref for Container<'a, T> {
     type Target = [T]; 
     /// Returns a borrowed slice &[] from the container. 
     /// Will panic if the container is a mutating variant.
+    /// Hint: use Container::get_slice() to handle mutating variants.
     fn deref(&self) -> &Self::Target {
         self.as_ref()
     }
@@ -83,7 +107,7 @@ pub enum LockGuard<'a, T> {
 impl<'a, T: Clone> Container<'a, T> {
     /// Returns a borrowed slice &[] from the container, or an error if the container misbehaves.
     /// Returns a lock guard if the container is a mutating variant.
-    /// Hint: The caller must hold onto the lock guard for the duration of slice usage.
+    /// Hint: The caller must hold onto the lock guard for the duration of reading from the slice.
     pub fn get_slice(&'a self) -> Result<(&'a [T], Option<LockGuard<'a, T>>), LockError> {
         match self {
             // ----- Mutating Variants -----
