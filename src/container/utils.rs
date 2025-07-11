@@ -1,9 +1,13 @@
 use super::core::Container;
 use std::ops::Deref;
+use std::sync::{MutexGuard, RwLockReadGuard, PoisonError};
 
-// --- AsRef and Deref implementations ---
+// --- AsRef and similar implementations ---
 
 impl<'a, T: Clone> Container<'a, T> {
+    /// Returns a borrowed slice &[] from the container if it is an immutable variant. 
+    /// Returns an error if the container is a mutating variant.
+    /// Hin: use Container::get_slice() to handle mutating variants.
     fn try_as_ref(&self) -> Result<&[T], &str> {
         match self {
             // ----- Simple Variants -----
@@ -24,17 +28,19 @@ impl<'a, T: Clone> Container<'a, T> {
             Container::ArcBox(value) => Ok(value.as_ref().as_ref()),
             Container::ArcVec(value) => Ok(value.as_ref().as_ref()),
             // ----- Mutating Variants -----
-            Container::RcRefCellBox(_value) => Err("Attempted to get a reference from a RcRefCellBox without the proper lock."),
-            Container::RcRefCellVec(_value) => Err("Attempted to get a reference from a RcRefCellVec without the proper lock."),
-            Container::ArcMutexBox(_value) => Err("Attempted to get a reference from a ArcMutexBox without the proper lock."),
-            Container::ArcMutexVec(_value) => Err("Attempted to get a reference from a ArcMutexVec without the proper lock."),
-            Container::ArcRwLockBox(_value) => Err("Attempted to get a reference from a ArcRwLockBox without the proper lock."),
-            Container::ArcRwLockVec(_value) => Err("Attempted to get a reference from a ArcRwLockVec without the proper lock."),
+            Container::RcRefCellBox(_value) => Err("Attempted to get a reference from Container::RcRefCellBox without the proper lock."),
+            Container::RcRefCellVec(_value) => Err("Attempted to get a reference from Container::RcRefCellVec without the proper lock."),
+            Container::ArcMutexBox(_value) => Err("Attempted to get a reference from Container::ArcMutexBox without the proper lock."),
+            Container::ArcMutexVec(_value) => Err("Attempted to get a reference from Container::ArcMutexVec without the proper lock."),
+            Container::ArcRwLockBox(_value) => Err("Attempted to get a reference from Container::ArcRwLockBox without the proper lock."),
+            Container::ArcRwLockVec(_value) => Err("Attempted to get a reference from Container::ArcRwLockVec without the proper lock."),
         }
     }
 }
 
 impl<'a, T: Clone> AsRef<[T]> for Container<'a, T> {
+    /// Returns a borrowed slice &[] from the container. 
+    /// Will panic if the container is a mutating variant.
     fn as_ref(&self) -> &[T] {
         self.try_as_ref().unwrap()
     }
@@ -43,14 +49,12 @@ impl<'a, T: Clone> AsRef<[T]> for Container<'a, T> {
 impl<'a, T: Clone> Deref for Container<'a, T> {
     // all variants dereference to a slice
     type Target = [T]; 
+    /// Returns a borrowed slice &[] from the container. 
+    /// Will panic if the container is a mutating variant.
     fn deref(&self) -> &Self::Target {
         self.as_ref()
     }
 }
-
-// --- Lock guard enum for uniform locking API ---
-
-use std::sync::{MutexGuard, RwLockReadGuard, PoisonError};
 
 #[derive(Debug)]
 pub enum LockError {
@@ -77,8 +81,9 @@ pub enum LockGuard<'a, T> {
 // --- Easy slice access implementation ---
 
 impl<'a, T: Clone> Container<'a, T> {
-    /// Gets a slice reference along with an optional lock guard.
-    /// The caller must hold onto the lock guard for the duration of slice usage.
+    /// Returns a borrowed slice &[] from the container, or an error if the container misbehaves.
+    /// Returns a lock guard if the container is a mutating variant.
+    /// Hint: The caller must hold onto the lock guard for the duration of slice usage.
     pub fn get_slice(&'a self) -> Result<(&'a [T], Option<LockGuard<'a, T>>), LockError> {
         match self {
             // ----- Mutating Variants -----
@@ -208,7 +213,10 @@ impl<'a, T: Clone> Container<'a, T> {
 
     /// Returns true if the container is empty
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        match self {
+            Container::Empty => true,
+            _ => self.len() == 0,
+        }
     }
 
     /// Converts the container to an owned Vec<T>.
