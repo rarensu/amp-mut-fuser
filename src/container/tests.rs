@@ -1,233 +1,225 @@
-// This file contains all unit tests for the Container enum
+// This file contains unit tests for the Container enum
 // and its trait implementations.
 
-// Note: When container/mod.rs is set up with `pub use super::core::Container;`
-// and `#[cfg(test)] mod tests;`, the tests here can use `use crate::container::Container;`
-// or `use super::Container;` if `mod.rs` re-exports `Container` from `core`.
-// For now, assuming `crate::container::Container` will be the path once `mod.rs` is set up.
-// If not, `super::core::Container` or `crate::container::core::Container` might be needed.
-
-use crate::container::Container; // Assuming Container is re-exported by src/container/mod.rs
+use crate::container::Container;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq)]
-struct MyStruct {
-    id: i32,
-    data: String,
-}
+#[cfg(test)]
+mod u8 {
+    use super::*;
 
-// --- Tests for Container<'a, u8> ---
-#[test]
-fn container_clone_slice() {
-    let data_vec: Vec<u8> = vec![1, 2, 3];
-    let container1: Container<'_, u8> = Container::from(data_vec.clone()); // This will be Container::Vec
-    let container2 = container1.clone();
-    assert_eq!(container1.as_ref(), container2.as_ref());
-    match (&container1, &container2) {
-        (Container::Vec(v1), Container::Vec(v2)) => { // Expect Vec after cloning Vec
-            assert_ne!(v1.as_ptr(), v2.as_ptr(), "Cloned Vec<u8> should have different pointers");
+    #[test]
+    fn container_clone_slice() {
+        let data_vec: Vec<u8> = vec![1, 2, 3];
+        let container1: Container<'_, u8> = Container::from(data_vec.clone()); // This will be Container::Vec
+        let container2 = container1.clone();
+        assert_eq!(container1.as_ref(), container2.as_ref());
+        match (&container1, &container2) {
+            (Container::Vec(v1), Container::Vec(v2)) => { // Expect Vec after cloning Vec
+                assert_ne!(v1.as_ptr(), v2.as_ptr(), "Cloned Vec<u8> should have different pointers");
+            }
+            _ => panic!("Expected Vec variants for Container::from(Vec<u8>) clone"),
         }
-        _ => panic!("Expected Vec variants for Container::from(Vec<u8>) clone"),
+
+        let borrowed_slice: &[u8] = &[4,5,6];
+        let c_borrowed1 : Container<'_, u8> = Container::Ref(borrowed_slice);
+        let c_borrowed2 = c_borrowed1.clone();
+        assert_eq!(c_borrowed1.as_ref(), c_borrowed2.as_ref());
+        assert_eq!(c_borrowed1.as_ref().as_ptr(), c_borrowed2.as_ref().as_ptr());
+
+
+        let shared_slice_arc: Arc<[u8]> = Arc::new([7,8,9]);
+        let c_shared1 : Container<'_, u8> = Container::Arc(shared_slice_arc.clone());
+        let c_shared2 = c_shared1.clone();
+        if let Container::Arc(s2_arc) = &c_shared2 {
+            assert!(Arc::ptr_eq(s2_arc, &shared_slice_arc));
+        } else { panic!("Expected shared after clone"); }
     }
 
-    let borrowed_slice: &[u8] = &[4,5,6];
-    let c_borrowed1 : Container<'_, u8> = Container::Ref(borrowed_slice);
-    let c_borrowed2 = c_borrowed1.clone();
-    assert_eq!(c_borrowed1.as_ref(), c_borrowed2.as_ref());
-    assert_eq!(c_borrowed1.as_ref().as_ptr(), c_borrowed2.as_ref().as_ptr());
+    #[test]
+    fn container_deref_slice() {
+        let data: &[u8] = &[1, 2, 3, 4, 5];
+        let container: Container<'_, u8> = Container::from(data);
+        assert_eq!(container.len(), 5); // Test Deref to [u8]
+        assert_eq!(container[0], 1);
+    }
 
+    #[test]
+    fn borrowed_variants() {
+        let data_slice: &'static [u8] = &[1, 2, 3];
+        let data_box: Box<[u8]> = Box::new([4, 5, 6]);
+        let data_vec: Vec<u8> = vec![7, 8, 9];
 
-    let shared_slice_arc: Arc<[u8]> = Arc::new([7,8,9]);
-    let c_shared1 : Container<'_, u8> = Container::Arc(shared_slice_arc.clone());
-    let c_shared2 = c_shared1.clone();
-    if let Container::Arc(s2_arc) = &c_shared2 {
-        assert!(Arc::ptr_eq(s2_arc, &shared_slice_arc));
-    } else { panic!("Expected shared after clone"); }
-}
+        // Container::Ref
+        let container_ref = Container::Ref(data_slice);
+        assert_eq!(container_ref.as_ref(), data_slice);
 
-#[test]
-fn container_deref_slice() {
-    let data: &[u8] = &[1, 2, 3, 4, 5];
-    let container: Container<'_, u8> = Container::from(data);
-    assert_eq!(container.len(), 5); // Test Deref to [u8]
-    assert_eq!(container[0], 1);
-}
+        // Container::Cow (borrowed)
+        let container_cow_borrowed = Container::Cow(std::borrow::Cow::Borrowed(data_slice));
+        assert_eq!(container_cow_borrowed.as_ref(), data_slice);
 
-#[test]
-fn test_borrowed_variants() {
-    let data_slice: &'static [u8] = &[1, 2, 3];
-    let data_box: Box<[u8]> = Box::new([4, 5, 6]);
-    let data_vec: Vec<u8> = vec![7, 8, 9];
+        // Container::RefBox
+        let container_ref_box = Container::RefBox(&data_box);
+        assert_eq!(container_ref_box.as_ref(), data_box.as_ref());
 
-    // Container::Ref
-    let container_ref = Container::Ref(data_slice);
-    assert_eq!(container_ref.as_ref(), data_slice);
+        // Container::RefVec
+        let container_ref_vec = Container::RefVec(&data_vec);
+        assert_eq!(container_ref_vec.as_ref(), data_vec.as_slice());
 
-    // Container::Cow (borrowed)
-    let container_cow_borrowed = Container::Cow(std::borrow::Cow::Borrowed(data_slice));
-    assert_eq!(container_cow_borrowed.as_ref(), data_slice);
+        // Container::CowBox (borrowed)
+        let container_cow_box_borrowed = Container::CowBox(std::borrow::Cow::Borrowed(&data_box));
+        assert_eq!(container_cow_box_borrowed.as_ref(), data_box.as_ref());
 
-    // Container::RefBox
-    let container_ref_box = Container::RefBox(&data_box);
-    assert_eq!(container_ref_box.as_ref(), data_box.as_ref());
+        // Container::CowVec (borrowed)
+        let container_cow_vec_borrowed = Container::CowVec(std::borrow::Cow::Borrowed(&data_vec));
+        assert_eq!(container_cow_vec_borrowed.as_ref(), data_vec.as_slice());
+    }
 
-    // Container::RefVec
-    let container_ref_vec = Container::RefVec(&data_vec);
-    assert_eq!(container_ref_vec.as_ref(), data_vec.as_slice());
+    #[test]
+    fn owned_variants() {
+        let data_box_orig: Box<[u8]> = Box::new([1, 2, 3]);
+        let data_vec_orig: Vec<u8> = vec![4, 5, 6];
+        let data_rc_orig: std::rc::Rc<[u8]> = std::rc::Rc::new([7, 8, 9]);
+        let data_arc_orig: Arc<[u8]> = Arc::new([10, 11, 12]);
 
-    // Container::CowBox (borrowed)
-    let container_cow_box_borrowed = Container::CowBox(std::borrow::Cow::Borrowed(&data_box));
-    assert_eq!(container_cow_box_borrowed.as_ref(), data_box.as_ref());
+        // Container::Box
+        let container_box = Container::from(data_box_orig.clone());
+        assert_eq!(container_box.try_as_ref().unwrap(), data_box_orig.as_ref());
 
-    // Container::CowVec (borrowed)
-    let container_cow_vec_borrowed = Container::CowVec(std::borrow::Cow::Borrowed(&data_vec));
-    assert_eq!(container_cow_vec_borrowed.as_ref(), data_vec.as_slice());
-}
+        // Container::Vec
+        let container_vec = Container::from(data_vec_orig.clone());
+        assert_eq!(container_vec.try_as_ref().unwrap(), data_vec_orig.as_slice());
 
-#[test]
-fn test_owned_variants() {
-    let data_box_orig: Box<[u8]> = Box::new([1, 2, 3]);
-    let data_vec_orig: Vec<u8> = vec![4, 5, 6];
-    let data_rc_orig: std::rc::Rc<[u8]> = std::rc::Rc::new([7, 8, 9]);
-    let data_arc_orig: Arc<[u8]> = Arc::new([10, 11, 12]);
+        // Container::Cow (owned from Vec)
+        let container_cow_owned_vec = Container::Cow(std::borrow::Cow::Owned(data_vec_orig.clone()));
+        assert_eq!(container_cow_owned_vec.try_as_ref().unwrap(), data_vec_orig.as_slice());
 
-    // Container::Box
-    let container_box = Container::from(data_box_orig.clone());
-    assert_eq!(container_box.try_as_ref().unwrap(), data_box_orig.as_ref());
+        // Container::Cow (owned from Box) - Note: Cow doesn't directly take Box<[T]>, so we convert to Vec<T> first for owned Cow
+        let container_cow_owned_box_as_vec = Container::Cow(std::borrow::Cow::Owned(data_box_orig.to_vec()));
+        assert_eq!(container_cow_owned_box_as_vec.try_as_ref().unwrap(), data_box_orig.as_ref());
 
-    // Container::Vec
-    let container_vec = Container::from(data_vec_orig.clone());
-    assert_eq!(container_vec.try_as_ref().unwrap(), data_vec_orig.as_slice());
+        // Container::Rc
+        let container_rc = Container::from(data_rc_orig.clone());
+        assert_eq!(container_rc.try_as_ref().unwrap(), data_rc_orig.as_ref());
 
-    // Container::Cow (owned from Vec)
-    let container_cow_owned_vec = Container::Cow(std::borrow::Cow::Owned(data_vec_orig.clone()));
-    assert_eq!(container_cow_owned_vec.try_as_ref().unwrap(), data_vec_orig.as_slice());
+        // Container::Arc
+        let container_arc = Container::from(data_arc_orig.clone());
+        assert_eq!(container_arc.try_as_ref().unwrap(), data_arc_orig.as_ref());
 
-    // Container::Cow (owned from Box) - Note: Cow doesn't directly take Box<[T]>, so we convert to Vec<T> first for owned Cow
-    let container_cow_owned_box_as_vec = Container::Cow(std::borrow::Cow::Owned(data_box_orig.to_vec()));
-    assert_eq!(container_cow_owned_box_as_vec.try_as_ref().unwrap(), data_box_orig.as_ref());
+        // Container::RcBox
+        let container_rc_box = Container::RcBox(std::rc::Rc::new(data_box_orig.clone()));
+        assert_eq!(container_rc_box.try_as_ref().unwrap(), data_box_orig.as_ref());
 
-    // Container::Rc
-    let container_rc = Container::from(data_rc_orig.clone());
-    assert_eq!(container_rc.try_as_ref().unwrap(), data_rc_orig.as_ref());
+        // Container::RcVec
+        let container_rc_vec = Container::RcVec(std::rc::Rc::new(data_vec_orig.clone()));
+        assert_eq!(container_rc_vec.try_as_ref().unwrap(), data_vec_orig.as_slice());
 
-    // Container::Arc
-    let container_arc = Container::from(data_arc_orig.clone());
-    assert_eq!(container_arc.try_as_ref().unwrap(), data_arc_orig.as_ref());
+        // Container::ArcBox
+        let container_arc_box = Container::ArcBox(Arc::new(data_box_orig.clone()));
+        assert_eq!(container_arc_box.try_as_ref().unwrap(), data_box_orig.as_ref());
 
-    // Container::RcBox
-    let container_rc_box = Container::RcBox(std::rc::Rc::new(data_box_orig.clone()));
-    assert_eq!(container_rc_box.try_as_ref().unwrap(), data_box_orig.as_ref());
+        // Container::ArcVec
+        let container_arc_vec = Container::ArcVec(Arc::new(data_vec_orig.clone()));
+        assert_eq!(container_arc_vec.try_as_ref().unwrap(), data_vec_orig.as_slice());
+    }
 
-    // Container::RcVec
-    let container_rc_vec = Container::RcVec(std::rc::Rc::new(data_vec_orig.clone()));
-    assert_eq!(container_rc_vec.try_as_ref().unwrap(), data_vec_orig.as_slice());
+    #[test]
+    fn locking_variants_read() {
+        let data_box_orig: Box<[u8]> = Box::new([1, 2, 3]);
+        let data_vec_orig: Vec<u8> = vec![4, 5, 6];
 
-    // Container::ArcBox
-    let container_arc_box = Container::ArcBox(Arc::new(data_box_orig.clone()));
-    assert_eq!(container_arc_box.try_as_ref().unwrap(), data_box_orig.as_ref());
+        // Container::RcRefCellBox
+        let rc_ref_cell_box = std::rc::Rc::new(std::cell::RefCell::new(data_box_orig.clone()));
+        let container_rc_ref_cell_box: Container<'static, u8> = Container::from(rc_ref_cell_box.clone());
+        match container_rc_ref_cell_box.get_slice() {
+            Ok(guard) => assert_eq!(guard.0, data_box_orig.as_ref()),
+            Err(_) => panic!("Expected Ok for RcRefCellBox get_slice"),
+        };
 
-    // Container::ArcVec
-    let container_arc_vec = Container::ArcVec(Arc::new(data_vec_orig.clone()));
-    assert_eq!(container_arc_vec.try_as_ref().unwrap(), data_vec_orig.as_slice());
-}
+        // Container::RcRefCellVec
+        let rc_ref_cell_vec = std::rc::Rc::new(std::cell::RefCell::new(data_vec_orig.clone()));
+        let container_rc_ref_cell_vec: Container<'static, u8> = Container::from(rc_ref_cell_vec.clone());
+        match container_rc_ref_cell_vec.get_slice() {
+            Ok(guard) => assert_eq!(guard.0, data_vec_orig.as_slice()),
+            Err(_) => panic!("Expected Ok for RcRefCellVec get_slice"),
+        };
 
-#[test]
-fn test_mutating_variants_read() {
-    let data_box_orig: Box<[u8]> = Box::new([1, 2, 3]);
-    let data_vec_orig: Vec<u8> = vec![4, 5, 6];
+        // Container::ArcMutexBox
+        let arc_mutex_box = Arc::new(std::sync::Mutex::new(data_box_orig.clone()));
+        let container_arc_mutex_box: Container<'static, u8> = Container::from(arc_mutex_box.clone());
+        match container_arc_mutex_box.get_slice() {
+            Ok(guard) => assert_eq!(guard.0, data_box_orig.as_ref()),
+            Err(_) => panic!("Expected Ok for ArcMutexBox get_slice"),
+        };
 
-    // Container::RcRefCellBox
-    let rc_ref_cell_box = std::rc::Rc::new(std::cell::RefCell::new(data_box_orig.clone()));
-    let container_rc_ref_cell_box: Container<'static, u8> = Container::from(rc_ref_cell_box.clone());
-    match container_rc_ref_cell_box.get_slice() {
-        Ok(guard) => assert_eq!(guard.0, data_box_orig.as_ref()),
-        Err(_) => panic!("Expected Ok for RcRefCellBox get_slice"),
-    };
+        // Container::ArcMutexVec
+        let arc_mutex_vec = Arc::new(std::sync::Mutex::new(data_vec_orig.clone()));
+        let container_arc_mutex_vec: Container<'static, u8> = Container::from(arc_mutex_vec.clone());
+        match container_arc_mutex_vec.get_slice() {
+            Ok(guard) => assert_eq!(guard.0, data_vec_orig.as_slice()),
+            Err(_) => panic!("Expected Ok for ArcMutexVec get_slice"),
+        };
 
-    // Container::RcRefCellVec
-    let rc_ref_cell_vec = std::rc::Rc::new(std::cell::RefCell::new(data_vec_orig.clone()));
-    let container_rc_ref_cell_vec: Container<'static, u8> = Container::from(rc_ref_cell_vec.clone());
-    match container_rc_ref_cell_vec.get_slice() {
-        Ok(guard) => assert_eq!(guard.0, data_vec_orig.as_slice()),
-        Err(_) => panic!("Expected Ok for RcRefCellVec get_slice"),
-    };
+        // Container::ArcRwLockBox
+        let arc_rw_lock_box = Arc::new(std::sync::RwLock::new(data_box_orig.clone()));
+        let container_arc_rw_lock_box: Container<'static, u8> = Container::from(arc_rw_lock_box.clone());
+        match container_arc_rw_lock_box.get_slice() {
+            Ok(guard) => assert_eq!(guard.0, data_box_orig.as_ref()),
+            Err(_) => panic!("Expected Ok for ArcRwLockBox get_slice"),
+        };
 
-    // Container::ArcMutexBox
-    let arc_mutex_box = Arc::new(std::sync::Mutex::new(data_box_orig.clone()));
-    let container_arc_mutex_box: Container<'static, u8> = Container::from(arc_mutex_box.clone());
-    match container_arc_mutex_box.get_slice() {
-        Ok(guard) => assert_eq!(guard.0, data_box_orig.as_ref()),
-        Err(_) => panic!("Expected Ok for ArcMutexBox get_slice"),
-    };
+        // Container::ArcRwLockVec
+        let arc_rw_lock_vec = Arc::new(std::sync::RwLock::new(data_vec_orig.clone()));
+        let container_arc_rw_lock_vec: Container<'static, u8> = Container::from(arc_rw_lock_vec.clone());
+        match container_arc_rw_lock_vec.get_slice() {
+            Ok(guard) => assert_eq!(guard.0, data_vec_orig.as_slice()),
+            Err(_) => panic!("Expected Ok for ArcRwLockVec get_slice"),
+        };
+    }
 
-    // Container::ArcMutexVec
-    let arc_mutex_vec = Arc::new(std::sync::Mutex::new(data_vec_orig.clone()));
-    let container_arc_mutex_vec: Container<'static, u8> = Container::from(arc_mutex_vec.clone());
-    match container_arc_mutex_vec.get_slice() {
-        Ok(guard) => assert_eq!(guard.0, data_vec_orig.as_slice()),
-        Err(_) => panic!("Expected Ok for ArcMutexVec get_slice"),
-    };
+    #[test]
+    fn locking_variants_try_as_ref_error() {
+        let data_box_orig: Box<[u8]> = Box::new([1, 2, 3]);
+        let data_vec_orig: Vec<u8> = vec![4, 5, 6];
 
-    // Container::ArcRwLockBox
-    let arc_rw_lock_box = Arc::new(std::sync::RwLock::new(data_box_orig.clone()));
-    let container_arc_rw_lock_box: Container<'static, u8> = Container::from(arc_rw_lock_box.clone());
-    match container_arc_rw_lock_box.get_slice() {
-        Ok(guard) => assert_eq!(guard.0, data_box_orig.as_ref()),
-        Err(_) => panic!("Expected Ok for ArcRwLockBox get_slice"),
-    };
+        // Container::RcRefCellBox
+        let rc_ref_cell_box = std::rc::Rc::new(std::cell::RefCell::new(data_box_orig.clone()));
+        let container_rc_ref_cell_box: Container<'static, u8> = Container::from(rc_ref_cell_box);
+        assert_eq!(container_rc_ref_cell_box.try_as_ref(), Err("Attempted to get a reference from Container::RcRefCellBox without the proper lock."));
 
-    // Container::ArcRwLockVec
-    let arc_rw_lock_vec = Arc::new(std::sync::RwLock::new(data_vec_orig.clone()));
-    let container_arc_rw_lock_vec: Container<'static, u8> = Container::from(arc_rw_lock_vec.clone());
-    match container_arc_rw_lock_vec.get_slice() {
-        Ok(guard) => assert_eq!(guard.0, data_vec_orig.as_slice()),
-        Err(_) => panic!("Expected Ok for ArcRwLockVec get_slice"),
-    };
-}
+        // Container::RcRefCellVec
+        let rc_ref_cell_vec = std::rc::Rc::new(std::cell::RefCell::new(data_vec_orig.clone()));
+        let container_rc_ref_cell_vec: Container<'static, u8> = Container::from(rc_ref_cell_vec);
+        assert_eq!(container_rc_ref_cell_vec.try_as_ref(), Err("Attempted to get a reference from Container::RcRefCellVec without the proper lock."));
 
-#[test]
-fn test_mutating_variants_try_as_ref_error() {
-    let data_box_orig: Box<[u8]> = Box::new([1, 2, 3]);
-    let data_vec_orig: Vec<u8> = vec![4, 5, 6];
+        // Container::ArcMutexBox
+        let arc_mutex_box = Arc::new(std::sync::Mutex::new(data_box_orig.clone()));
+        let container_arc_mutex_box: Container<'static, u8> = Container::from(arc_mutex_box);
+        assert_eq!(container_arc_mutex_box.try_as_ref(), Err("Attempted to get a reference from Container::ArcMutexBox without the proper lock."));
 
-    // Container::RcRefCellBox
-    let rc_ref_cell_box = std::rc::Rc::new(std::cell::RefCell::new(data_box_orig.clone()));
-    let container_rc_ref_cell_box: Container<'static, u8> = Container::from(rc_ref_cell_box);
-    assert_eq!(container_rc_ref_cell_box.try_as_ref(), Err("Attempted to get a reference from Container::RcRefCellBox without the proper lock."));
+        // Container::ArcMutexVec
+        let arc_mutex_vec = Arc::new(std::sync::Mutex::new(data_vec_orig.clone()));
+        let container_arc_mutex_vec: Container<'static, u8> = Container::from(arc_mutex_vec);
+        assert_eq!(container_arc_mutex_vec.try_as_ref(), Err("Attempted to get a reference from Container::ArcMutexVec without the proper lock."));
 
-    // Container::RcRefCellVec
-    let rc_ref_cell_vec = std::rc::Rc::new(std::cell::RefCell::new(data_vec_orig.clone()));
-    let container_rc_ref_cell_vec: Container<'static, u8> = Container::from(rc_ref_cell_vec);
-    assert_eq!(container_rc_ref_cell_vec.try_as_ref(), Err("Attempted to get a reference from Container::RcRefCellVec without the proper lock."));
+        // Container::ArcRwLockBox
+        let arc_rw_lock_box = Arc::new(std::sync::RwLock::new(data_box_orig.clone()));
+        let container_arc_rw_lock_box: Container<'static, u8> = Container::from(arc_rw_lock_box);
+        assert_eq!(container_arc_rw_lock_box.try_as_ref(), Err("Attempted to get a reference from Container::ArcRwLockBox without the proper lock."));
 
-    // Container::ArcMutexBox
-    let arc_mutex_box = Arc::new(std::sync::Mutex::new(data_box_orig.clone()));
-    let container_arc_mutex_box: Container<'static, u8> = Container::from(arc_mutex_box);
-    assert_eq!(container_arc_mutex_box.try_as_ref(), Err("Attempted to get a reference from Container::ArcMutexBox without the proper lock."));
-
-    // Container::ArcMutexVec
-    let arc_mutex_vec = Arc::new(std::sync::Mutex::new(data_vec_orig.clone()));
-    let container_arc_mutex_vec: Container<'static, u8> = Container::from(arc_mutex_vec);
-    assert_eq!(container_arc_mutex_vec.try_as_ref(), Err("Attempted to get a reference from Container::ArcMutexVec without the proper lock."));
-
-    // Container::ArcRwLockBox
-    let arc_rw_lock_box = Arc::new(std::sync::RwLock::new(data_box_orig.clone()));
-    let container_arc_rw_lock_box: Container<'static, u8> = Container::from(arc_rw_lock_box);
-    assert_eq!(container_arc_rw_lock_box.try_as_ref(), Err("Attempted to get a reference from Container::ArcRwLockBox without the proper lock."));
-
-    // Container::ArcRwLockVec
-    let arc_rw_lock_vec = Arc::new(std::sync::RwLock::new(data_vec_orig.clone()));
-    let container_arc_rw_lock_vec: Container<'static, u8> = Container::from(arc_rw_lock_vec);
-    assert_eq!(container_arc_rw_lock_vec.try_as_ref(), Err("Attempted to get a reference from Container::ArcRwLockVec without the proper lock."));
+        // Container::ArcRwLockVec
+        let arc_rw_lock_vec = Arc::new(std::sync::RwLock::new(data_vec_orig.clone()));
+        let container_arc_rw_lock_vec: Container<'static, u8> = Container::from(arc_rw_lock_vec);
+        assert_eq!(container_arc_rw_lock_vec.try_as_ref(), Err("Attempted to get a reference from Container::ArcRwLockVec without the proper lock."));
+    }
 }
 
 #[cfg(test)]
-mod specialized_tests {
+mod string {
     use crate::container::Container;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
-    use crate::container::specialized::SpecializedError;
+    use crate::container::specialized::ToStringError;
     use std::ffi::{OsStr, OsString};
     use std::sync::{Arc, Mutex, RwLock};
     use std::cell::RefCell;
@@ -243,7 +235,7 @@ mod specialized_tests {
 
     // --- Tests for From<String/&str> ---
     #[test]
-    fn test_from_string_for_container_u8() {
+    fn from_string_etc_for_container_u8() {
         let s = String::from(VALID_UTF8_STR);
         let container: Container<'_, u8> = Container::from(s.clone());
         assert_eq!(container.as_ref(), s.as_bytes());
@@ -251,10 +243,7 @@ mod specialized_tests {
             Container::Vec(_) => {} // Expected
             _ => panic!("Expected Container::Vec from String"),
         }
-    }
-
-    #[test]
-    fn test_from_str_ref_for_container_u8() {
+   
         let s_ref: &str = VALID_UTF8_STR;
         let container: Container<'_, u8> = Container::from(s_ref);
         assert_eq!(container.as_ref(), s_ref.as_bytes());
@@ -262,11 +251,7 @@ mod specialized_tests {
             Container::Ref(_) => {} // Expected
             _ => panic!("Expected Container::Ref from &str"),
         }
-    }
 
-    // --- Tests for From<OsString/&OsStr> ---
-    #[test]
-    fn test_from_os_string_for_container_u8() {
         let os_string = OsString::from(VALID_UTF8_STR);
         let container: Container<'_, u8> = Container::from(os_string.clone());
         assert_eq!(container.as_ref(), OsStr::new(VALID_UTF8_STR).as_bytes());
@@ -274,10 +259,7 @@ mod specialized_tests {
             Container::Vec(_) => {} // Expected
             _ => panic!("Expected Container::Vec from OsString"),
         }
-    }
 
-    #[test]
-    fn test_from_os_str_ref_for_container_u8() {
         let os_str_ref = OsStr::new(VALID_UTF8_STR);
         let container: Container<'_, u8> = Container::from(os_str_ref);
         assert_eq!(container.as_ref(), os_str_ref.as_bytes());
@@ -308,10 +290,9 @@ mod specialized_tests {
         ]
     }
 
-    // --- Tests for String conversion methods ---
 
     #[test]
-    fn test_to_str() {
+    fn to_str_etc() {
         // Valid UTF-8
         for container in create_non_locking_containers(VALID_UTF8_BYTES) {
             assert_eq!(container.to_str().unwrap(), VALID_UTF8_STR);
@@ -320,17 +301,7 @@ mod specialized_tests {
         for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
             assert!(container.to_str().is_err());
         }
-    }
 
-    #[test]
-    #[should_panic]
-    fn test_to_str_panic_on_locking() {
-        let container = create_locking_containers(VALID_UTF8_BYTES).remove(0);
-        let _ = container.to_str(); // Should panic
-    }
-
-    #[test]
-    fn test_try_to_str() {
         // Valid UTF-8, non-locking
         for container in create_non_locking_containers(VALID_UTF8_BYTES) {
             assert_eq!(container.try_to_str().unwrap(), VALID_UTF8_STR);
@@ -338,18 +309,30 @@ mod specialized_tests {
         // Invalid UTF-8, non-locking
         for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
             match container.try_to_str() {
-                Err(SpecializedError::Utf8(_)) => {} // Expected
+                Err(ToStringError::Utf8(_)) => {} // Expected
                 _ => panic!("Expected Utf8 error"),
             }
         }
+
+        // Non-locking
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.try_to_os_str().unwrap(), OsStr::new(VALID_UTF8_STR));
+        }
+        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.to_os_str(), OsStr::new(VALID_UTF8_STR));
+        }
+
         // Locking containers
         for container in create_locking_containers(VALID_UTF8_BYTES) {
-            assert_eq!(container.try_to_str(), Err(SpecializedError::LockRequired));
+            assert_eq!(container.try_to_os_str(), Err(ToStringError::LockRequired));
+        }
+        for container in create_locking_containers(VALID_UTF8_BYTES) {
+            assert_eq!(container.try_to_str(), Err(ToStringError::LockRequired));
         }
     }
 
     #[test]
-    fn test_get_str() {
+    fn get_str_etc() {
         // Valid UTF-8, non-locking
         for container in create_non_locking_containers(VALID_UTF8_BYTES) {
             let (s, guard_option) = container.get_str().unwrap();
@@ -359,7 +342,7 @@ mod specialized_tests {
         // Invalid UTF-8, non-locking
         for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
             match container.get_str() {
-                Err(SpecializedError::Utf8(_)) => {} // Expected
+                Err(ToStringError::Utf8(_)) => {} // Expected
                 _ => panic!("Expected Utf8 error for non-locking invalid"),
             }
         }
@@ -373,7 +356,7 @@ mod specialized_tests {
         // Invalid UTF-8, locking
         for container in create_locking_containers(INVALID_UTF8_BYTES) {
              match container.get_str() {
-                Err(SpecializedError::Utf8(_)) => {} // Expected
+                Err(ToStringError::Utf8(_)) => {} // Expected
                 res => panic!("Expected Utf8 error for locking invalid, got {:?}", res),
             }
         }
@@ -387,13 +370,10 @@ mod specialized_tests {
         }).join(); // Wait for panic to occur
         // Now try to use it (ArcMutexVec only)
         match container_mutex_poisoned.get_str() {
-            Err(SpecializedError::LockPoisoned) => {} // Expected
+            Err(ToStringError::LockPoisoned) => {} // Expected
             res => panic!("Expected LockPoisoned error, got {:?}", res),
         }; // Ensure temporary (Result with guard) is dropped
-    }
-
-    #[test]
-    fn test_get_string() {
+ 
         // Valid UTF-8, non-locking
         for container in create_non_locking_containers(VALID_UTF8_BYTES) {
             assert_eq!(container.get_string().unwrap(), VALID_UTF8_STR);
@@ -401,7 +381,7 @@ mod specialized_tests {
         // Invalid UTF-8, non-locking
         for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
             match container.get_string() {
-                Err(SpecializedError::FromUtf8(_)) => {} // Expected
+                Err(ToStringError::FromUtf8(_)) => {} // Expected
                 _ => panic!("Expected FromUtf8 error"),
             }
         }
@@ -412,14 +392,11 @@ mod specialized_tests {
         // Invalid UTF-8, locking
         for container in create_locking_containers(INVALID_UTF8_BYTES) {
              match container.get_string() {
-                Err(SpecializedError::FromUtf8(_)) => {} // Expected
+                Err(ToStringError::FromUtf8(_)) => {} // Expected
                 _ => panic!("Expected FromUtf8 error for locking invalid"),
             }
         }
-    }
 
-    #[test]
-    fn test_get_string_lossy() {
         // Valid UTF-8, non-locking
         for container in create_non_locking_containers(VALID_UTF8_BYTES) {
             assert_eq!(container.get_string_lossy().unwrap(), VALID_UTF8_STR);
@@ -438,36 +415,8 @@ mod specialized_tests {
         }
     }
 
-    // --- Tests for OsString conversion methods ---
-
     #[test]
-    fn test_to_os_str() {
-        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
-            assert_eq!(container.to_os_str(), OsStr::new(VALID_UTF8_STR));
-        }
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_to_os_str_panic_on_locking() {
-        let container = create_locking_containers(VALID_UTF8_BYTES).remove(0);
-        let _ = container.to_os_str(); // Should panic
-    }
-
-    #[test]
-    fn test_try_to_os_str() {
-        // Non-locking
-        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
-            assert_eq!(container.try_to_os_str().unwrap(), OsStr::new(VALID_UTF8_STR));
-        }
-        // Locking containers
-        for container in create_locking_containers(VALID_UTF8_BYTES) {
-            assert_eq!(container.try_to_os_str(), Err(SpecializedError::LockRequired));
-        }
-    }
-
-    #[test]
-    fn test_get_os_str() {
+    fn get_os_str_etc() {
         // Non-locking
         for container in create_non_locking_containers(VALID_UTF8_BYTES) {
             let (s, guard_option) = container.get_os_str().unwrap();
@@ -489,13 +438,10 @@ mod specialized_tests {
             panic!("intentional panic to poison rwlock");
         }).join();
         match container_rwlock_poisoned.get_os_str() {
-            Err(SpecializedError::LockPoisoned) => {} // Expected
+            Err(ToStringError::LockPoisoned) => {} // Expected
             res => panic!("Expected LockPoisoned error for RwLock, got {:?}", res),
         }; // Ensure temporary (Result with guard) is dropped
-    }
 
-    #[test]
-    fn test_get_os_string() {
         // Non-locking
         for container in create_non_locking_containers(VALID_UTF8_BYTES) {
             assert_eq!(container.get_os_string().unwrap(), OsString::from(VALID_UTF8_STR));

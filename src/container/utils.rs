@@ -6,8 +6,8 @@ use std::sync::{MutexGuard, RwLockReadGuard, PoisonError};
 
 impl<'a, T: Clone> Container<'a, T> {
     /// Returns a borrowed slice &[] from the container if it is an immutable variant. 
-    /// Returns an error if the container is a mutating variant.
-    /// Hint: use Container::get_slice() to handle mutating variants.
+    /// Returns an error if the container is a locking variant.
+    /// Hint: use Container::get_slice() to handle locking variants.
     pub fn try_as_ref(&self) -> Result<&[T], &str> {
         match self {
             // ----- Simple Variants -----
@@ -27,7 +27,7 @@ impl<'a, T: Clone> Container<'a, T> {
             Container::RcVec(value) => Ok(value.as_ref().as_ref()),
             Container::ArcBox(value) => Ok(value.as_ref().as_ref()),
             Container::ArcVec(value) => Ok(value.as_ref().as_ref()),
-            // ----- Mutating Variants -----
+            // ----- Locking Variants -----
             Container::RcRefCellBox(_value) => Err("Attempted to get a reference from Container::RcRefCellBox without the proper lock."),
             Container::RcRefCellVec(_value) => Err("Attempted to get a reference from Container::RcRefCellVec without the proper lock."),
             Container::ArcMutexBox(_value) => Err("Attempted to get a reference from Container::ArcMutexBox without the proper lock."),
@@ -38,7 +38,7 @@ impl<'a, T: Clone> Container<'a, T> {
     }
 
     /// Returns true if the as_ref() function is guaranteed to succeed.
-    /// Returns false if the container is a mutating variant.
+    /// Returns false if the container is a locking variant.
     pub fn as_ref_is_safe(&self) -> bool {
         matches!(self,
             Container::Empty |
@@ -62,8 +62,8 @@ impl<'a, T: Clone> Container<'a, T> {
 
 impl<'a, T: Clone> AsRef<[T]> for Container<'a, T> {
     /// Returns a borrowed slice &[] from the container. 
-    /// Will panic if the container is a mutating variant.
-    /// Hint: use Container::get_slice() to handle mutating variants.
+    /// Will panic if the container is a locking variant.
+    /// Hint: use Container::get_slice() to handle locking variants.
     fn as_ref(&self) -> &[T] {
         self.try_as_ref().unwrap()
     }
@@ -73,8 +73,8 @@ impl<'a, T: Clone> Deref for Container<'a, T> {
     // all variants dereference to a slice
     type Target = [T]; 
     /// Returns a borrowed slice &[] from the container. 
-    /// Will panic if the container is a mutating variant.
-    /// Hint: use Container::get_slice() to handle mutating variants.
+    /// Will panic if the container is a locking variant.
+    /// Hint: use Container::get_slice() to handle locking variants.
     fn deref(&self) -> &Self::Target {
         self.as_ref()
     }
@@ -106,11 +106,11 @@ pub enum LockGuard<'a, T> {
 
 impl<'a, T: Clone> Container<'a, T> {
     /// Returns a borrowed slice &[] from the container, or an error if the container misbehaves.
-    /// Returns a lock guard if the container is a mutating variant.
+    /// Returns a lock guard if the container is a locking variant.
     /// Hint: The caller must hold onto the lock guard for the duration of reading from the slice.
     pub fn get_slice(&'a self) -> Result<(&'a [T], Option<LockGuard<'a, T>>), LockError> {
         match self {
-            // ----- Mutating Variants -----
+            // ----- Locking Variants -----
             Container::RcRefCellBox(value) => {
                 let guard = value.borrow();
                 let slice_ref = unsafe {
@@ -191,7 +191,7 @@ impl<'a, T: Clone> Clone for Container<'a, T> {
             Container::RcVec(value) => Container::RcVec(value.clone()),
             Container::ArcBox(value) => Container::ArcBox(value.clone()),
             Container::ArcVec(value) => Container::ArcVec(value.clone()),
-            // ----- Mutating Variants -----
+            // ----- Locking Variants -----
             Container::RcRefCellBox(value) => Container::RcRefCellBox(value.clone()),
             Container::RcRefCellVec(value) => Container::RcRefCellVec(value.clone()),
             Container::ArcMutexBox(value) => Container::ArcMutexBox(value.clone()),
@@ -225,7 +225,7 @@ impl<'a, T: Clone> Container<'a, T> {
             Container::RcVec(value) => value.len(),
             Container::ArcBox(value) => value.len(),
             Container::ArcVec(value) => value.len(),
-            // ----- Mutating Variants -----
+            // ----- Locking Variants -----
             Container::RcRefCellBox(value) => value.borrow().len(),
             Container::RcRefCellVec(value) => value.borrow().len(),
             Container::ArcMutexBox(value) => value.lock().unwrap().len(),
@@ -264,7 +264,7 @@ impl<'a, T: Clone> Container<'a, T> {
             Container::RcVec(value) => (**value).clone(),
             Container::ArcBox(value) => value.to_vec(),
             Container::ArcVec(value) => (**value).clone(),
-            // ----- Mutating Variants -----
+            // ----- Locking Variants -----
             Container::RcRefCellBox(value) => value.borrow().to_vec(),
             Container::RcRefCellVec(value) => value.borrow().clone(),
             Container::ArcMutexBox(value) => value.lock().unwrap().to_vec(),

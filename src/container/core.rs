@@ -39,7 +39,7 @@ pub enum Container<'a, T: Clone> {
     ArcBox(Arc<Box<[T]>>),
     /// A shared, immutable, heap-allocated vector.
     ArcVec(Arc<Vec<T>>),
-    // ----- Mutating Variants -----
+    // ----- Locking Variants -----
     /// A reusable, replaceable, heap-allocated slice.
     RcRefCellBox(Rc<RefCell<Box<[T]>>>),
     /// A reusable, growable, heap-allocated vector.
@@ -73,7 +73,7 @@ impl<'a, T: Clone> From<Rc<Box<[T]>>> for Container<'a, T> {fn from(value: Rc<Bo
 impl<'a, T: Clone> From<Rc<Vec<T>>> for Container<'a, T> {fn from(value: Rc<Vec<T>>) -> Self {Container::RcVec(value)}}
 impl<'a, T: Clone> From<Arc<Box<[T]>>> for Container<'a, T> {fn from(value: Arc<Box<[T]>>) -> Self {Container::ArcBox(value)}}
 impl<'a, T: Clone> From<Arc<Vec<T>>> for Container<'a, T> {fn from(value: Arc<Vec<T>>) -> Self {Container::ArcVec(value)}}
-// ----- Mutating Variants -----
+// ----- Locking Variants -----
 impl<'a, T: Clone> From<Rc<RefCell<Box<[T]>>>> for Container<'a, T> {fn from(value: Rc<RefCell<Box<[T]>>>) -> Self {Container::RcRefCellBox(value)}}
 impl<'a, T: Clone> From<Rc<RefCell<Vec<T>>>> for Container<'a, T> {fn from(value: Rc<RefCell<Vec<T>>>) -> Self {Container::RcRefCellVec(value)}}
 impl<'a, T: Clone> From<Arc<Mutex<Box<[T]>>>> for Container<'a, T> {fn from(value: Arc<Mutex<Box<[T]>>>) -> Self {Container::ArcMutexBox(value)}}
