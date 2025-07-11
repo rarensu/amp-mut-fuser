@@ -1,39 +1,42 @@
 use super::core::Container;
 use std::ops::Deref;
-use std::sync::{Arc,Mutex,RwLock};
-use std::borrow::Cow;
-use std::cell::RefCell;
 
 // --- AsRef and Deref implementations ---
 
-impl<'a, T: Clone> AsRef<[T]> for Container<'a, T> {
-    fn as_ref(&self) -> &[T] {
+impl<'a, T: Clone> Container<'a, T> {
+    fn try_as_ref(&self) -> Result<&[T], &str> {
         match self {
             // ----- Simple Variants -----
-            Container::Empty => &[], // the 'static zero-length slice of type T
-            Container::Box(value) => value.as_ref(),
-            Container::Vec(value) => value.as_ref(),
-            Container::Ref(value) => value,
-            Container::Cow(value) => value.as_ref(),
-            Container::Rc(value) => value.as_ref(),
-            Container::Arc(value) => value.as_ref(),
+            Container::Empty => Ok(&[]), // the 'static zero-length slice of type T
+            Container::Box(value) => Ok(value.as_ref()),
+            Container::Vec(value) => Ok(value.as_ref()),
+            Container::Ref(value) => Ok(value),
+            Container::Cow(value) => Ok(value.as_ref()),
+            Container::Rc(value) => Ok(value.as_ref()),
+            Container::Arc(value) => Ok(value.as_ref()),
             // ----- Compound Variants -----
-            Container::RefBox(value) => value /*?*/,
-            Container::RefVec(value) => value /*?*/,
-            Container::CowBox(value) => value /*?*/,
-            Container::CowVec(value) => value /*?*/,
-            Container::RcBox(value) => value /*?*/,
-            Container::RcVec(value) => value /*?*/,
-            Container::ArcBox(value) => value /*?*/,
-            Container::ArcVec(value) => value /*?*/,
+            Container::RefBox(value) => Ok(value.as_ref()),
+            Container::RefVec(value) => Ok(value.as_ref()),
+            Container::CowBox(value) => Ok(value.as_ref().as_ref()),
+            Container::CowVec(value) => Ok(value.as_ref().as_ref()),
+            Container::RcBox(value) => Ok(value.as_ref().as_ref()),
+            Container::RcVec(value) => Ok(value.as_ref().as_ref()),
+            Container::ArcBox(value) => Ok(value.as_ref().as_ref()),
+            Container::ArcVec(value) => Ok(value.as_ref().as_ref()),
             // ----- Mutating Variants -----
-            Container::RcRefCellBox(value) => value /*?*/,
-            Container::RcRefCellVec(value) => value /*?*/,
-            Container::ArcMutexBox(value) => value /*?*/,
-            Container::ArcMutexVec(value) => value /*?*/,
-            Container::ArcRwLockBox(value) => value /*?*/,
-            Container::ArcRwLockVec(value) => value /*?*/,
+            Container::RcRefCellBox(_value) => Err("Attempted to get a reference from a RcRefCellBox without the proper lock."),
+            Container::RcRefCellVec(_value) => Err("Attempted to get a reference from a RcRefCellVec without the proper lock."),
+            Container::ArcMutexBox(_value) => Err("Attempted to get a reference from a ArcMutexBox without the proper lock."),
+            Container::ArcMutexVec(_value) => Err("Attempted to get a reference from a ArcMutexVec without the proper lock."),
+            Container::ArcRwLockBox(_value) => Err("Attempted to get a reference from a ArcRwLockBox without the proper lock."),
+            Container::ArcRwLockVec(_value) => Err("Attempted to get a reference from a ArcRwLockVec without the proper lock."),
         }
+    }
+}
+
+impl<'a, T: Clone> AsRef<[T]> for Container<'a, T> {
+    fn as_ref(&self) -> &[T] {
+        self.try_as_ref().unwrap()
     }
 }
 
@@ -45,41 +48,7 @@ impl<'a, T: Clone> Deref for Container<'a, T> {
     }
 }
 
-// --- Generic Clone implementation ---
-
-// Clone for Container<T> where T is Clone
-impl<'a, T: Clone> Clone for Container<'a, T> {
-    fn clone(&self) -> Self {
-        match self {
-            // ----- Simple Variants -----
-            Container::Empty => &[], // the 'static zero-length slice of type T
-            Container::Box(value) => Container::Box(value /*?*/ ),
-            Container::Vec(value) => Container::Vec(value /*?*/ ),
-            Container::Ref(value) => Container::Ref(value),
-            Container::Cow(value) => Container::Cow(value /*?*/ ),
-            Container::Rc(value) => Container::Rc(value /*?*/ ),
-            Container::Arc(value) => Container::Arc(value /*?*/ ),
-            // ----- Compound Variants -----
-            Container::RefBox(value) => Container::RefBox(value),
-            Container::RefVec(value) => Container::RefVec(value),
-            Container::CowBox(value) => Container::CowBox(value /*?*/ ),
-            Container::CowVec(value) => Container::CowVec(value /*?*/ ),
-            Container::RcBox(value) => Container::RcBox(value /*?*/ ),
-            Container::RcVec(value) => Container::RcVec(value /*?*/ ),
-            Container::ArcBox(value) => Container::ArcBox(value /*?*/ ),
-            Container::ArcVec(value) => Container::ArcVec(value /*?*/ ),
-            // ----- Mutating Variants -----
-            Container::RcRefCellBox(value) => Container::RcRefCellBox(value /*?*/ ),
-            Container::RcRefCellVec(value) => Container::RcRefCellVec(value /*?*/ ),
-            Container::ArcMutexBox(value) => Container::ArcMutexBox(value /*?*/ ),
-            Container::ArcMutexVec(value) => Container::ArcMutexVec(value /*?*/ ),
-            Container::ArcRwLockBox(value) => Container::ArcRwLockBox(value /*?*/ ),
-            Container::ArcRwLockVec(value) => Container::ArcRwLockVec(value /*?*/ ),
-        }
-    }
-}
-
-// --- Lock guard enum for uniform API ---
+// --- Lock guard enum for uniform locking API ---
 
 use std::sync::{MutexGuard, RwLockReadGuard, PoisonError};
 
@@ -93,6 +62,8 @@ impl<T> From<PoisonError<T>> for LockError {
         LockError::Poisoned
     }
 }
+
+#[derive(Debug)]
 
 pub enum LockGuard<'a, T> {
     RefCellBox(std::cell::Ref<'a, Box<[T]>>),
@@ -110,23 +81,6 @@ impl<'a, T: Clone> Container<'a, T> {
     /// The caller must hold onto the lock guard for the duration of slice usage.
     pub fn get_slice(&'a self) -> Result<(&'a [T], Option<LockGuard<'a, T>>), LockError> {
         match self {
-            // ----- Simple Variants -----
-            Container::Empty => Ok((&[], None)),
-            Container::Box(value) => Ok((value.as_ref(), None)),
-            Container::Vec(value) => Ok((value.as_ref(), None)),
-            Container::Ref(value) => Ok((value, None)),
-            Container::Cow(value) => Ok((value.as_ref(), None)),
-            Container::Rc(value) => Ok((value.as_ref(), None)),
-            Container::Arc(value) => Ok((value.as_ref(), None)),
-            // ----- Compound Variants -----
-            Container::RefBox(value) => Ok((value.as_ref(), None)),
-            Container::RefVec(value) => Ok((value.as_ref(), None)),
-            Container::CowBox(value) => Ok((value.as_ref().as_ref(), None)),
-            Container::CowVec(value) => Ok((value.as_ref().as_ref(), None)),
-            Container::RcBox(value) => Ok((value.as_ref().as_ref(), None)),
-            Container::RcVec(value) => Ok((value.as_ref(), None)),
-            Container::ArcVec(value) => Ok((value.as_ref(), None)),
-            Container::ArcBox(value) => Ok((value.as_ref().as_ref(), None)),
             // ----- Mutating Variants -----
             Container::RcRefCellBox(value) => {
                 let guard = value.borrow();
@@ -176,6 +130,45 @@ impl<'a, T: Clone> Container<'a, T> {
                 };
                 Ok((slice_ref, Some(LockGuard::RwLockVec(guard))))
             },
+            // ----- Simple Variants -----
+            // ----- Compound Variants -----
+            _ => Ok((self.as_ref(), None)),
+        }
+    }
+}
+
+// --- Generic Clone implementation ---
+
+// Clone for Container<T> where T is Clone
+impl<'a, T: Clone> Clone for Container<'a, T> {
+    /// Creates a new container which wraps the same or identical underyling objects. 
+    /// This method will do its best to avoid a deep copy, but some copies are unavoidable. 
+    fn clone(&self) -> Self {
+        match self {
+            // ----- Simple Variants -----
+            Container::Empty => Container::Empty,
+            Container::Box(value) => Container::Box(value.clone()),
+            Container::Vec(value) => Container::Vec(value.clone()),
+            Container::Ref(value) => Container::Ref(value),
+            Container::Cow(value) => Container::Cow(value.clone()),
+            Container::Rc(value) => Container::Rc(value.clone()),
+            Container::Arc(value) => Container::Arc(value.clone()),
+            // ----- Compound Variants -----
+            Container::RefBox(value) => Container::RefBox(value),
+            Container::RefVec(value) => Container::RefVec(value),
+            Container::CowBox(value) => Container::CowBox(value.clone()),
+            Container::CowVec(value) => Container::CowVec(value.clone()),
+            Container::RcBox(value) => Container::RcBox(value.clone()),
+            Container::RcVec(value) => Container::RcVec(value.clone()),
+            Container::ArcBox(value) => Container::ArcBox(value.clone()),
+            Container::ArcVec(value) => Container::ArcVec(value.clone()),
+            // ----- Mutating Variants -----
+            Container::RcRefCellBox(value) => Container::RcRefCellBox(value.clone()),
+            Container::RcRefCellVec(value) => Container::RcRefCellVec(value.clone()),
+            Container::ArcMutexBox(value) => Container::ArcMutexBox(value.clone()),
+            Container::ArcMutexVec(value) => Container::ArcMutexVec(value.clone()),
+            Container::ArcRwLockBox(value) => Container::ArcRwLockBox(value.clone()),
+            Container::ArcRwLockVec(value) => Container::ArcRwLockVec(value.clone()),
         }
     }
 }
@@ -218,7 +211,8 @@ impl<'a, T: Clone> Container<'a, T> {
         self.len() == 0
     }
 
-    /// Converts the container to an owned Vec<T>
+    /// Converts the container to an owned Vec<T>.
+    /// This will most likely be a copy.
     pub fn to_vec(&self) -> Vec<T> {
         match self {
             // ----- Simple Variants -----
