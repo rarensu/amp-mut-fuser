@@ -24,9 +24,8 @@ mod u8 {
         let borrowed_slice: &[u8] = &[4,5,6];
         let c_borrowed1 : Container<'_, u8> = Container::Ref(borrowed_slice);
         let c_borrowed2 = c_borrowed1.clone();
-        assert_eq!(&*c_borrowed1.borrow(), &*c_borrowed2.borrow());
-        assert_eq!((&*c_borrowed1.borrow()).as_ptr(), (&*c_borrowed2.borrow()).as_ptr());
-
+        assert_eq!(*c_borrowed1.borrow(), *c_borrowed2.borrow());
+        assert_eq!((*c_borrowed1.borrow()).as_ptr(), (*c_borrowed2.borrow()).as_ptr());
 
         let shared_slice_arc: Arc<[u8]> = Arc::new([7,8,9]);
         let c_shared1 : Container<'_, u8> = Container::Arc(shared_slice_arc.clone());
@@ -277,7 +276,7 @@ mod string {
     }
 
     // --- Helper to create containers for testing ---
-    fn create_non_locking_containers<'a>(bytes: &'a [u8]) -> Vec<Container<'a, u8>> {
+    fn create_non_locking_containers(bytes: &[u8]) -> Vec<Container<'_, u8>> {
         vec![
             Container::Ref(bytes),
             Container::Vec(bytes.to_vec()),
@@ -289,7 +288,7 @@ mod string {
         ]
     }
 
-    fn create_locking_containers<'a>(bytes: &'a [u8]) -> Vec<Container<'a, u8>> {
+    fn create_locking_containers(bytes: &[u8]) -> Vec<Container<'_, u8>> {
         vec![
             Container::ArcMutexVec(Arc::new(Mutex::new(bytes.to_vec()))),
             Container::ArcRwLockVec(Arc::new(RwLock::new(bytes.to_vec()))),

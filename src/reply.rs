@@ -283,7 +283,8 @@ impl ReplyHandler {
     }
 
     /// Reply to a general request with data
-    pub fn data<'a>(self, data: Bytes<'a>) {
+    pub fn data(self, data: Bytes<'_>) {
+        // Bytes will panic if it is a locking variant and the borrow fails.
         self.send_ll(&ll::Response::new_slice(&data.borrow()));
     }
 
@@ -334,7 +335,7 @@ impl ReplyHandler {
             ll::INodeNo(entry.ino),
             ll::Generation(entry.generation.unwrap_or(1)),
             entry.file_ttl,
-            &entry.attr.into(),
+            &entry.attr,
             entry.attr_ttl,
 
         ));
@@ -404,6 +405,7 @@ impl ReplyHandler {
     #[cfg(feature = "abi-7-11")]
     /// Reply to a request with an ioctl
     pub fn ioctl(self, ioctl: Ioctl<'_>) {
+        // Bytes will panic if it is a locking variant and the borrow fails.
         self.send_ll(&ll::Response::new_ioctl(ioctl.result, &ioctl.data.borrow()));
     }
 
@@ -421,6 +423,7 @@ impl ReplyHandler {
         min_offset: i64,
     ) {
         let mut buf = DirentBuf::new(size);
+        // Alternatively, consider a panic if the borrow fails.
         let entries = match entries_list.try_borrow(){
             Ok(entries) => entries,
             Err(e) => {
@@ -453,6 +456,7 @@ impl ReplyHandler {
         min_offset: i64,
     ) {
         let mut buf = DirentPlusBuf::new(size);
+        // Alternatively, consider a panic if the borrow fails.
         let entries = match entries_plus_list.try_borrow(){
             Ok(entries) => entries,
             Err(e) => {
@@ -467,7 +471,7 @@ impl ReplyHandler {
             } else {
                 log::debug!("ReplyHandler::dirplus: processing item with offset #{}", dirent.offset);
             }
-            let full = buf.push(&dirent, &entry);
+            let full = buf.push(dirent, entry);
             if full {
                 log::debug!("ReplyHandler::dirplus: buffer full!");
                 break;
@@ -705,7 +709,7 @@ mod test {
                 ino: attr.ino,
                 generation: Some(0xaa),
                 file_ttl: ttl,
-                attr: attr,
+                attr,
                 attr_ttl: ttl,
             }
         );
@@ -911,7 +915,7 @@ mod test {
                 ino: attr.ino,
                 generation: Some(0xaa),
                 file_ttl: ttl,
-                attr: attr,
+                attr,
                 attr_ttl: ttl,
             },
             Open {

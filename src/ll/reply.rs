@@ -88,7 +88,7 @@ impl<'a> Response<'a> {
             attr_valid: attr_ttl.as_secs(),
             entry_valid_nsec: file_ttl.subsec_nanos(),
             attr_valid_nsec: attr_ttl.subsec_nanos(),
-            attr: fuse_attr_from_attr(&attr),
+            attr: fuse_attr_from_attr(attr),
         };
         Self::from_struct(d.as_bytes())
     }
@@ -413,7 +413,7 @@ impl DirentBuf {
         let name = ent.name.try_borrow()
             .expect("Borrow name from dirent failed");
         let header = abi::fuse_dirent {
-            ino: ent.ino.into(),
+            ino: ent.ino,
             off: ent.offset,
             namelen: name.len().try_into().expect("Name too long"),
             typ: mode_from_kind_and_perm(ent.kind, 0) >> 12,
@@ -450,7 +450,7 @@ impl DirentPlusBuf {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {
                 nodeid: y.ino,
-                generation: y.generation.unwrap_or(1).into(),
+                generation: y.generation.unwrap_or(1),
                 entry_valid: y.file_ttl.as_secs(),
                 attr_valid: y.attr_ttl.as_secs(),
                 entry_valid_nsec: y.file_ttl.subsec_nanos(),
@@ -566,7 +566,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr.into(), ttl);
+        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr, ttl);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected
