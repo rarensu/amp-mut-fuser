@@ -204,6 +204,7 @@ impl PollData {
         self.pending_replies.retain(|ph, rx| {
             match rx.try_recv() {
                 Ok(reply) => {
+                    log::debug!("Received reply for ph {}: {:?}", ph, reply);
                     self.last_reply.insert(*ph, reply);
                     false // Remove from pending_replies
                 }
@@ -211,7 +212,7 @@ impl PollData {
                     true // Keep in pending_replies
                 }
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    // Channel disconnected, maybe log this.
+                    log::debug!("Channel disconnected for ph {}", ph);
                     // The sender (Session) might have dropped.
                     false // Remove from pending_replies
                 }
