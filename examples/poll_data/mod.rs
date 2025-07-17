@@ -99,6 +99,8 @@ impl PollData {
                         self.pending_replies.insert(ph, rx);
                     }
                 }
+                // Unregister the poll handle after sending the notification
+                self.unregister_poll_handle(ph);
                 // Return the subset of requested events that are currently ready.
                 return Some(initial_events_to_send);
             }
@@ -145,6 +147,7 @@ impl PollData {
         let current_mask = self.ready_inodes.entry(ino).or_insert(0);
         *current_mask |= ready_events_mask;
 
+        let mut handles_to_unregister = Vec::new();
         if let Some(sender) = &self.ready_events_sender {
             if let Some(poll_handles) = self.inode_poll_handles.get(&ino) {
                 for &ph in poll_handles {
@@ -168,11 +171,15 @@ impl PollData {
                                 log::warn!("PollData: Failed to send poll readiness event for ino {}, ph {}. Channel might be disconnected.", ino, ph);
                             } else {
                                 self.pending_replies.insert(ph, rx);
+                                handles_to_unregister.push(ph);
                             }
                         }
                     }
                 }
             }
+        }
+        for ph in handles_to_unregister {
+            self.unregister_poll_handle(ph);
         }
     }
 

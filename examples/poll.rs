@@ -440,7 +440,7 @@ mod test {
         assert!(result.is_ok(), "FS poll method should succeed");
         assert_eq!(result.unwrap(), libc::POLLIN as u32, "Should return POLLIN as an initial event");
 
-        assert!(fs.poll_handler.registered_poll_handles.contains_key(&ph));
+        assert!(!fs.poll_handler.registered_poll_handles.contains_key(&ph));
 
         match rx_from_fs.try_recv() {
             Ok(Notification::Poll((poll, _))) => {
@@ -479,5 +479,6 @@ mod test {
             }
             _ => panic!("Producer marking inode ready should have triggered an event on the channel"),
         }
+        assert!(!fs_instance.poll_handler.registered_poll_handles.contains_key(&ph_to_test));
     }
 }
