@@ -293,8 +293,6 @@ impl ReplyHandler {
 
     /// Reply to a request with a newly opened file handle
     pub fn opened(self, open: Open) {
-        #[cfg(feature = "abi-7-40")]
-        assert_eq!(open.flags & FOPEN_PASSTHROUGH, 0);
         self.send_ll(&ll::Response::new_open(ll::FileHandle(open.fh), open.flags, 0))
     }
 
@@ -319,8 +317,6 @@ impl ReplyHandler {
 
     /// Reply to a request with a newle created file entry and its newly open file handle
     pub fn created(self, entry: Entry, open: Open) {
-        #[cfg(feature = "abi-7-40")]
-        assert_eq!(open.flags & FOPEN_PASSTHROUGH, 0);
         self.send_ll(&ll::Response::new_create(
             &entry.ttl,
             &entry.attr.into(),

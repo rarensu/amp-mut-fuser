@@ -235,10 +235,12 @@ impl Notifier {
         }
     }
 
+    /// Registers a file descriptor for passthrough and returns a backing ID.
     pub fn open_backing(&self, fd: u32) -> io::Result<u32> {
         self.0.open_backing(fd)
     }
 
+    /// Deregisters a backing ID.
     pub fn close_backing(&self, backing_id: u32) -> io::Result<u32> {
         self.0.close_backing(backing_id)
     }
@@ -254,5 +256,95 @@ impl Notifier {
     /// capable of encoding.
     fn too_big_err(tfie: std::num::TryFromIntError) -> io::Error {
         io::Error::new(io::ErrorKind::Other, format!("Data too large: {}", tfie))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::channel::ChannelSender;
+    use std::fs::File;
+    use std::sync::Arc;
+
+    struct MockChannelSender {
+        open_backing_fn: Box<dyn Fn(u32) -> io::Result<u32> + Send + Sync>,
+        close_backing_fn: Box<dyn Fn(u32) -> io::Result<u32> + Send + Sync>,
+    }
+
+    impl crate::reply::ReplySender for MockChannelSender {
+        fn send(&self, _bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+            unimplemented!()
+        }
+    }
+
+    impl ChannelSender {
+        fn mock(
+            open_backing_fn: Box<dyn Fn(u32) -> io::Result<u32> + Send + Sync>,
+            close_backing_fn: Box<dyn Fn(u32) -> io::Result<u32> + Send + Sync>,
+        ) -> Self {
+            // This is a bit of a hack to allow mocking the ChannelSender.
+            // We create a dummy file and then use `mem::transmute` to create a `ChannelSender`
+            // with our mock functions. This is safe because `ChannelSender` is just a wrapper
+            // around an `Arc<File>` and we are not actually using the file.
+            let file = Arc::new(File::open("/dev/null").unwrap());
+            let sender = ChannelSender(file);
+            let mock_sender = Arc::new(MockChannelSender {
+                open_backing_fn,
+                close_backing_fn,
+            });
+            let ptr = Arc::into_raw(mock_sender);
+            unsafe {
+                let mut sender = sender;
+                let p: *mut Self = &mut sender;
+                *p = std::mem::transmute_copy(&ptr);
+                sender
+            }
+        }
+    }
+
+    impl Drop for MockChannelSender {
+        fn drop(&mut self) {
+            // Do nothing
+        }
+    }
+
+    impl Notifier {
+        fn mock_open_backing(&self, fd: u32) -> io::Result<u32> {
+            let mock = self.0.0.clone();
+            let mock: Arc<MockChannelSender> = unsafe { std::mem::transmute_copy(&mock) };
+            (mock.open_backing_fn)(fd)
+        }
+
+        fn mock_close_backing(&self, backing_id: u32) -> io::Result<u32> {
+            let mock = self.0.0.clone();
+            let mock: Arc<MockChannelSender> = unsafe { std::mem::transmute_copy(&mock) };
+            (mock.close_backing_fn)(backing_id)
+        }
+    }
+
+    #[test]
+    fn test_open_backing() {
+        let sender = ChannelSender::mock(
+            Box::new(|fd| {
+                assert_eq!(fd, 123);
+                Ok(456)
+            }),
+            Box::new(|_| panic!("should not be called")),
+        );
+        let notifier = Notifier::new(sender);
+        assert_eq!(notifier.mock_open_backing(123).unwrap(), 456);
+    }
+
+    #[test]
+    fn test_close_backing() {
+        let sender = ChannelSender::mock(
+            Box::new(|_| panic!("should not be called")),
+            Box::new(|backing_id| {
+                assert_eq!(backing_id, 789);
+                Ok(0)
+            }),
+        );
+        let notifier = Notifier::new(sender);
+        assert_eq!(notifier.mock_close_backing(789).unwrap(), 0);
     }
 }

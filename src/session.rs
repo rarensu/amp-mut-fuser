@@ -261,34 +261,10 @@ impl<FS: Filesystem> Session<FS> {
             let mut work_done = false;
             // Check for outgoing Notifications (non-blocking)
             #[cfg(feature = "abi-7-11")]
-            if self.notify {
-                match self.nr.try_recv() {
-                    Ok(notification) => {
-                        debug!("Notification: {:?}", &notification);
-                        if let Notification::Stop = notification {
-                            // Filesystem says no more notifications.
-                            info!("Filesystem sent Stop notification; disabling notifications.");
-                            self.notify = false
-                        }
-                        if let Err(_) = self.notifier().notify(notification) {
-                            error!("Failed to send notification");
-                            // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-                            // ChannelSender SendError might mean the Filesystem didn't listen for the response.
-                        }
-                        work_done = true;
-                    }
-                    Err(crossbeam_channel::TryRecvError::Empty) => {
-                        // No poll events pending, proceed to check FUSE FD
-                    }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        // Filesystem's poll event sender side dropped.
-                        // This is not necessarily a fatal error for the session itself,
-                        // as FUSE requests can still be processed.
-                        warn!("Poll event channel disconnected by sender. No more poll events will be processed.");
-                        self.notify = false;
-                    }
-                }
+            if self.handle_notifications()? {
+                work_done = true;
             }
+
             if work_done {
                 // skip checking for incoming FUSE requests,
                 // to prioritize checking for additional outgoing messages
@@ -301,11 +277,11 @@ impl<FS: Filesystem> Session<FS> {
                         debug!("FUSE Fd Poll interrupted, will retry.");
                     } else {
                         error!("Error polling FUSE FD: {}", err);
-                        // Assume very bad. Stop the run. TODO: maybe some handling. 
+                        // Assume very bad. Stop the run. TODO: maybe some handling.
                         return Err(err);
                     }
-                },
-                Ok( ready) => {
+                }
+                Ok(ready) => {
                     if ready {
                         // Read a FUSE request (blocks until read succeeds)
                         match self.ch.receive(buf) {
@@ -322,7 +298,7 @@ impl<FS: Filesystem> Session<FS> {
                                         break; // Illegal request, quit loop
                                     }
                                 }
-                                work_done=true;
+                                work_done = true;
                             }
                             Err(err) => match err.raw_os_error() {
                                 Some(ENOENT) => {
@@ -355,10 +331,12 @@ impl<FS: Filesystem> Session<FS> {
                 // No actions taken this loop iteration.
                 // Sleep briefly to yield CPU.
                 std::thread::sleep(SYNC_SLEEP_INTERVAL);
-                // Do a heartbeat to let the Filesystem know that some time has passed. 
+                // Do a heartbeat to let the Filesystem know that some time has passed.
                 match FS::heartbeat(&mut self.filesystem) {
                     Ok(status) => {
-                        if let FsStatus::Stopped = status { break; }
+                        if let FsStatus::Stopped = status {
+                            break;
+                        }
                         // TODO: handle other cases
                     }
                     Err(e) => {
@@ -368,6 +346,42 @@ impl<FS: Filesystem> Session<FS> {
             }
         }
         Ok(())
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    fn handle_notifications(&mut self) -> io::Result<bool> {
+        if self.notify {
+            match self.nr.try_recv() {
+                Ok(notification) => {
+                    debug!("Notification: {:?}", &notification);
+                    if let Notification::Stop = notification {
+                        // Filesystem says no more notifications.
+                        info!("Filesystem sent Stop notification; disabling notifications.");
+                        self.notify = false
+                    }
+                    if let Err(_) = self.notifier().notify(notification) {
+                        error!("Failed to send notification");
+                        // TODO. Decide if error is fatal. ENODEV might mean unmounted.
+                        // ChannelSender SendError might mean the Filesystem didn't listen for the response.
+                    }
+                    Ok(true)
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    // No poll events pending, proceed to check FUSE FD
+                    Ok(false)
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    // Filesystem's poll event sender side dropped.
+                    // This is not necessarily a fatal error for the session itself,
+                    // as FUSE requests can still be processed.
+                    warn!("Poll event channel disconnected by sender. No more poll events will be processed.");
+                    self.notify = false;
+                    Ok(false)
+                }
+            }
+        } else {
+            Ok(false)
+        }
     }
 }
 

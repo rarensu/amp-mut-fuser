@@ -35,19 +35,19 @@ const TTL: Duration = Duration::from_secs(1); // 1 second
 
 // ----- BackingID -----
 
-/// A struct to hold a reference to previously opened File intended to be used for passthrough, 
-/// and the backing id for that file. 
+/// A struct to hold a reference to a previously opened File intended to be used for passthrough,
+/// and the backing id for that file.
 ///
-/// When working with backing IDs you need to ensure that they live "long enough".  A good practice
-/// is to create them in the Filesystem::open() impl, store them in the struct of your Filesystem
-/// impl, then drop them in the Filesystem::release() impl.  Dropping them immediately after
-/// sending them in the Filesystem::open() impl can lead to the kernel returning EIO when userspace
-/// attempts to access the file.
+/// When working with backing IDs you need to ensure that they live "long enough". A good practice
+/// is to create them in the `Filesystem::open()` impl, store them in the struct of your
+/// `Filesystem` impl, then drop them in the `Filesystem::release()` impl. Dropping them
+/// immediately after sending them in the `Filesystem::open()` impl can lead to the kernel
+/// returning EIO when userspace attempts to access the file.
 ///
-/// This is implemented as a safe wrapper around the backing_id field of the fuse_backing_map
-/// struct used by the ioctls involved in fd passthrough.  It has a Drop trait impl which sends
-/// a CloseBacking notification. It holds a reference on the notifier to allow it to
-/// make that call (if the notifier hasn't already been closed).
+/// This is implemented as a safe wrapper around the `backing_id` field of the
+/// `fuse_backing_map` struct used by the ioctls involved in fd passthrough. It has a `Drop`
+/// trait impl which sends a `CloseBacking` notification. It holds a reference on the notifier to
+/// allow it to make that call (if the notifier hasn't already been closed).
 #[derive(Debug)]
 pub struct BackingId {
     notifier: crossbeam_channel::Sender<Notification>,
@@ -74,51 +74,38 @@ impl Drop for BackingId {
 }
 
 
+/// A cache for `BackingId` objects.
+///
+/// This cache is designed to avoid creating more than one `BackingId` per file at a time. It
+/// uses a weak "by inode" hash table to map inode numbers to `BackingId`s. If a `BackingId`
+/// already exists for an inode, it is reused. Otherwise, a new one is created.
+///
+/// The cache also maintains a strong reference to the `BackingId` for each open file handle.
+/// This ensures that the `BackingId` is not dropped while it is still in use. The strong
+/// reference is dropped when the file is released.
 #[derive(Debug, Default)]
 struct BackingCache {
-    by_handle: HashMap<u64, Rc<BackingId>>,
     by_inode: HashMap<u64, Weak<BackingId>>,
-    next_fh: u64,
 }
 
 impl BackingCache {
-    fn next_fh(&mut self) -> u64 {
-        self.next_fh += 1;
-        self.next_fh
-    }
-
     /// Gets the existing BackingId for `ino` if it exists, or calls `callback` to create it.
     ///
-    /// Returns a unique file handle and the BackingID (possibly shared, possibly new).  The
-    /// returned file handle should be `put()` when you're done with it.
+    /// Returns the BackingID (possibly shared, possibly new). The caller is responsible for
+    /// keeping the `BackingId` alive for as long as it is needed.
     fn get_or(
         &mut self,
         ino: u64,
         callback: impl Fn() -> std::io::Result<BackingId>,
-    ) -> std::io::Result<(u64, Rc<BackingId>)> {
-        let fh = self.next_fh();
-
-        let id = if let Some(id) = self.by_inode.get(&ino).and_then(Weak::upgrade) {
+    ) -> std::io::Result<Rc<BackingId>> {
+        if let Some(id) = self.by_inode.get(&ino).and_then(Weak::upgrade) {
             eprintln!("HIT! reusing {id:?}");
-            id
+            Ok(id)
         } else {
             let id = Rc::new(callback()?);
             self.by_inode.insert(ino, Rc::downgrade(&id));
             eprintln!("MISS! new {id:?}");
-            id
-        };
-
-        self.by_handle.insert(fh, Rc::clone(&id));
-        Ok((fh, id))
-    }
-
-    /// Releases a file handle previously obtained from `get_or()`.  If this was a last user of a
-    /// particular BackingId then it will be dropped.
-    fn put(&mut self, fh: u64) {
-        eprintln!("Put fh {fh}");
-        match self.by_handle.remove(&fh) {
-            None => eprintln!("ERROR: Put fh {fh} but it wasn't found in cache!!\n"),
-            Some(id) => eprintln!("Put fh {fh}, was {id:?}\n"),
+            Ok(id)
         }
     }
 }
@@ -128,6 +115,8 @@ struct PassthroughFs {
     root_attr: FileAttr,
     passthrough_file_attr: FileAttr,
     backing_cache: BackingCache,
+    open_files: HashMap<u64, Rc<BackingId>>,
+    next_fh: u64,
 }
 
 impl PassthroughFs {
@@ -175,7 +164,14 @@ impl PassthroughFs {
             root_attr,
             passthrough_file_attr,
             backing_cache: Default::default(),
+            open_files: HashMap::new(),
+            next_fh: 0,
         }
+    }
+
+    fn next_fh(&mut self) -> u64 {
+        self.next_fh += 1;
+        self.next_fh
     }
 }
 
@@ -220,22 +216,28 @@ impl Filesystem for PassthroughFs {
             return Err(Errno::ENOENT);
         }
 
-        let (fh, id) = self
+        let id = self
             .backing_cache
             .get_or(ino, || {
                 let _file = File::open("/etc/os-release")?;
                 // TODO: Implement opening the backing file and returning appropriate
                 // information, possibly including a BackingId within the Open struct,
                 // or handle it through other means if fd-passthrough is intended here.
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "TODO: passthrough open not fully implemented"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "TODO: passthrough open not fully implemented",
+                ))
             })
             .unwrap();
+
+        let fh = self.next_fh();
+        self.open_files.insert(fh, id.clone());
 
         eprintln!("  -> opened_passthrough({fh:?}, 0, {id:?});\n");
         // TODO: Ensure fd-passthrough is correctly set up if intended.
         // The Open struct would carry necessary info.
         // TODO: implement flags for Open struct
-        Ok(Open{fh, flags: 0 })
+        Ok(Open { fh, flags: 0 })
     }
 
     fn release(
@@ -247,7 +249,7 @@ impl Filesystem for PassthroughFs {
         _lock_owner: Option<u64>,
         _flush: bool,
     ) -> Result<(), Errno> {
-        self.backing_cache.put(fh);
+        self.open_files.remove(&fh);
         Ok(())
     }
 
@@ -320,4 +322,64 @@ fn main() {
 
     let fs = PassthroughFs::new();
     fuser::mount2(fs, mountpoint, &options).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+
+    #[test]
+    fn test_backing_cache() {
+        let (tx, _) = unbounded();
+        let mut cache = BackingCache::default();
+
+        // Create a new BackingId
+        let id1 = cache
+            .get_or(1, || {
+                Ok(BackingId::create(
+                    tx.clone(),
+                    Arc::new(File::open("/dev/null").unwrap()),
+                    1,
+                ))
+            })
+            .unwrap();
+        assert_eq!(id1.backing_id, 1);
+
+        // Get the same BackingId again
+        let id2 = cache
+            .get_or(1, || {
+                panic!("should not be called");
+            })
+            .unwrap();
+        assert!(Rc::ptr_eq(&id1, &id2));
+
+        // Create a new BackingId for a different inode
+        let id3 = cache
+            .get_or(2, || {
+                Ok(BackingId::create(
+                    tx.clone(),
+                    Arc::new(File::open("/dev/null").unwrap()),
+                    2,
+                ))
+            })
+            .unwrap();
+        assert_eq!(id3.backing_id, 2);
+        assert!(!Rc::ptr_eq(&id1, &id3));
+
+        // Drop the first BackingId
+        drop(id1);
+        // The BackingId should still be alive because of the second handle
+        assert!(cache.by_inode.get(&1).unwrap().upgrade().is_some());
+
+        // Drop the second BackingId
+        drop(id2);
+        // The BackingId should be dropped now
+        assert!(cache.by_inode.get(&1).unwrap().upgrade().is_none());
+
+        // Drop the third BackingId
+        drop(id3);
+        // The BackingId should be dropped now
+        assert!(cache.by_inode.get(&2).unwrap().upgrade().is_none());
+    }
 }

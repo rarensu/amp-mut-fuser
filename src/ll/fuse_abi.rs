@@ -738,6 +738,7 @@ pub struct fuse_open_out {
     pub open_flags: u32,
     #[cfg(not(feature = "abi-7-40"))]
     pub padding: u32,
+    /// The backing_id field is used to pass a backing file descriptor to the kernel.
     #[cfg(feature = "abi-7-40")]
     pub backing_id: u32,
 }
@@ -1176,6 +1177,8 @@ pub struct fuse_copy_file_range_in {
 
 // ----- Ioctl for Passthrough -----
 
+/// The `fuse_backing_map_out` struct is used to pass information about a backing file
+/// descriptor to the kernel.
 #[repr(C)]
 pub struct fuse_backing_map_out {
     pub fd: u32,
@@ -1187,6 +1190,9 @@ const FUSE_DEV_IOC_MAGIC: u8 = 229;
 const FUSE_DEV_IOC_BACKING_OPEN: u8 = 1;
 const FUSE_DEV_IOC_BACKING_CLOSE: u8 = 2;
 
+/// This ioctl is used to register a backing file descriptor with the kernel.
+/// The kernel will return a backing ID that can be used to refer to the file descriptor in
+/// subsequent operations.
 nix::ioctl_write_ptr!(
     fuse_dev_ioc_backing_open,
     FUSE_DEV_IOC_MAGIC,
@@ -1194,6 +1200,7 @@ nix::ioctl_write_ptr!(
     fuse_backing_map_out
 );
 
+/// This ioctl is used to deregister a backing file descriptor.
 nix::ioctl_write_ptr!(
     fuse_dev_ioc_backing_close,
     FUSE_DEV_IOC_MAGIC,

@@ -1,3 +1,5 @@
+//! This module contains functions for interacting with the FUSE device through ioctls.
+
 use super::fuse_abi as abi;
 use std::fs::File;
 use std::os::fd::AsRawFd;

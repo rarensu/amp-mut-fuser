@@ -120,11 +120,13 @@ impl ReplySender for ChannelSender {
 }
 
 impl ChannelSender {
+    /// Registers a file descriptor for passthrough and returns a backing ID.
     #[cfg(feature = "abi-7-40")]
     pub fn open_backing(&self, fd: u32) -> std::io::Result<u32> {
         register_backing_id(&self.0, fd)
     }
 
+    /// Deregisters a backing ID.
     #[cfg(feature = "abi-7-40")]
     pub fn close_backing(&self, backing_id: u32) -> std::io::Result<u32> {
         deregister_backing_id(&self.0, backing_id)
