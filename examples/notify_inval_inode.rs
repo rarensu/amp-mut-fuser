@@ -17,16 +17,18 @@ use std::{
 };
 
 use clap::Parser;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, FsStatus,
     InvalInode, MountOption, Notification, Open, RequestMeta, Store, FUSE_ROOT_ID,
 };
+use log::{warn,info};
 
 struct ClockFS<'a> {
     file_contents: Arc<Mutex<String>>,
     lookup_cnt: &'a AtomicU64,
     notification_sender: Option<Sender<Notification>>,
+    notification_reply: Option<Receiver<std::io::Result<()>>>,    
     opts: Arc<Options>,
     last_update: Mutex<SystemTime>,
 }
@@ -77,6 +79,16 @@ impl Filesystem for ClockFS<'_> {
     }
 
     fn heartbeat(&mut self) -> Result<FsStatus, Errno> {
+        if let Some(r) = &self.notification_reply {
+            if let Ok(result) = r.try_recv() {
+                match result {
+                    Ok(()) => info!("Received OK reply"),
+                    Err(e) => warn!("Received error reply: {}", e),
+                }
+                // Only use once. 
+                self.notification_reply=None
+            }
+        }
         let mut last_update_guard = self.last_update.lock().unwrap();
         let now = SystemTime::now();
         if now.duration_since(*last_update_guard).unwrap_or_default() >= Duration::from_secs_f32(self.opts.update_interval) {
@@ -86,21 +98,37 @@ impl Filesystem for ClockFS<'_> {
 
             if !self.opts.no_notify && self.lookup_cnt.load(SeqCst) != 0 {
                 if let Some(sender) = &self.notification_sender {
-                    let notification = if self.opts.notify_store {
-                        Notification::Store(Store {
-                            ino: Self::FILE_INO,
-                            offset: 0,
-                            data: self.file_contents.lock().unwrap().as_bytes().to_vec(),
-                        })
+                    let (s, r) = crossbeam_channel::bounded(1);
+                    if self.opts.notify_store {
+                        let notification = Notification::Store((
+                            Store {
+                                ino: Self::FILE_INO,
+                                offset: 0,
+                                data: self.file_contents.lock().unwrap().as_bytes().to_vec(),
+                            },
+                            Some(s),
+                        ));
+                        if let Err(e) = sender.send(notification) {
+                            warn!("Warning: failed to send Store notification: {}", e);
+                        } else {
+                            info!("Sent Store notification, preparing for reply.");
+                            self.notification_reply = Some(r);
+                        }
                     } else {
-                        Notification::InvalInode(InvalInode {
-                            ino: Self::FILE_INO,
-                            offset: 0,
-                            len: olddata.len().try_into().unwrap_or(-1),
-                        })
-                    };
-                    if let Err(e) = sender.send(notification) {
-                        eprintln!("Warning: failed to send notification: {}", e);
+                        let notification = Notification::InvalInode((
+                            InvalInode {
+                                ino: Self::FILE_INO,
+                                offset: 0,
+                                len: olddata.len().try_into().unwrap_or(-1),
+                            },
+                            Some(s),
+                        ));
+                        if let Err(e) = sender.send(notification) {
+                            warn!("Warning: failed to send InvalInode notification: {}", e);
+                        } else {
+                            info!("Sent InvalInode notification, preparing for reply.");
+                            self.notification_reply = Some(r);
+                        }
                     }
                 }
             }
@@ -260,6 +288,7 @@ fn main() {
         file_contents: fdata.clone(),
         lookup_cnt,
         notification_sender: None, // Will be initialized by the session
+        notification_reply: None,
         opts: opts.clone(),
         last_update: Mutex::new(SystemTime::now()),
     };

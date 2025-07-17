@@ -16,8 +16,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use log::{warn,info};
 use clap::Parser;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, FsStatus, InvalEntry,
     MountOption, Notification, RequestMeta, FUSE_ROOT_ID,
@@ -28,6 +29,7 @@ struct ClockFS<'a> {
     lookup_cnt: &'a AtomicU64,
     timeout: Duration, // This is specific to entry caching TTL, keep it.
     notification_sender: Option<Sender<Notification>>,
+    notification_reply: Option<Receiver<std::io::Result<()>>>,
     opts: Arc<Options>,
     last_update: Mutex<SystemTime>,
 }
@@ -78,9 +80,18 @@ impl Filesystem for ClockFS<'_> {
     }
 
     fn heartbeat(&mut self) -> Result<FsStatus, Errno> {
+        if let Some(r) = &self.notification_reply {
+            if let Ok(result) = r.try_recv() {
+                match result {
+                    Ok(()) => info!("Received OK reply"),
+                    Err(e) => warn!("Received error reply: {}", e),
+                }
+                // Only use once. 
+                self.notification_reply=None
+            }
+        }
         let mut last_update_guard = self.last_update.lock().unwrap();
         let now = SystemTime::now();
-
         if now.duration_since(*last_update_guard).unwrap_or_default() >= Duration::from_secs_f32(self.opts.update_interval) {
             let mut fname_guard = self.file_name.lock().unwrap();
             let old_filename = std::mem::replace(&mut *fname_guard, now_filename());
@@ -92,12 +103,26 @@ impl Filesystem for ClockFS<'_> {
                     // if self.opts.only_expire {
                     // fuser::notify_expire_entry(_SOME_HANDLE_, FUSE_ROOT_ID, &oldname);
                     // } else
-                    let notification = Notification::InvalEntry(InvalEntry {
+                    let notification = Notification::from(InvalEntry {
                         parent: FUSE_ROOT_ID,
                         name: OsString::from(old_filename),
                     });
                     if let Err(e) = sender.send(notification) {
-                        eprintln!("Warning: failed to send InvalEntry notification: {}", e);
+                        warn!("Warning: failed to send InvalEntry notification: {}", e);
+                    }
+                    let (s, r) = crossbeam_channel::bounded(1);
+                    let notification = Notification::InvalEntry((
+                        InvalEntry {
+                            parent: FUSE_ROOT_ID,
+                            name: OsString::from(now_filename()),
+                        },
+                        Some(s),
+                    ));
+                    if let Err(e) = sender.send(notification) {
+                        warn!("Warning: failed to send InvalEntry notification: {}", e);
+                    } else {
+                        info!("Sent InvalEntry notification, preparing for reply.");
+                        self.notification_reply = Some(r);
                     }
                 }
             }
@@ -206,6 +231,7 @@ fn main() {
         lookup_cnt,
         timeout: Duration::from_secs_f32(opts.timeout),
         notification_sender: None, // Will be initialized by the session
+        notification_reply: None,
         opts: opts.clone(),
         last_update: Mutex::new(SystemTime::now()),
     };

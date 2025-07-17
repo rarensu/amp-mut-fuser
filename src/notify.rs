@@ -3,6 +3,8 @@ use std::io;
 #[allow(unused)]
 use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
 
+use crossbeam_channel::Sender;
+
 use crate::{
     channel::ChannelSender,
     ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification as ll_Notification},
@@ -74,33 +76,33 @@ pub struct Delete {
 pub enum Notification {
     #[cfg(feature = "abi-7-11")]
     /// A poll event notification
-    Poll(Poll),
+    Poll((Poll, Option<Sender<io::Result<()>>>)),
     #[cfg(feature = "abi-7-12")]
     /// An invalid entry notification
-    InvalEntry(InvalEntry),
+    InvalEntry((InvalEntry, Option<Sender<io::Result<()>>>)),
     #[cfg(feature = "abi-7-12")]
     /// An invalid inode notification
-    InvalInode(InvalInode),
+    InvalInode((InvalInode, Option<Sender<io::Result<()>>>)),
     #[cfg(feature = "abi-7-15")]
     /// An inode metadata update notification
-    Store(Store),
+    Store((Store, Option<Sender<io::Result<()>>>)),
     #[cfg(feature = "abi-7-18")]
     /// An inode deletion notification
-    Delete(Delete),
+    Delete((Delete, Option<Sender<io::Result<()>>>)),
     /// (Internal) Disable notifications for this session
     Stop
 }
 
 #[cfg(feature = "abi-7-11")]
-impl From<Poll>       for Notification {fn from(notification: Poll)       -> Self{Notification::Poll(notification)}}
+impl From<Poll>       for Notification {fn from(notification: Poll)       -> Self{Notification::Poll((notification, None))}}
 #[cfg(feature = "abi-7-12")]
-impl From<InvalEntry> for Notification {fn from(notification: InvalEntry) -> Self{Notification::InvalEntry(notification)}}
+impl From<InvalEntry> for Notification {fn from(notification: InvalEntry) -> Self{Notification::InvalEntry((notification, None))}}
 #[cfg(feature = "abi-7-12")]
-impl From<InvalInode> for Notification {fn from(notification: InvalInode) -> Self{Notification::InvalInode(notification)}}
+impl From<InvalInode> for Notification {fn from(notification: InvalInode) -> Self{Notification::InvalInode((notification, None))}}
 #[cfg(feature = "abi-7-15")]
-impl From<Store>      for Notification {fn from(notification: Store)      -> Self{Notification::Store(notification)}}
+impl From<Store>      for Notification {fn from(notification: Store)      -> Self{Notification::Store((notification, None))}}
 #[cfg(feature = "abi-7-18")]
-impl From<Delete>     for Notification {fn from(notification: Delete)     -> Self{Notification::Delete(notification)}}
+impl From<Delete>     for Notification {fn from(notification: Delete)     -> Self{Notification::Delete((notification, None))}}
 
 /// A handle by which the application can send notifications to the server
 #[derive(Debug, Clone)]
@@ -112,20 +114,24 @@ impl Notifier {
     }
 
     pub(crate) fn notify(&self, notification: Notification) -> io::Result<()> {
-        match notification {
+        let (res, sender) = match notification {
             #[cfg(feature = "abi-7-11")]
-            Notification::Poll(data) =>       self.poll(data),
+            Notification::Poll((data, sender)) =>       (self.poll(data), sender),
             #[cfg(feature = "abi-7-12")]
-            Notification::InvalEntry(data) => self.inval_entry(data),
+            Notification::InvalEntry((data, sender)) => (self.inval_entry(data), sender),
             #[cfg(feature = "abi-7-12")]
-            Notification::InvalInode(data) => self.inval_inode(data),
+            Notification::InvalInode((data, sender)) => (self.inval_inode(data), sender),
             #[cfg(feature = "abi-7-15")]
-            Notification::Store(data) =>      self.store(data),
+            Notification::Store((data, sender)) =>      (self.store(data), sender),
             #[cfg(feature = "abi-7-18")]
-            Notification::Delete(data) =>     self.delete(data),
+            Notification::Delete((data, sender)) =>     (self.delete(data), sender),
             // For completeness
-            Notification::Stop => Ok(())
+            Notification::Stop => (Ok(()), None)
+        };
+        if let Some(sender) = sender {
+            sender.send(res).unwrap();
         }
+        Ok(())
     }
 
     /// Notify poll clients of I/O readiness
