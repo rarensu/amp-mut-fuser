@@ -270,13 +270,10 @@ impl<FS: Filesystem> Session<FS> {
                             info!("Filesystem sent Stop notification; disabling notifications.");
                             self.notify = false
                         }
-                        if let Err(e) = self.notifier().notify(notification) {
-                            error!("Failed to send notification: {}", e);
-                            // Decide if error is fatal. ENODEV might mean unmounted.
-                            if e.raw_os_error() == Some(libc::ENODEV) {
-                                warn!("FUSE device not available for notification, likely unmounted. Exiting.");
-                                break;
-                            }
+                        if let Err(_) = self.notifier().notify(notification) {
+                            error!("Failed to send notification");
+                            // TODO. Decide if error is fatal. ENODEV might mean unmounted.
+                            // ChannelSender SendError might mean the Filesystem didn't listen for the response.
                         }
                         work_done = true;
                     }

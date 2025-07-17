@@ -1173,3 +1173,30 @@ pub struct fuse_copy_file_range_in {
     pub len: u64,
     pub flags: u64,
 }
+
+// ----- Ioctl for Passthrough -----
+
+#[repr(C)]
+pub struct fuse_backing_map_out {
+    pub fd: u32,
+    pub flags: u32,
+    pub padding: u64,
+}
+
+const FUSE_DEV_IOC_MAGIC: u8 = 229;
+const FUSE_DEV_IOC_BACKING_OPEN: u8 = 1;
+const FUSE_DEV_IOC_BACKING_CLOSE: u8 = 2;
+
+nix::ioctl_write_ptr!(
+    fuse_dev_ioc_backing_open,
+    FUSE_DEV_IOC_MAGIC,
+    FUSE_DEV_IOC_BACKING_OPEN,
+    fuse_backing_map_out
+);
+
+nix::ioctl_write_ptr!(
+    fuse_dev_ioc_backing_close,
+    FUSE_DEV_IOC_MAGIC,
+    FUSE_DEV_IOC_BACKING_CLOSE,
+    u32
+);

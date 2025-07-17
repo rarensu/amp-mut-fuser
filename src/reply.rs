@@ -15,14 +15,12 @@ use crate::ll::reply::{DirEntPlusList, DirEntryPlus};
 #[cfg(feature = "abi-7-21")]
 use crate::ll::Generation;
 #[cfg(feature = "abi-7-40")]
-use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
+use crate::consts::FOPEN_PASSTHROUGH;
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::IoSlice;
-#[cfg(feature = "abi-7-40")]
-use std::os::fd::BorrowedFd;
 use std::time::Duration;
 use zerocopy::IntoBytes;
 #[cfg(target_os = "macos")]
@@ -33,11 +31,7 @@ use crate::{FileAttr, FileType, KernelConfig};
 /// Generic reply callback to send data
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
     /// Send data.
-    fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()>;
-    /// Open a backing file
-    #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: BorrowedFd<'_>) -> std::io::Result<BackingId>;
-}
+    fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()>;}
 
 impl fmt::Debug for Box<dyn ReplySender> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
@@ -491,11 +485,6 @@ mod test {
             assert_eq!(self.expected, v);
             Ok(())
         }
-
-        #[cfg(feature = "abi-7-40")]
-        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
-            unreachable!()
-        }
     }
 
     #[test]
@@ -913,11 +902,6 @@ mod test {
         fn send(&self, _: &[IoSlice<'_>]) -> std::io::Result<()> {
             self.send(()).unwrap();
             Ok(())
-        }
-
-        #[cfg(feature = "abi-7-40")]
-        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
-            unreachable!()
         }
     }
 

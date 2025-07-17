@@ -9,10 +9,9 @@ use std::{
 };
 
 use libc::{c_int, c_void, size_t};
-
-#[cfg(feature = "abi-7-40")]
-use crate::passthrough::BackingId;
 use crate::reply::ReplySender;
+use crate::ll::ioctl::{deregister_backing_id, register_backing_id};
+
 
 /// A raw communication channel to the FUSE kernel driver
 #[derive(Debug)]
@@ -118,9 +117,16 @@ impl ReplySender for ChannelSender {
             Ok(())
         }
     }
+}
+
+impl ChannelSender {
+    #[cfg(feature = "abi-7-40")]
+    pub fn open_backing(&self, fd: u32) -> std::io::Result<u32> {
+        register_backing_id(&self.0, fd)
+    }
 
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
-        BackingId::create(&self.0, fd)
+    pub fn close_backing(&self, backing_id: u32) -> std::io::Result<u32> {
+        deregister_backing_id(&self.0, backing_id)
     }
 }

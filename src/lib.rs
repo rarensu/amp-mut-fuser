@@ -34,8 +34,6 @@ pub use notify::{InvalEntry, InvalInode};
 pub use notify::Store;
 #[cfg(feature = "abi-7-18")]
 pub use notify::Delete;
-#[cfg(feature = "abi-7-40")]
-pub use passthrough::BackingId;
 #[cfg(feature = "abi-7-11")]
 pub use reply::Ioctl;
 #[cfg(target_os = "macos")]

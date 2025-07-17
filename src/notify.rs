@@ -8,7 +8,6 @@ use crossbeam_channel::Sender;
 use crate::{
     channel::ChannelSender,
     ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification as ll_Notification},
-
     // What we're sending here aren't really replies, but they
     // move in the same direction (userspace->kernel), so we can
     // reuse ReplySender for it.
@@ -89,6 +88,11 @@ pub enum Notification {
     #[cfg(feature = "abi-7-18")]
     /// An inode deletion notification
     Delete((Delete, Option<Sender<io::Result<()>>>)),
+    /// A request to register a file descriptor and receive a backing ID
+    OpenBacking((u32, Option<Sender<io::Result<u32>>>)),
+    #[cfg(feature = "abi-7-18")]
+    /// A request to close a backing ID
+    CloseBacking((u32, Option<Sender<io::Result<u32>>>)),
     /// (Internal) Disable notifications for this session
     Stop
 }
@@ -113,25 +117,72 @@ impl Notifier {
         Self(cs)
     }
 
-    pub(crate) fn notify(&self, notification: Notification) -> io::Result<()> {
-        let (res, sender) = match notification {
+    pub(crate) fn notify(&self, notification: Notification) -> Result<(),()> {
+        match notification {
             #[cfg(feature = "abi-7-11")]
-            Notification::Poll((data, sender)) =>       (self.poll(data), sender),
+            Notification::Poll((data, sender)) => {
+                let res = self.poll(data);
+                if let Some(sender) = sender {
+                    if let Err(_) = sender.send(res) {
+                        Err(())
+                    } else { Ok(()) } 
+                } else { Ok(()) }
+            },
             #[cfg(feature = "abi-7-12")]
-            Notification::InvalEntry((data, sender)) => (self.inval_entry(data), sender),
+            Notification::InvalEntry((data, sender)) => {
+                let res = self.inval_entry(data);
+                if let Some(sender) = sender {
+                    if let Err(_) = sender.send(res) {
+                        Err(())
+                    } else { Ok(()) } 
+                } else { Ok(()) }
+            },
             #[cfg(feature = "abi-7-12")]
-            Notification::InvalInode((data, sender)) => (self.inval_inode(data), sender),
+            Notification::InvalInode((data, sender)) => {
+                let res = self.inval_inode(data);
+                if let Some(sender) = sender {
+                    if let Err(_) = sender.send(res) {
+                        Err(())
+                    } else { Ok(()) } 
+                } else { Ok(()) }
+            },
             #[cfg(feature = "abi-7-15")]
-            Notification::Store((data, sender)) =>      (self.store(data), sender),
+            Notification::Store((data, sender)) => {
+                let res = self.store(data);
+                if let Some(sender) = sender {
+                    if let Err(_) = sender.send(res) {
+                        Err(())
+                    } else { Ok(()) } 
+                } else { Ok(()) }
+            },
             #[cfg(feature = "abi-7-18")]
-            Notification::Delete((data, sender)) =>     (self.delete(data), sender),
+            Notification::Delete((data, sender)) => {
+                let res = self.delete(data);
+                if let Some(sender) = sender {
+                    if let Err(_) = sender.send(res) {
+                        Err(())
+                    } else { Ok(()) } 
+                } else { Ok(()) }
+            },
+            Notification::OpenBacking((data, sender)) => {
+                let res = self.open_backing(data);
+                if let Some(sender) = sender {
+                    if let Err(_) = sender.send(res) {
+                        Err(())
+                    } else { Ok(()) } 
+                } else { Ok(()) }
+            },
+            Notification::CloseBacking((data, sender)) => {
+                let res = self.close_backing(data);
+                if let Some(sender) = sender {
+                    if let Err(_) = sender.send(res) {
+                        Err(())
+                    } else { Ok(()) } 
+                } else { Ok(()) }
+            },
             // For completeness
-            Notification::Stop => (Ok(()), None)
-        };
-        if let Some(sender) = sender {
-            sender.send(res).unwrap();
+            Notification::Stop => Ok(())
         }
-        Ok(())
     }
 
     /// Notify poll clients of I/O readiness
@@ -182,6 +233,14 @@ impl Notifier {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             x => x,
         }
+    }
+
+    pub fn open_backing(&self, fd: u32) -> io::Result<u32> {
+        self.0.open_backing(fd)
+    }
+
+    pub fn close_backing(&self, backing_id: u32) -> io::Result<u32> {
+        self.0.close_backing(backing_id)
     }
 
     fn send(&self, code: notify_code, notification: &ll_Notification<'_>) -> io::Result<()> {

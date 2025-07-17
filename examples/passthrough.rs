@@ -4,14 +4,16 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    consts, Attr, BackingId, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, KernelConfig,
-    MountOption, Open, RequestMeta,
+    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, KernelConfig,
+    MountOption, Open, RequestMeta, Notification,
+
 };
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, UNIX_EPOCH};
+use std::sync::Arc;
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
@@ -30,6 +32,48 @@ const TTL: Duration = Duration::from_secs(1); // 1 second
 ///
 /// It's left as an exercise to the reader to implement an active cleanup of the by_inode table, if
 /// desired, but our little example filesystem only contains one file. :)
+
+// ----- BackingID -----
+
+/// A struct to hold a reference to previously opened File intended to be used for passthrough, 
+/// and the backing id for that file. 
+///
+/// When working with backing IDs you need to ensure that they live "long enough".  A good practice
+/// is to create them in the Filesystem::open() impl, store them in the struct of your Filesystem
+/// impl, then drop them in the Filesystem::release() impl.  Dropping them immediately after
+/// sending them in the Filesystem::open() impl can lead to the kernel returning EIO when userspace
+/// attempts to access the file.
+///
+/// This is implemented as a safe wrapper around the backing_id field of the fuse_backing_map
+/// struct used by the ioctls involved in fd passthrough.  It has a Drop trait impl which sends
+/// a CloseBacking notification. It holds a reference on the notifier to allow it to
+/// make that call (if the notifier hasn't already been closed).
+#[derive(Debug)]
+pub struct BackingId {
+    notifier: crossbeam_channel::Sender<Notification>,
+    _file: Arc<File>,
+    /// The backing_id field passed to and from the kernel
+    backing_id: u32,
+}
+
+impl BackingId {
+    pub(crate) fn create(notifier: crossbeam_channel::Sender<Notification>, file: Arc<File>, backing_id: u32) -> Self {
+        Self {
+            notifier,
+            _file: file,
+            backing_id,
+        }
+    }
+}
+
+impl Drop for BackingId {
+    fn drop(&mut self) {
+        let notification = Notification::CloseBacking((self.backing_id,None));
+        let _ = self.notifier.send(notification);
+    }
+}
+
+
 #[derive(Debug, Default)]
 struct BackingCache {
     by_handle: HashMap<u64, Rc<BackingId>>,
