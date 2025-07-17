@@ -124,6 +124,7 @@ impl FSelFS {
 
 impl Filesystem for FSelFS { 
     fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
+        self.poll_handler.check_replies();
         if self.producer.is_ready() {
             self.produce_data();
             self.producer.advance();
@@ -372,7 +373,7 @@ mod test {
     use crossbeam_channel::{unbounded, Receiver};
 
     // Helper to create FSelFS and a channel pair for its PollData for tests
-    fn setup_test_fs_with_channel() -> (FSelFS, Sender<Poll>, Receiver<Poll>) {
+    fn setup_test_fs_with_channel() -> (FSelFS, Sender<Notification>, Receiver<Notification>) {
         log::debug!("Setting up test FS with poll channel");
         let (tx, rx) = unbounded();
         let data = FSelData {
@@ -393,7 +394,7 @@ mod test {
     fn test_fs_poll_registers_handle_no_initial_event() {
         log::info!("test_fs_poll_registers_handle_no_initial_event: starting");
         let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
-        fs.init_poll_sender(tx_to_fs).unwrap(); // Link FS's PollData to our test sender
+        assert!(fs.init_notification_sender(tx_to_fs)); // Link FS's PollData to our test sender
 
         let req = RequestMeta { unique: 0, uid: 0, gid: 0, pid: 0 };
         let idx: u8 = 0;
@@ -405,7 +406,7 @@ mod test {
         fs.data.bytecnt[idx as usize] = 0;
         fs.poll_handler.mark_inode_not_ready(ino, libc::POLLIN as u32); // Ensure PollData also knows it's not ready
 
-        let result = fs.poll(req, ino, fh, ph, events, 0);
+        let result = fs.poll(req, ino, fh, ph, events, FUSE_POLL_SCHEDULE_NOTIFY);
         log::debug!("test_fs_poll_registers_handle_no_initial_event: poll result = {:?}", result);
         assert!(result.is_ok(), "FS poll method should succeed");
         assert_eq!(result.unwrap(), 0, "Should return 0 as no initial event is expected");
@@ -421,7 +422,7 @@ mod test {
     fn test_fs_poll_registers_handle_with_initial_event() {
         log::info!("test_fs_poll_registers_handle_with_initial_event: starting");
         let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
-        fs.init_poll_sender(tx_to_fs).unwrap();
+        assert!(fs.init_notification_sender(tx_to_fs));
 
         let req = RequestMeta { unique: 0, uid: 0, gid: 0, pid: 0 };
         let idx: u8 = 1;
@@ -434,7 +435,7 @@ mod test {
         // Clear the channel from the mark_inode_ready call if any (no handle registered yet, so it shouldn't send)
         while rx_from_fs.try_recv().is_ok() {}
 
-        let result = fs.poll(req, ino, fh, ph, events, 0);
+        let result = fs.poll(req, ino, fh, ph, events, FUSE_POLL_SCHEDULE_NOTIFY);
         log::debug!("test_fs_poll_registers_handle_with_initial_event: poll result = {:?}", result);
         assert!(result.is_ok(), "FS poll method should succeed");
         assert_eq!(result.unwrap(), libc::POLLIN as u32, "Should return POLLIN as an initial event");
@@ -442,11 +443,11 @@ mod test {
         assert!(fs.poll_handler.registered_poll_handles.contains_key(&ph));
 
         match rx_from_fs.try_recv() {
-            Ok(notification) => {
-                assert_eq!(notification.ph, ph);
-                assert_eq!(notification.events, libc::POLLIN as u32);
+            Ok(Notification::Poll((poll, _))) => {
+                assert_eq!(poll.ph, ph);
+                assert_eq!(poll.events, libc::POLLIN as u32);
             }
-            Err(_) => panic!("Expected an initial event on the channel"),
+            _ => panic!("Expected an initial event on the channel"),
         }
     }
 
@@ -455,7 +456,7 @@ mod test {
         log::info!("test_producer_marks_inode_ready_triggers_event: starting");
         // For this test, we need an Arc<Mutex<FSelFS>> because producer runs in a separate thread.
         let (mut fs_instance, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
-        fs_instance.init_poll_sender(tx_to_fs).unwrap();
+        assert!(fs_instance.init_notification_sender(tx_to_fs));
 
         let idx_to_test: u8 = 2;
         let ino_to_test = FSelData::idx_to_ino(idx_to_test);
@@ -472,13 +473,11 @@ mod test {
         log::debug!("test_producer_marks_inode_ready_triggers_event: marked inode ready");
 
         match rx_from_fs.try_recv() {
-            Ok(notification) => {
-                if let Poll(poll) = notification {
-                    assert_eq!(poll.ph, ph_to_test);
-                    assert_eq!(poll.events, libc::POLLIN as u32);
-                }
+            Ok(Notification::Poll((poll, _))) => {
+                assert_eq!(poll.ph, ph_to_test);
+                assert_eq!(poll.events, libc::POLLIN as u32);
             }
-            Err(_) => panic!("Producer marking inode ready should have triggered an event on the channel"),
+            _ => panic!("Producer marking inode ready should have triggered an event on the channel"),
         }
     }
 }

@@ -1,6 +1,7 @@
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use std::collections::{HashMap, HashSet};
 use fuser::{Notification, Poll};
+use std::io;
 
 /// `PollData` holds the state required for managing asynchronous poll notifications.
 /// It is typically owned by a `Filesystem` implementation. The `Sender` end of its
@@ -25,6 +26,10 @@ pub struct PollData {
     /// This set is updated by filesystem operations.
     /// Stores the actual current readiness mask for each inode.
     pub ready_inodes: HashMap<u64, u32>,
+    /// Receivers for pending replies to notifications
+    pending_replies: HashMap<u64, Receiver<io::Result<()>>>,
+    /// Last reply received for a notification
+    pub last_reply: HashMap<u64, io::Result<()>>,
 }
 
 impl PollData {
@@ -35,6 +40,8 @@ impl PollData {
             registered_poll_handles: HashMap::new(),
             inode_poll_handles: HashMap::new(),
             ready_inodes: HashMap::new(),
+            pending_replies: HashMap::new(),
+            last_reply: HashMap::new(),
         }
     }
 
@@ -78,8 +85,18 @@ impl PollData {
                         "PollData::register_poll_handle() sending initial event: ph={}, initial_events_to_send={:#x}",
                         ph, initial_events_to_send
                     );
-                    if sender.send(Poll{ph, events: initial_events_to_send}.into()).is_err() {
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    let notification = Notification::Poll((
+                        Poll {
+                            ph,
+                            events: initial_events_to_send,
+                        },
+                        Some(tx),
+                    ));
+                    if sender.send(notification).is_err() {
                         log::warn!("PollData: Failed to send initial poll readiness event for ph {}. Channel might be disconnected.", ph);
+                    } else {
+                        self.pending_replies.insert(ph, rx);
                     }
                 }
                 // Return the subset of requested events that are currently ready.
@@ -139,8 +156,18 @@ impl PollData {
                                 "PollData::mark_inode_ready() sending event: ino={}, ph={}, events_to_send={:#x}",
                                 ino, ph, events_to_send
                             );
-                            if sender.send(Poll{ph, events: events_to_send}.into()).is_err() {
+                            let (tx, rx) = crossbeam_channel::bounded(1);
+                            let notification = Notification::Poll((
+                                Poll {
+                                    ph,
+                                    events: events_to_send,
+                                },
+                                Some(tx),
+                            ));
+                            if sender.send(notification).is_err() {
                                 log::warn!("PollData: Failed to send poll readiness event for ino {}, ph {}. Channel might be disconnected.", ino, ph);
+                            } else {
+                                self.pending_replies.insert(ph, rx);
                             }
                         }
                     }
@@ -171,6 +198,26 @@ impl PollData {
         // However, managing this state internally is important for subsequent poll registrations
         // and for correctly reporting initial readiness.
     }
+
+    /// Checks for and processes any pending replies from notifications.
+    pub fn check_replies(&mut self) {
+        self.pending_replies.retain(|ph, rx| {
+            match rx.try_recv() {
+                Ok(reply) => {
+                    self.last_reply.insert(*ph, reply);
+                    false // Remove from pending_replies
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    true // Keep in pending_replies
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    // Channel disconnected, maybe log this.
+                    // The sender (Session) might have dropped.
+                    false // Remove from pending_replies
+                }
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +225,7 @@ mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
     use std::sync::{Arc, Mutex};
+    use fuser::Poll;
 
     #[test]
     fn test_poll_data_new() {
@@ -187,6 +235,8 @@ mod tests {
         assert!(poll_data.registered_poll_handles.is_empty());
         assert!(poll_data.inode_poll_handles.is_empty());
         assert!(poll_data.ready_inodes.is_empty());
+        assert!(poll_data.pending_replies.is_empty());
+        assert!(poll_data.last_reply.is_empty());
         drop(rx); // ensure channel is dropped
     }
 
@@ -233,12 +283,19 @@ mod tests {
         }
 
         match rx.try_recv() {
-            Ok(notification) => {
-                assert_eq!(notification.ph, ph1);
-                assert_eq!(notification.events, libc::POLLIN as u32);
+            Ok(Notification::Poll((poll, Some(reply_tx)))) => {
+                assert_eq!(poll.ph, ph1);
+                assert_eq!(poll.events, libc::POLLIN as u32);
+                reply_tx.send(Ok(())).unwrap();
             }
+            Ok(_) => panic!("Unexpected notification type"),
             Err(e) => panic!("Expected to receive a poll event, but got error: {}", e),
         }
+
+        let mut poll_data = poll_data_arc.lock().unwrap();
+        poll_data.check_replies();
+        assert!(poll_data.last_reply.get(&ph1).is_some());
+        assert!(poll_data.last_reply.get(&ph1).unwrap().is_ok());
     }
 
     #[test]
@@ -270,10 +327,12 @@ mod tests {
             poll_data.mark_inode_ready(ino1, libc::POLLIN as u32);
         }
         match rx.try_recv() {
-            Ok(notification) => {
-                assert_eq!(notification.ph, ph1);
-                assert_eq!(notification.events, libc::POLLIN as u32);
+            Ok(Notification::Poll((poll, Some(reply_tx)))) => {
+                assert_eq!(poll.ph, ph1);
+                assert_eq!(poll.events, libc::POLLIN as u32);
+                reply_tx.send(Ok(())).unwrap();
             }
+            Ok(_) => panic!("Unexpected notification type"),
             Err(e) => panic!("Expected to receive a POLLIN event, but got error: {}", e),
         }
     }
@@ -306,10 +365,12 @@ mod tests {
         assert_eq!(initial_event_mask, Some(libc::POLLIN as u32), "Initial event mask should be POLLIN");
 
         match rx.try_recv() {
-            Ok(notification) => {
-                assert_eq!(notification.ph, ph1);
-                assert_eq!(notification.events, libc::POLLIN as u32);
+            Ok(Notification::Poll((poll, Some(reply_tx)))) => {
+                assert_eq!(poll.ph, ph1);
+                assert_eq!(poll.events, libc::POLLIN as u32);
+                reply_tx.send(Ok(())).unwrap();
             }
+            Ok(_) => panic!("Unexpected notification type"),
             Err(e) => panic!("Expected to receive an initial poll event, but got error: {}", e),
         }
     }
@@ -353,5 +414,30 @@ mod tests {
         let (tx, _rx) = unbounded();
         poll_data_arc.lock().unwrap().set_sender(tx); // Use set_sender
         assert!(poll_data_arc.lock().unwrap().ready_events_sender.is_some());
+    }
+
+    #[test]
+    fn test_check_replies() {
+        let (tx, rx) = unbounded();
+        let mut poll_data = PollData::new(Some(tx));
+        let ph1: u64 = 2001;
+        let ino1: u64 = 6;
+        let events1: u32 = libc::POLLIN as u32;
+
+        poll_data.register_poll_handle(ph1, ino1, events1);
+        poll_data.mark_inode_ready(ino1, libc::POLLIN as u32);
+
+        // Simulate receiving a notification and sending a reply
+        if let Ok(Notification::Poll((_, Some(reply_tx)))) = rx.try_recv() {
+            reply_tx.send(Ok(())).unwrap();
+        } else {
+            panic!("Failed to receive notification");
+        }
+
+        poll_data.check_replies();
+
+        assert!(poll_data.last_reply.contains_key(&ph1));
+        assert!(poll_data.last_reply.get(&ph1).unwrap().is_ok());
+        assert!(!poll_data.pending_replies.contains_key(&ph1));
     }
 }
