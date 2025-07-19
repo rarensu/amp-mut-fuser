@@ -141,7 +141,11 @@ impl PassthroughFs {
     // update_backing mutates a BackingStatus held by the backing cache.
     // returns true if the item is valid and should be retained in the cache.
     // returns false if the item is invalid and should be removed from the cache.
-    fn update_backing_status(backing_status: &mut BackingStatus, notifier: &Sender<Notification>) -> bool {
+    fn update_backing_status(
+        backing_status: &mut BackingStatus,
+        notifier: &Sender<Notification>,
+        extend: bool,
+    ) -> bool {
         match backing_status {
             BackingStatus::Pending(p) => {
                 match p.reply.try_recv() {
@@ -176,7 +180,9 @@ impl PassthroughFs {
             }
             BackingStatus::Ready(r) => {
                 let now = SystemTime::now();
-                if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
+                if extend {
+                    r.timestamp = now;
+                } else if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
                     log::info!("heartbeat: processing ready {:?}", r);
                     let (tx, rx) = crossbeam_channel::bounded(1);
                     r.reply_sender = Some(tx);
@@ -242,7 +248,7 @@ impl Filesystem for PassthroughFs {
             let mut remove = false;
             if let Some(backing_status) = self.backing_cache.by_inode.get_mut(&2) {
                 if let Some(notifier) = self.notification_sender.clone() {
-                    if !Self::update_backing_status(backing_status, &notifier) {
+                    if !Self::update_backing_status(backing_status, &notifier, true) {
                         remove = true;
                     }
                 }
@@ -325,7 +331,9 @@ impl Filesystem for PassthroughFs {
 
     fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
         if let Some(notifier) = self.notification_sender.clone() {
-            self.backing_cache.by_inode.retain(|_, v| PassthroughFs::update_backing_status(v, &notifier));
+            self.backing_cache
+                .by_inode
+                .retain(|_, v| PassthroughFs::update_backing_status(v, &notifier, false));
         }
         Ok(fuser::FsStatus::Ready)
     }
