@@ -33,7 +33,7 @@ struct ReadyBackingId {
     notifier: crossbeam_channel::Sender<Notification>,
     backing_id: u32,
     timestamp: SystemTime,
-    reply_sender: Option<crossbeam_channel::Sender<io::Result<()>>>,
+    reply_sender: Option<crossbeam_channel::Sender<io::Result<(u32)>>>,
 }
 
 impl Drop for ReadyBackingId {
@@ -283,9 +283,9 @@ impl Filesystem for PassthroughFs {
                     }
                     BackingStatus::Dropped(d) => {
                         match d.reply.try_recv() {
-                            Ok(Ok(())) => {
+                            Ok(Ok(value)) => {
                                 log::info!("heartbeat: processing dropped {:?}", d);
-                                log::info!("ok");
+                                log::info!("ok {:?}," value;
                                 false
                             }
                             Ok(Err(e)) => {
