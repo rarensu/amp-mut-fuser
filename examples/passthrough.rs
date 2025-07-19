@@ -44,7 +44,7 @@ impl Drop for ReadyBackingId {
 }
 
 #[derive(Debug)]
-struct DroppedBackingId {
+struct ClosedBackingId {
     reply: crossbeam_channel::Receiver<io::Result<u32>>,
 }
 
@@ -52,7 +52,7 @@ struct DroppedBackingId {
 enum BackingStatus {
     Pending(PendingBackingId),
     Ready(ReadyBackingId),
-    Dropped(DroppedBackingId),
+    Closed(ClosedBackingId),
 }
 
 /// A cache for `BackingId` objects.
@@ -180,30 +180,31 @@ impl PassthroughFs {
                     log::info!("heartbeat: processing ready {:?}", r);
                     let (tx, rx) = crossbeam_channel::bounded(1);
                     r.reply_sender = Some(tx);
-                    *backing_status = BackingStatus::Dropped(DroppedBackingId { reply: rx });
-                    log::info!("ready -> dropped; timeout");
+                    *backing_status = BackingStatus::Closed(ClosedBackingId { reply: rx });
+                    log::info!("ready -> closed; timeout");
+                    return false;
                 }
-                true // ready transitions to ready or dropped. either way, we keep it in the cache.
+                true
             }
-            BackingStatus::Dropped(d) => {
+            BackingStatus::Closed(d) => {
                 match d.reply.try_recv() {
                     Ok(Ok(value)) => {
-                        log::info!("heartbeat: processing dropped {:?}", d);
+                        log::info!("heartbeat: processing closed {:?}", d);
                         log::info!("ok {:?}", value);
                         false
                     }
                     Ok(Err(e)) => {
-                        log::error!("heartbeat: processing dropped {:?}", d);
+                        log::error!("heartbeat: processing closed {:?}", d);
                         log::error!("error {}", e);
                         false
                     }
                     Err(crossbeam_channel::TryRecvError::Empty) => {
-                        log::debug!("heartbeat: processing dropped {:?}", d);
+                        log::debug!("heartbeat: processing closed {:?}", d);
                         log::debug!("waiting for reply");
                         true
                     }
                     Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        log::warn!("heartbeat: processing dropped {:?}", d);
+                        log::warn!("heartbeat: processing closed {:?}", d);
                         log::warn!("channel disconnected");
                         false
                     }
