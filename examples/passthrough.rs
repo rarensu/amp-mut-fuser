@@ -33,19 +33,26 @@ struct ReadyBackingId {
     notifier: crossbeam_channel::Sender<Notification>,
     backing_id: u32,
     timestamp: SystemTime,
+    reply_sender: Option<crossbeam_channel::Sender<io::Result<()>>>,
 }
 
 impl Drop for ReadyBackingId {
     fn drop(&mut self) {
-        let notification = Notification::CloseBacking((self.backing_id, None));
+        let notification = Notification::CloseBacking((self.backing_id, self.reply_sender.take()));
         let _ = self.notifier.send(notification);
     }
+}
+
+#[derive(Debug)]
+struct DroppedBackingId {
+    reply: crossbeam_channel::Receiver<io::Result<()>>,
 }
 
 #[derive(Debug)]
 enum BackingStatus {
     Pending(PendingBackingId),
     Ready(ReadyBackingId),
+    Dropped(DroppedBackingId),
 }
 
 /// A cache for `BackingId` objects.
@@ -160,7 +167,7 @@ impl Filesystem for PassthroughFs {
             if let std::collections::hash_map::Entry::Vacant(e) =
                 self.backing_cache.by_inode.entry(2)
             {
-                log::info!("creating new pending backing id");
+                log::info!("new pending backing id request");
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let file = File::open("/etc/os-release").unwrap();
                 let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
@@ -174,7 +181,7 @@ impl Filesystem for PassthroughFs {
                         log::error!("failed to send OpenBacking notification: {}", e);
                     }
                 } else {
-                    log::warn!("no notification sender available");
+                    log::warn!("unable to request a backing id. no notification sender available");
                 }
             }
 
@@ -235,39 +242,70 @@ impl Filesystem for PassthroughFs {
             self.backing_cache.by_inode.retain(|_, v| {
                 match v {
                     BackingStatus::Pending(p) => {
-                        log::info!("heartbeat: processing pending {:?}", p);
                         match p.reply.try_recv() {
                             Ok(Ok(backing_id)) => {
-                                log::info!("pending -> ready with backing_id {}", backing_id);
+                                log::info!("heartbeat: processing pending {:?}", p);
                                 *v = BackingStatus::Ready(ReadyBackingId {
                                     notifier: notifier.clone(),
                                     backing_id,
                                     timestamp: now,
+                                    reply_sender: None,
                                 });
+                                log::info!("pending -> ready; backing_id {}", backing_id);
                                 true
                             }
                             Ok(Err(e)) => {
-                                log::error!("pending -> dropped with error {}", e);
+                                log::error!("heartbeat: processing pending {:?}", p);
+                                log::error!("error {}", e);
                                 false
                             }
                             Err(crossbeam_channel::TryRecvError::Empty) => {
-                                log::info!("pending -> still pending");
+                                log::debug!("heartbeat: processing pending {:?}", p);
+                                log::debug!("waiting for reply");
                                 true
                             }
                             Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                                log::error!("pending -> dropped, channel disconnected");
+                                log::warn!("heartbeat: processing pending {:?}", p);
+                                log::warn!("channel disconnected");
                                 false
                             }
                         }
                     }
                     BackingStatus::Ready(r) => {
                         if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
-                            log::info!("ready -> dropped");
-                            false
-                        } else {
-                            true
+                            log::info!("heartbeat: processing ready {:?}", r);
+                            let (tx, rx) = crossbeam_channel::bounded(1);
+                            r.reply_sender = Some(tx);
+                            *v = BackingStatus::Dropped(DroppedBackingId { reply: rx });
+                            log::info!("ready -> dropped; timeout");
+                        }
+                        true // ready transitions to ready or dropped. either way, we keep it in the cache.
+                    }
+                    BackingStatus::Dropped(d) => {
+                        match d.reply.try_recv() {
+                            Ok(Ok(())) => {
+                                log::info!("heartbeat: processing dropped {:?}", d);
+                                log::info!("ok");
+                                false
+                            }
+                            Ok(Err(e)) => {
+                                log::error!("heartbeat: processing dropped {:?}", d);
+                                log::error!("error {}", e);
+                                false
+                            }
+                            Err(crossbeam_channel::TryRecvError::Empty) => {
+                                log::debug!("heartbeat: processing dropped {:?}", d);
+                                log::debug!("waiting for reply");
+                                true
+                            }
+                            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                log::warn!("heartbeat: processing dropped {:?}", d);
+                                log::warn!("channel disconnected");
+                                false
+                            }
                         }
                     }
+
                 }
             });
         }
