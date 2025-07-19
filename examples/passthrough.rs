@@ -33,7 +33,7 @@ struct ReadyBackingId {
     notifier: crossbeam_channel::Sender<Notification>,
     backing_id: u32,
     timestamp: SystemTime,
-    reply_sender: Option<crossbeam_channel::Sender<io::Result<(u32)>>>,
+    reply_sender: Option<crossbeam_channel::Sender<io::Result<u32>>>,
 }
 
 impl Drop for ReadyBackingId {
@@ -45,7 +45,7 @@ impl Drop for ReadyBackingId {
 
 #[derive(Debug)]
 struct DroppedBackingId {
-    reply: crossbeam_channel::Receiver<io::Result<()>>,
+    reply: crossbeam_channel::Receiver<io::Result<u32>>,
 }
 
 #[derive(Debug)]
