@@ -285,7 +285,7 @@ impl Filesystem for PassthroughFs {
                         match d.reply.try_recv() {
                             Ok(Ok(value)) => {
                                 log::info!("heartbeat: processing dropped {:?}", d);
-                                log::info!("ok {:?}," value;
+                                log::info!("ok {:?}", value);
                                 false
                             }
                             Ok(Err(e)) => {
