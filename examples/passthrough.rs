@@ -18,10 +18,12 @@ const TTL: Duration = Duration::from_secs(1); // 1 second
 
 // ----- BackingID -----
 
+use std::io;
+
 #[derive(Debug)]
 struct PendingBackingId {
     #[allow(dead_code)]
-    reply: crossbeam_channel::Receiver<u32>,
+    reply: crossbeam_channel::Receiver<io::Result<u32>>,
     #[allow(dead_code)]
     _file: Arc<File>,
 }
@@ -120,6 +122,7 @@ impl PassthroughFs {
             backing_cache: Default::default(),
             open_files: HashMap::new(),
             next_fh: 0,
+            notification_sender: None,
         }
     }
 
@@ -164,7 +167,7 @@ impl Filesystem for PassthroughFs {
                 };
                 e.insert(BackingStatus::Pending(backing_id));
                 if let Some(sender) = &self.notification_sender {
-                    let _ = sender.send(Notification::OpenBacking((fd, Some(tx))));
+                    let _ = sender.send(Notification::OpenBacking((fd as u32, Some(tx))));
                 }
                 log::info!("lookup created new pending backing id");
             }
@@ -193,7 +196,7 @@ impl Filesystem for PassthroughFs {
 
     fn open(&mut self, _req: RequestMeta, ino: u64, _flags: i32) -> Result<Open, Errno> {
         if ino != 2 {
-            return Err(Errно::ENOENT);
+            return Err(Errno::ENOENT);
         }
 
         // let id = self
@@ -220,12 +223,12 @@ impl Filesystem for PassthroughFs {
         Ok(Open { fh, flags: 0 })
     }
 
-    fn heartbeat(&mut self, _req: RequestMeta) -> Result<fuser::FsStatus, Errno> {
+    fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
         let now = SystemTime::now();
         if let Some(notifier) = self.notification_sender.clone() {
             self.backing_cache.by_inode.retain(|_, v| match v {
                 BackingStatus::Pending(p) => {
-                    if let Ok(backing_id) = p.reply.try_recv() {
+                    if let Ok(Ok(backing_id)) = p.reply.try_recv() {
                         log::info!("pending -> ready");
                         *v = BackingStatus::Ready(ReadyBackingId {
                             notifier: notifier.clone(),
@@ -381,10 +384,10 @@ mod tests {
         ));
 
         // Send a backing id to simulate the kernel
-        sender.send(123).unwrap();
+        sender.send(Ok(123)).unwrap();
 
         // Heartbeat should transition to ready
-        fs.heartbeat(req).unwrap();
+        fs.heartbeat().unwrap();
         assert_eq!(fs.backing_cache.by_inode.len(), 1);
         assert!(matches!(
             fs.backing_cache.by_inode.get(&2).unwrap(),
