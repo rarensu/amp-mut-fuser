@@ -141,7 +141,7 @@ impl PassthroughFs {
     // update_backing mutates a BackingStatus held by the backing cache.
     // returns true if the item is valid and should be retained in the cache.
     // returns false if the item is invalid and should be removed from the cache.
-    fn update_backing(backing_status: &mut BackingStatus, notifier_option: Option<Sender<Notification>>>) -> bool {
+    fn update_backing(backing_status: &mut BackingStatus, notifier_option: Option<Sender<Notification>>) -> bool {
         match backing_status {
             BackingStatus::Pending(p) => {
                 if let Some(notifier) = notifier_option {
