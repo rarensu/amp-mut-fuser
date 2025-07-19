@@ -173,6 +173,7 @@ impl PassthroughFs {
                         false
                     }
                 }
+            }
             BackingStatus::Ready(r) => {
                 let now = SystemTime::now();
                 if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
