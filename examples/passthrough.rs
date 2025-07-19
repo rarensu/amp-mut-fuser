@@ -60,6 +60,8 @@ struct BackingCache {
     by_inode: HashMap<u64, BackingStatus>,
 }
 
+use crossbeam_channel::Sender;
+
 #[derive(Debug)]
 struct PassthroughFs {
     root_attr: FileAttr,
@@ -68,6 +70,7 @@ struct PassthroughFs {
     #[allow(dead_code)]
     open_files: HashMap<u64, u64>,
     next_fh: u64,
+    notification_sender: Option<Sender<Notification>>,
 }
 
 impl PassthroughFs {
@@ -138,17 +141,31 @@ impl Filesystem for PassthroughFs {
         Ok(config)
     }
 
+    #[cfg(feature = "abi-7-11")]
+    fn init_notification_sender(
+        &mut self,
+        sender: Sender<Notification>,
+    ) -> bool {
+        self.notification_sender = Some(sender);
+        true
+    }
+
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent == 1 && name.to_str() == Some("passthrough") {
             if let std::collections::hash_map::Entry::Vacant(e) =
                 self.backing_cache.by_inode.entry(2)
             {
-                let (_tx, rx) = crossbeam_channel::unbounded();
+                let (tx, rx) = crossbeam_channel::unbounded();
+                let file = File::open("/etc/os-release").unwrap();
+                let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
                 let backing_id = PendingBackingId {
                     reply: rx,
-                    _file: Arc::new(File::open("/etc/os-release").unwrap()),
+                    _file: Arc::new(file),
                 };
                 e.insert(BackingStatus::Pending(backing_id));
+                if let Some(sender) = &self.notification_sender {
+                    let _ = sender.send(Notification::OpenBacking((fd, Some(tx))));
+                }
                 log::info!("lookup created new pending backing id");
             }
 
@@ -203,34 +220,33 @@ impl Filesystem for PassthroughFs {
         Ok(Open { fh, flags: 0 })
     }
 
-    fn heartbeat(&mut self, _req: RequestMeta, notifier: crossbeam_channel::Sender<Notification>) -> Result<(), Errno> {
+    fn heartbeat(&mut self, _req: RequestMeta) -> Result<fuser::FsStatus, Errno> {
         let now = SystemTime::now();
-        self.backing_cache.by_inode.retain(|_, v| match v {
-            BackingStatus::Pending(p) => {
-                if p.reply.is_empty() {
-                    true
-                } else {
-                    let backing_id = p.reply.recv().unwrap();
-                    log::info!("pending -> ready");
-                    *v = BackingStatus::Ready(ReadyBackingId {
-                        notifier: notifier.clone(),
-                        backing_id,
-                        timestamp: now,
-                    });
-                    true
-                }
-            }
-            BackingStatus::Ready(r) => {
-                if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
-                    log::info!("ready -> dropped");
-                    false
-                } else {
+        if let Some(notifier) = self.notification_sender.clone() {
+            self.backing_cache.by_inode.retain(|_, v| match v {
+                BackingStatus::Pending(p) => {
+                    if let Ok(backing_id) = p.reply.try_recv() {
+                        log::info!("pending -> ready");
+                        *v = BackingStatus::Ready(ReadyBackingId {
+                            notifier: notifier.clone(),
+                            backing_id,
+                            timestamp: now,
+                        });
+                    }
                     true
                 }
-            }
-        });
+                BackingStatus::Ready(r) => {
+                    if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
+                        log::info!("ready -> dropped");
+                        false
+                    } else {
+                        true
+                    }
+                }
+            });
+        }
 
-        Ok(())
+        Ok(fuser::FsStatus::Ready)
     }
 
 
@@ -338,40 +354,48 @@ mod tests {
             gid: 0,
             pid: 0,
         };
-        let (notifier, _) = unbounded();
+        let (tx, rx) = unbounded();
+        fs.init_notification_sender(tx);
 
-        // First lookup should create a pending entry
+        // First lookup should create a pending entry and send a notification
         fs.lookup(req, 1, "passthrough".into()).unwrap();
         assert_eq!(fs.backing_cache.by_inode.len(), 1);
         assert!(matches!(
             fs.backing_cache.by_inode.get(&2).unwrap(),
             BackingStatus::Pending(_)
         ));
+        let notification = rx.try_recv().unwrap();
+        let (fd, sender) = match notification {
+            Notification::OpenBacking(d) => d,
+            _ => panic!("unexpected notification"),
+        };
+        assert!(fd > 0);
+        let sender = sender.unwrap();
 
         // Heartbeat should not do anything yet
-        fs.heartbeat(req, notifier.clone()).unwrap();
+        fs.heartbeat(req).unwrap();
         assert_eq!(fs.backing_cache.by_inode.len(), 1);
         assert!(matches!(
             fs.backing_cache.by_inode.get(&2).unwrap(),
             BackingStatus::Pending(_)
         ));
 
-        // TODO: This test needs to be updated to send a message to the channel
-        // to simulate the backing id being ready.
+        // Send a backing id to simulate the kernel
+        sender.send(123).unwrap();
 
-        // // Heartbeat should transition to ready
-        // fs.heartbeat(req, notifier.clone()).unwrap();
-        // assert_eq!(fs.backing_cache.by_inode.len(), 1);
-        // assert!(matches!(
-        //     fs.backing_cache.by_inode.get(&2).unwrap(),
-        //     BackingStatus::Ready(_)
-        // ));
+        // Heartbeat should transition to ready
+        fs.heartbeat(req).unwrap();
+        assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        assert!(matches!(
+            fs.backing_cache.by_inode.get(&2).unwrap(),
+            BackingStatus::Ready(_)
+        ));
 
-        // // Wait for 2 seconds
-        // std::thread::sleep(Duration::from_secs(2));
+        // Wait for 2 seconds
+        std::thread::sleep(Duration::from_secs(2));
 
-        // // Heartbeat should remove the ready entry
-        // fs.heartbeat(req, notifier.clone()).unwrap();
-        // assert_eq!(fs.backing_cache.by_inode.len(), 0);
+        // Heartbeat should remove the ready entry
+        fs.heartbeat(req).unwrap();
+        assert_eq!(fs.backing_cache.by_inode.len(), 0);
     }
 }
