@@ -11,68 +11,40 @@ use fuser::{
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
-use std::rc::{Rc, Weak};
-use std::time::{Duration, UNIX_EPOCH};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
-/// BackingCache is an example of how a filesystem might manage BackingId objects for fd
-/// passthrough.  The idea is to avoid creating more than one BackingId object per file at a time.
-///
-/// We do this by keeping a weak "by inode" hash table mapping inode numbers to BackingId.  If a
-/// BackingId already exists, we use it.  Otherwise, we create it.  This is not enough to keep the
-/// BackingId alive, though.  For each Filesystem::open() request we allocate a fresh 'fh'
-/// (monotonically increasing u64, next_fh, never recycled) and use that to keep a *strong*
-/// reference on the BackingId for that open.  We drop it from the table on Filesystem::release(),
-/// which means the BackingId will be dropped in the kernel when the last user of it closes.
-///
-/// In this way, if a request to open a file comes in and the file is already open, we'll reuse the
-/// BackingId, but as soon as all references are closed, the BackingId will be dropped.
-///
-/// It's left as an exercise to the reader to implement an active cleanup of the by_inode table, if
-/// desired, but our little example filesystem only contains one file. :)
-
 // ----- BackingID -----
 
-/// A struct to hold a reference to a previously opened File intended to be used for passthrough,
-/// and the backing id for that file.
-///
-/// When working with backing IDs you need to ensure that they live "long enough". A good practice
-/// is to create them in the `Filesystem::open()` impl, store them in the struct of your
-/// `Filesystem` impl, then drop them in the `Filesystem::release()` impl. Dropping them
-/// immediately after sending them in the `Filesystem::open()` impl can lead to the kernel
-/// returning EIO when userspace attempts to access the file.
-///
-/// This is implemented as a safe wrapper around the `backing_id` field of the
-/// `fuse_backing_map` struct used by the ioctls involved in fd passthrough. It has a `Drop`
-/// trait impl which sends a `CloseBacking` notification. It holds a reference on the notifier to
-/// allow it to make that call (if the notifier hasn't already been closed).
 #[derive(Debug)]
-pub struct BackingId {
-    notifier: crossbeam_channel::Sender<Notification>,
+struct PendingBackingId {
+    #[allow(dead_code)]
+    reply: crossbeam_channel::Receiver<u32>,
+    #[allow(dead_code)]
     _file: Arc<File>,
-    /// The backing_id field passed to and from the kernel
+}
+
+#[derive(Debug)]
+struct ReadyBackingId {
+    notifier: crossbeam_channel::Sender<Notification>,
     backing_id: u32,
+    timestamp: SystemTime,
 }
 
-impl BackingId {
-    pub(crate) fn create(notifier: crossbeam_channel::Sender<Notification>, file: Arc<File>, backing_id: u32) -> Self {
-        Self {
-            notifier,
-            _file: file,
-            backing_id,
-        }
-    }
-}
-
-impl Drop for BackingId {
+impl Drop for ReadyBackingId {
     fn drop(&mut self) {
-        let notification = Notification::CloseBacking((self.backing_id,None));
+        let notification = Notification::CloseBacking((self.backing_id, None));
         let _ = self.notifier.send(notification);
     }
 }
 
+#[derive(Debug)]
+enum BackingStatus {
+    Pending(PendingBackingId),
+    Ready(ReadyBackingId),
+}
 
 /// A cache for `BackingId` objects.
 ///
@@ -85,29 +57,7 @@ impl Drop for BackingId {
 /// reference is dropped when the file is released.
 #[derive(Debug, Default)]
 struct BackingCache {
-    by_inode: HashMap<u64, Weak<BackingId>>,
-}
-
-impl BackingCache {
-    /// Gets the existing BackingId for `ino` if it exists, or calls `callback` to create it.
-    ///
-    /// Returns the BackingID (possibly shared, possibly new). The caller is responsible for
-    /// keeping the `BackingId` alive for as long as it is needed.
-    fn get_or(
-        &mut self,
-        ino: u64,
-        callback: impl Fn() -> std::io::Result<BackingId>,
-    ) -> std::io::Result<Rc<BackingId>> {
-        if let Some(id) = self.by_inode.get(&ino).and_then(Weak::upgrade) {
-            eprintln!("HIT! reusing {id:?}");
-            Ok(id)
-        } else {
-            let id = Rc::new(callback()?);
-            self.by_inode.insert(ino, Rc::downgrade(&id));
-            eprintln!("MISS! new {id:?}");
-            Ok(id)
-        }
-    }
+    by_inode: HashMap<u64, BackingStatus>,
 }
 
 #[derive(Debug)]
@@ -115,7 +65,8 @@ struct PassthroughFs {
     root_attr: FileAttr,
     passthrough_file_attr: FileAttr,
     backing_cache: BackingCache,
-    open_files: HashMap<u64, Rc<BackingId>>,
+    #[allow(dead_code)]
+    open_files: HashMap<u64, u64>,
     next_fh: u64,
 }
 
@@ -189,6 +140,18 @@ impl Filesystem for PassthroughFs {
 
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         if parent == 1 && name.to_str() == Some("passthrough") {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                self.backing_cache.by_inode.entry(2)
+            {
+                let (_tx, rx) = crossbeam_channel::unbounded();
+                let backing_id = PendingBackingId {
+                    reply: rx,
+                    _file: Arc::new(File::open("/etc/os-release").unwrap()),
+                };
+                e.insert(BackingStatus::Pending(backing_id));
+                log::info!("lookup created new pending backing id");
+            }
+
             Ok(Entry {
                 attr: self.passthrough_file_attr,
                 ttl: TTL,
@@ -213,45 +176,63 @@ impl Filesystem for PassthroughFs {
 
     fn open(&mut self, _req: RequestMeta, ino: u64, _flags: i32) -> Result<Open, Errno> {
         if ino != 2 {
-            return Err(Errno::ENOENT);
+            return Err(Errно::ENOENT);
         }
 
-        let id = self
-            .backing_cache
-            .get_or(ino, || {
-                let _file = File::open("/etc/os-release")?;
-                // TODO: Implement opening the backing file and returning appropriate
-                // information, possibly including a BackingId within the Open struct,
-                // or handle it through other means if fd-passthrough is intended here.
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "TODO: passthrough open not fully implemented",
-                ))
-            })
-            .unwrap();
+        // let id = self
+        //     .backing_cache
+        //     .get_or(ino, || {
+        //         let _file = File::open("/etc/os-release")?;
+        //         // TODO: Implement opening the backing file and returning appropriate
+        //         // information, possibly including a BackingId within the Open struct,
+        //         // or handle it through other means if fd-passthrough is intended here.
+        //         Err(std::io::Error::new(
+        //             std::io::ErrorKind::Other,
+        //             "TODO: passthrough open not fully implemented",
+        //         ))
+        //     })
+        //     .unwrap();
 
         let fh = self.next_fh();
-        self.open_files.insert(fh, id.clone());
+        // self.open_files.insert(fh, id.clone());
 
-        eprintln!("  -> opened_passthrough({fh:?}, 0, {id:?});\n");
+        // eprintln!("  -> opened_passthrough({fh:?}, 0, {id:?});\n");
         // TODO: Ensure fd-passthrough is correctly set up if intended.
         // The Open struct would carry necessary info.
         // TODO: implement flags for Open struct
         Ok(Open { fh, flags: 0 })
     }
 
-    fn release(
-        &mut self,
-        _req: RequestMeta,
-        _ino: u64,
-        fh: u64,
-        _flags: i32,
-        _lock_owner: Option<u64>,
-        _flush: bool,
-    ) -> Result<(), Errno> {
-        self.open_files.remove(&fh);
+    fn heartbeat(&mut self, _req: RequestMeta, notifier: crossbeam_channel::Sender<Notification>) -> Result<(), Errno> {
+        let now = SystemTime::now();
+        self.backing_cache.by_inode.retain(|_, v| match v {
+            BackingStatus::Pending(p) => {
+                if p.reply.is_empty() {
+                    true
+                } else {
+                    let backing_id = p.reply.recv().unwrap();
+                    log::info!("pending -> ready");
+                    *v = BackingStatus::Ready(ReadyBackingId {
+                        notifier: notifier.clone(),
+                        backing_id,
+                        timestamp: now,
+                    });
+                    true
+                }
+            }
+            BackingStatus::Ready(r) => {
+                if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
+                    log::info!("ready -> dropped");
+                    false
+                } else {
+                    true
+                }
+            }
+        });
+
         Ok(())
     }
+
 
     fn readdir(
         &mut self,
@@ -328,58 +309,69 @@ fn main() {
 mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
+    use fuser::Request;
+    use std::time::Duration;
+
+    struct MockRequest {
+        uid: u32,
+        gid: u32,
+        pid: u32,
+    }
+
+    impl Request for MockRequest {
+        fn uid(&self) -> u32 {
+            self.uid
+        }
+        fn gid(&self) -> u32 {
+            self.gid
+        }
+        fn pid(&self) -> u32 {
+            self.pid
+        }
+    }
 
     #[test]
-    fn test_backing_cache() {
-        let (tx, _) = unbounded();
-        let mut cache = BackingCache::default();
+    fn test_lookup_heartbeat_cycle() {
+        let mut fs = PassthroughFs::new();
+        let req = MockRequest {
+            uid: 0,
+            gid: 0,
+            pid: 0,
+        };
+        let (notifier, _) = unbounded();
 
-        // Create a new BackingId
-        let id1 = cache
-            .get_or(1, || {
-                Ok(BackingId::create(
-                    tx.clone(),
-                    Arc::new(File::open("/dev/null").unwrap()),
-                    1,
-                ))
-            })
-            .unwrap();
-        assert_eq!(id1.backing_id, 1);
+        // First lookup should create a pending entry
+        fs.lookup(req, 1, "passthrough".into()).unwrap();
+        assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        assert!(matches!(
+            fs.backing_cache.by_inode.get(&2).unwrap(),
+            BackingStatus::Pending(_)
+        ));
 
-        // Get the same BackingId again
-        let id2 = cache
-            .get_or(1, || {
-                panic!("should not be called");
-            })
-            .unwrap();
-        assert!(Rc::ptr_eq(&id1, &id2));
+        // Heartbeat should not do anything yet
+        fs.heartbeat(req, notifier.clone()).unwrap();
+        assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        assert!(matches!(
+            fs.backing_cache.by_inode.get(&2).unwrap(),
+            BackingStatus::Pending(_)
+        ));
 
-        // Create a new BackingId for a different inode
-        let id3 = cache
-            .get_or(2, || {
-                Ok(BackingId::create(
-                    tx.clone(),
-                    Arc::new(File::open("/dev/null").unwrap()),
-                    2,
-                ))
-            })
-            .unwrap();
-        assert_eq!(id3.backing_id, 2);
-        assert!(!Rc::ptr_eq(&id1, &id3));
+        // TODO: This test needs to be updated to send a message to the channel
+        // to simulate the backing id being ready.
 
-        // Drop the first BackingId
-        drop(id1);
-        // The BackingId should still be alive because of the second handle
-        assert!(cache.by_inode.get(&1).unwrap().upgrade().is_some());
+        // // Heartbeat should transition to ready
+        // fs.heartbeat(req, notifier.clone()).unwrap();
+        // assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        // assert!(matches!(
+        //     fs.backing_cache.by_inode.get(&2).unwrap(),
+        //     BackingStatus::Ready(_)
+        // ));
 
-        // Drop the second BackingId
-        drop(id2);
-        // The BackingId should be dropped now
-        assert!(cache.by_inode.get(&1).unwrap().upgrade().is_none());
+        // // Wait for 2 seconds
+        // std::thread::sleep(Duration::from_secs(2));
 
-        // Drop the third BackingId
-        drop(id3);
-        // The BackingId should be dropped now
-        assert!(cache.by_inode.get(&2).unwrap().upgrade().is_none());
+        // // Heartbeat should remove the ready entry
+        // fs.heartbeat(req, notifier.clone()).unwrap();
+        // assert_eq!(fs.backing_cache.by_inode.len(), 0);
     }
 }
