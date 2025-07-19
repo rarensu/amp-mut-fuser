@@ -239,9 +239,19 @@ impl Filesystem for PassthroughFs {
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         log::info!("lookup(name={:?})", name);
         if parent == 1 && name.to_str() == Some("passthrough") {
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                self.backing_cache.by_inode.entry(2)
-            {
+            let mut remove = false;
+            if let Some(backing_status) = self.backing_cache.by_inode.get_mut(&2) {
+                if let Some(notifier) = self.notification_sender.clone() {
+                    if !Self::update_backing_status(backing_status, &notifier) {
+                        remove = true;
+                    }
+                }
+            }
+            if remove {
+                self.backing_cache.by_inode.remove(&2);
+            }
+
+            if self.backing_cache.by_inode.get(&2).is_none() {
                 log::info!("new pending backing id request");
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let file = File::open("/etc/os-release").unwrap();
@@ -250,7 +260,9 @@ impl Filesystem for PassthroughFs {
                     reply: rx,
                     _file: Arc::new(file),
                 };
-                e.insert(BackingStatus::Pending(backing_id));
+                self.backing_cache
+                    .by_inode
+                    .insert(2, BackingStatus::Pending(backing_id));
                 if let Some(sender) = &self.notification_sender {
                     if let Err(e) = sender.send(Notification::OpenBacking((fd as u32, Some(tx)))) {
                         log::error!("failed to send OpenBacking notification: {}", e);
