@@ -137,7 +137,10 @@ impl PassthroughFs {
         self.next_fh += 1;
         self.next_fh
     }
-    
+
+    // update_backing mutates a BackingStatus held by the backing cache.
+    // returns true if the item is valid and should be retained in the cache.
+    // returns false if the item is invalid and should be removed from the cache.
     fn update_backing(&mut self, backing_status: &mut BackingStatus) -> bool {
         match backing_status {
             BackingStatus::Pending(p) => {
@@ -146,7 +149,7 @@ impl PassthroughFs {
                         Ok(Ok(backing_id)) => {
                             log::info!("heartbeat: processing pending {:?}", p);
                             let now = SystemTime::now();
-                            *v = BackingStatus::Ready(ReadyBackingId {
+                            *backing_status = BackingStatus::Ready(ReadyBackingId {
                                 notifier: notifier.clone(),
                                 backing_id,
                                 timestamp: now,
@@ -179,7 +182,7 @@ impl PassthroughFs {
                     log::info!("heartbeat: processing ready {:?}", r);
                     let (tx, rx) = crossbeam_channel::bounded(1);
                     r.reply_sender = Some(tx);
-                    *v = BackingStatus::Dropped(DroppedBackingId { reply: rx });
+                    *backing_status = BackingStatus::Dropped(DroppedBackingId { reply: rx });
                     log::info!("ready -> dropped; timeout");
                 }
                 true // ready transitions to ready or dropped. either way, we keep it in the cache.
