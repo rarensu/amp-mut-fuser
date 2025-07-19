@@ -328,40 +328,25 @@ fn main() {
 mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
-    use fuser::Request;
     use std::time::Duration;
 
-    struct MockRequest {
-        uid: u32,
-        gid: u32,
-        pid: u32,
-    }
-
-    impl Request for MockRequest {
-        fn uid(&self) -> u32 {
-            self.uid
-        }
-        fn gid(&self) -> u32 {
-            self.gid
-        }
-        fn pid(&self) -> u32 {
-            self.pid
+    fn dummy_meta() -> RequestMeta {
+        RequestMeta {
+            unique: 0,
+            uid: 1000,
+            gid: 1000,
+            pid: 2000,
         }
     }
 
     #[test]
     fn test_lookup_heartbeat_cycle() {
         let mut fs = PassthroughFs::new();
-        let req = MockRequest {
-            uid: 0,
-            gid: 0,
-            pid: 0,
-        };
         let (tx, rx) = unbounded();
         fs.init_notification_sender(tx);
 
         // First lookup should create a pending entry and send a notification
-        fs.lookup(req, 1, "passthrough".into()).unwrap();
+        fs.lookup(dummy_meta(), 1, "passthrough".into()).unwrap();
         assert_eq!(fs.backing_cache.by_inode.len(), 1);
         assert!(matches!(
             fs.backing_cache.by_inode.get(&2).unwrap(),
@@ -376,7 +361,7 @@ mod tests {
         let sender = sender.unwrap();
 
         // Heartbeat should not do anything yet
-        fs.heartbeat(req).unwrap();
+        fs.heartbeat().unwrap();
         assert_eq!(fs.backing_cache.by_inode.len(), 1);
         assert!(matches!(
             fs.backing_cache.by_inode.get(&2).unwrap(),
@@ -398,7 +383,7 @@ mod tests {
         std::thread::sleep(Duration::from_secs(2));
 
         // Heartbeat should remove the ready entry
-        fs.heartbeat(req).unwrap();
+        fs.heartbeat().unwrap();
         assert_eq!(fs.backing_cache.by_inode.len(), 0);
     }
 }
