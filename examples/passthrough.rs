@@ -141,10 +141,10 @@ impl PassthroughFs {
     // update_backing mutates a BackingStatus held by the backing cache.
     // returns true if the item is valid and should be retained in the cache.
     // returns false if the item is invalid and should be removed from the cache.
-    fn update_backing(&mut self, backing_status: &mut BackingStatus) -> bool {
+    fn update_backingbacking_status: &mut BackingStatus, notifier_option: Option<Sender<Notification>>>) -> bool {
         match backing_status {
             BackingStatus::Pending(p) => {
-                if let Some(notifier) = self.notification_sender.clone() {
+                if let Some(notifier) = notifier_option {
                     match p.reply.try_recv() {
                         Ok(Ok(backing_id)) => {
                             log::info!("heartbeat: processing pending {:?}", p);
@@ -318,7 +318,12 @@ impl Filesystem for PassthroughFs {
     }
 
     fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
-        self.backing_cache.by_inode.retain(|_, v| self.update_backing(v));
+        let notification_option = if let Some(notification_sender) = self.notification_sender {
+            Some(notification_sender.clone())
+        } else {
+            None
+        }
+        self.backing_cache.by_inode.retain(|_, v| self.update_backing(v, notification_option));
         Ok(fuser::FsStatus::Ready)
     }
 
