@@ -321,7 +321,8 @@ fn main() {
     }
 
     let fs = PassthroughFs::new();
-    fuser::mount2(fs, mountpoint, &options).unwrap();
+    let mut session = fuser::Session::new(fs, &std::path::Path::new(mountpoint), &options).unwrap();
+    session.run_with_notifications().unwrap();
 }
 
 #[cfg(test)]
