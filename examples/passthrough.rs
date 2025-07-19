@@ -174,6 +174,11 @@ impl PassthroughFs {
                             false
                         }
                     }
+                } else {
+                    // Unsafe to process a backing id without a notifier.
+                    // TODO: request a fresh notifier.
+                    // retain the cache entry until notification becomes available again.
+                    true
                 }
             }
             BackingStatus::Ready(r) => {
