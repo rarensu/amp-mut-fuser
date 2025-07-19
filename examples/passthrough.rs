@@ -312,7 +312,7 @@ impl Filesystem for PassthroughFs {
 
     fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
         if let Some(notifier) = self.notification_sender.clone() {
-            self.backing_cache.by_inode.retain(|_, v| PassthroughFs::update_backing(v, notifier));
+            self.backing_cache.by_inode.retain(|_, v| PassthroughFs::update_backing(v, &notifier));
         }
         Ok(fuser::FsStatus::Ready)
     }
