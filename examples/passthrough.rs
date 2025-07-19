@@ -322,8 +322,8 @@ impl Filesystem for PassthroughFs {
             Some(notification_sender.clone())
         } else {
             None
-        }
-        self.backing_cache.by_inode.retain(|_, v| self.update_backing(v, notification_option));
+        };
+        self.backing_cache.by_inode.retain(|_, v| PassthroughFs::update_backing(v, notification_option));
         Ok(fuser::FsStatus::Ready)
     }
 
