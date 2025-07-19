@@ -141,46 +141,38 @@ impl PassthroughFs {
     // update_backing mutates a BackingStatus held by the backing cache.
     // returns true if the item is valid and should be retained in the cache.
     // returns false if the item is invalid and should be removed from the cache.
-    fn update_backing(backing_status: &mut BackingStatus, notifier_option: Option<Sender<Notification>>) -> bool {
+    fn update_backing(backing_status: &mut BackingStatus, notifier: Sender<Notification>) -> bool {
         match backing_status {
             BackingStatus::Pending(p) => {
-                if let Some(notifier) = notifier_option {
-                    match p.reply.try_recv() {
-                        Ok(Ok(backing_id)) => {
-                            log::info!("heartbeat: processing pending {:?}", p);
-                            let now = SystemTime::now();
-                            *backing_status = BackingStatus::Ready(ReadyBackingId {
-                                notifier: notifier.clone(),
-                                backing_id,
-                                timestamp: now,
-                                reply_sender: None,
-                            });
-                            log::info!("pending -> ready; backing_id {}", backing_id);
-                            true
-                        }
-                        Ok(Err(e)) => {
-                            log::error!("heartbeat: processing pending {:?}", p);
-                            log::error!("error {}", e);
-                            false
-                        }
-                        Err(crossbeam_channel::TryRecvError::Empty) => {
-                            log::debug!("heartbeat: processing pending {:?}", p);
-                            log::debug!("waiting for reply");
-                            true
-                        }
-                        Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                            log::warn!("heartbeat: processing pending {:?}", p);
-                            log::warn!("channel disconnected");
-                            false
-                        }
+                match p.reply.try_recv() {
+                    Ok(Ok(backing_id)) => {
+                        log::info!("heartbeat: processing pending {:?}", p);
+                        let now = SystemTime::now();
+                        *backing_status = BackingStatus::Ready(ReadyBackingId {
+                            notifier: notifier.clone(),
+                            backing_id,
+                            timestamp: now,
+                            reply_sender: None,
+                        });
+                        log::info!("pending -> ready; backing_id {}", backing_id);
+                        true
                     }
-                } else {
-                    // Unsafe to process a backing id without a notifier.
-                    // TODO: request a fresh notifier.
-                    // retain the cache entry until notification becomes available again.
-                    true
+                    Ok(Err(e)) => {
+                        log::error!("heartbeat: processing pending {:?}", p);
+                        log::error!("error {}", e);
+                        false
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        log::debug!("heartbeat: processing pending {:?}", p);
+                        log::debug!("waiting for reply");
+                        true
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        log::warn!("heartbeat: processing pending {:?}", p);
+                        log::warn!("channel disconnected");
+                        false
+                    }
                 }
-            }
             BackingStatus::Ready(r) => {
                 let now = SystemTime::now();
                 if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
@@ -318,12 +310,9 @@ impl Filesystem for PassthroughFs {
     }
 
     fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
-        let clone_of_notification_option = if let Some(notification_sender_inner) = &self.notification_sender {
-            Some(notification_sender_inner.clone())
-        } else {
-            None
-        };
-        self.backing_cache.by_inode.retain(|_, v| PassthroughFs::update_backing(v, clone_of_notification_option));
+        if let Some(notifier) = self.notification_sender.clone() {
+            self.backing_cache.by_inode.retain(|_, v| PassthroughFs::update_backing(v, notifier));
+        }
         Ok(fuser::FsStatus::Ready)
     }
 
