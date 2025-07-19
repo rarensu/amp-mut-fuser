@@ -37,8 +37,7 @@ struct ReadyBackingId {
 
 impl Drop for ReadyBackingId {
     fn drop(&mut self) {
-        let (tx, _rx) = crossbeam_channel::bounded(1);
-        let notification = Notification::CloseBacking((self.backing_id, Some(tx)));
+        let notification = Notification::CloseBacking((self.backing_id, None));
         let _ = self.notifier.send(notification);
     }
 }
@@ -264,11 +263,6 @@ impl Filesystem for PassthroughFs {
                     BackingStatus::Ready(r) => {
                         if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
                             log::info!("ready -> dropped");
-                            let notification =
-                                Notification::CloseBacking((r.backing_id, None));
-                            if let Err(e) = r.notifier.send(notification) {
-                                log::error!("failed to send CloseBacking notification: {}", e);
-                            }
                             false
                         } else {
                             true
