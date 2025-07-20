@@ -119,7 +119,7 @@ fn is_mounted(fuse_device: &File) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::ffi::CStr;
+    use std::{ffi::CStr, mem::ManuallyDrop};
 
     #[test]
     fn fuse_args() {
@@ -155,20 +155,21 @@ mod test {
     }
 
     #[test]
-    #[ignore]
     fn mount_unmount() {
-        let mount_point = std::path::Path::new("/tmp/mount_unmount");
-        std::fs::create_dir_all(mount_point).unwrap();
-        let (file, mount) = Mount::new(mount_point, &[]).unwrap();
+        // We use ManuallyDrop here to leak the directory on test failure.  We don't
+        // want to try and clean up the directory if it's a mountpoint otherwise we'll
+        // deadlock.
+        let tmp = ManuallyDrop::new(tempfile::tempdir().unwrap());
+        let (file, mount) = Mount::new(tmp.path(), &[]).unwrap();
         let mnt = cmd_mount();
-        eprintln!("Our mountpoint: {:?}\nfuse mounts:\n{}", mount_point, mnt,);
-        assert!(mnt.contains(mount_point.to_str().unwrap()));
+        eprintln!("Our mountpoint: {:?}\nfuse mounts:\n{}", tmp.path(), mnt,);
+        assert!(mnt.contains(&*tmp.path().to_string_lossy()));
         assert!(is_mounted(&file));
         drop(mount);
         let mnt = cmd_mount();
-        eprintln!("Our mountpoint: {:?}\nfuse mounts:\n{}", mount_point, mnt,);
+        eprintln!("Our mountpoint: {:?}\nfuse mounts:\n{}", tmp.path(), mnt,);
 
-        let detached = !mnt.contains(mount_point.to_str().unwrap());
+        let detached = !mnt.contains(&*tmp.path().to_string_lossy());
         // Linux supports MNT_DETACH, so we expect unmount to succeed even if the FS
         // is busy.  Other systems don't so the unmount may fail and we will still
         // have the mount listed.  The mount will get cleaned up later.
@@ -177,7 +178,7 @@ mod test {
 
         if detached {
             // We've detached successfully, it's safe to clean up:
-            std::fs::remove_dir(mount_point).unwrap();
+            std::mem::ManuallyDrop::<_>::into_inner(tmp);
         }
 
         // Filesystem may have been lazy unmounted, so we can't assert this:
