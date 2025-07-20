@@ -330,7 +330,7 @@ impl Filesystem for PassthroughFs {
         // TODO: implement flags for Open struct
         Ok(Open {
             fh,
-            flags: 0,
+            flags: consts::FOPEN_PASSTHROUGH,
             backing_id: backing_id_option,
         })
     }
@@ -471,6 +471,11 @@ mod tests {
             fs.backing_cache.by_inode.get(&2).unwrap(),
             BackingStatus::Ready(_)
         ));
+
+        // Open the file
+        let open = fs.open(dummy_meta(), 2, 0).unwrap();
+        assert_eq!(open.flags, consts::FOPEN_PASSTHROUGH);
+        assert_eq!(open.backing_id, Some(123));
 
         // Wait for 2 seconds
         std::thread::sleep(Duration::from_secs(2));
