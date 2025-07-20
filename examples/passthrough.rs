@@ -328,6 +328,7 @@ impl Filesystem for PassthroughFs {
         // TODO: Ensure fd-passthrough is correctly set up if intended.
         // The Open struct would carry necessary info.
         // TODO: implement flags for Open struct
+        log::info!("open: fh {}", fh);
         Ok(Open {
             fh,
             flags: consts::FOPEN_PASSTHROUGH,
@@ -344,6 +345,18 @@ impl Filesystem for PassthroughFs {
         Ok(fuser::FsStatus::Ready)
     }
 
+    fn read(
+        &mut self,
+        _req: RequestMeta,
+        _ino: u64,
+        _fh: u64,
+        _offset: i64,
+        _size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+    ) -> Result<Vec<u8>, Errno> {
+        unimplemented!();
+    }
 
     fn readdir(
         &mut self,
@@ -421,7 +434,6 @@ fn main() {
 mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
-    use std::time::Duration;
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta {
@@ -477,8 +489,8 @@ mod tests {
         assert_eq!(open.flags, consts::FOPEN_PASSTHROUGH);
         assert_eq!(open.backing_id, Some(123));
 
-        // Wait for 2 seconds
-        std::thread::sleep(Duration::from_secs(2));
+        // Wait for timeout
+        std::thread::sleep(BACKING_TIMEOUT);
 
         // Heartbeat should transition to closed
         fs.heartbeat().unwrap();
