@@ -306,19 +306,20 @@ impl Filesystem for PassthroughFs {
             return Err(Errno::ENOENT);
         }
 
-        // let id = self
-        //     .backing_cache
-        //     .get_or(ino, || {
-        //         let _file = File::open("/etc/os-release")?;
-        //         // TODO: Implement opening the backing file and returning appropriate
-        //         // information, possibly including a BackingId within the Open struct,
-        //         // or handle it through other means if fd-passthrough is intended here.
-        //         Err(std::io::Error::new(
-        //             std::io::ErrorKind::Other,
-        //             "TODO: passthrough open not fully implemented",
-        //         ))
-        //     })
-        //     .unwrap();
+        let mut remove = false;
+        if let Some(backing_status) = self.backing_cache.by_inode.get_mut(&ino) {
+            if let Some(notifier) = self.notification_sender.clone() {
+                if !Self::update_backing_status(backing_status, &notifier, true) {
+                    remove = true;
+                }
+            }
+            if let BackingStatus::Ready(ready_backing_id) = backing_status {
+                log::info!("open: backing_id {}", ready_backing_id.backing_id);
+            }
+        }
+        if remove {
+            self.backing_cache.by_inode.remove(&ino);
+        }
 
         let fh = self.next_fh();
         // self.open_files.insert(fh, id.clone());
