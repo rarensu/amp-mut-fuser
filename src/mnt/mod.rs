@@ -119,7 +119,7 @@ fn is_mounted(fuse_device: &File) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::{ffi::CStr, mem::ManuallyDrop};
+    use std::ffi::CStr;
 
     #[test]
     fn fuse_args() {

@@ -8,7 +8,6 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 #[test]
-#[ignore]
 #[cfg(target_os = "linux")]
 fn unmount_no_send() {
     struct NoSendFS(

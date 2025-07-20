@@ -14,8 +14,6 @@ use crate::ll::{
 use crate::ll::reply::{DirEntPlusList, DirEntryPlus};
 #[cfg(feature = "abi-7-21")]
 use crate::ll::Generation;
-#[cfg(feature = "abi-7-40")]
-use crate::consts::FOPEN_PASSTHROUGH;
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
 use std::ffi::OsString;
