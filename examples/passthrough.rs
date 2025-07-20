@@ -131,6 +131,22 @@ impl PassthroughFs {
     }
 
     // update_backing mutates a BackingStatus held by the backing cache.
+    // Get the backing status for a given inode.
+    // This will update the status if necessary and remove it from the cache if it is stale.
+    fn get_backing_status(&mut self, ino: u64) -> Option<&BackingStatus> {
+        let mut remove = false;
+        if let Some(backing_status) = self.backing_cache.get_mut(&ino) {
+            if let Some(notifier) = self.notification_sender.clone() {
+                if !Self::update_backing_status(backing_status, &notifier, true) {
+                    remove = true;
+                }
+            }
+        }
+        if remove {
+            self.backing_cache.remove(&ino);
+        }
+        self.backing_cache.get(&ino)
+    }
     // It returns a boolean indicating whether the item is still valid and should be retained in the cache.
     // This is so it works with `HashMap::retain` for efficiently dropping stale cache entries.
     fn update_backing_status(
@@ -140,9 +156,9 @@ impl PassthroughFs {
     ) -> bool {
         match backing_status {
             BackingStatus::Pending(p) => {
+                log::debug!("processing pending {:?}", p);
                 match p.reply.try_recv() {
                     Ok(Ok(backing_id)) => {
-                        log::info!("heartbeat: processing pending {:?}", p);
                         let now = SystemTime::now();
                         *backing_status = BackingStatus::Ready(ReadyBackingId {
                             notifier: notifier.clone(),
@@ -150,21 +166,18 @@ impl PassthroughFs {
                             timestamp: now,
                             reply_sender: None,
                         });
-                        log::info!("pending -> ready; backing_id {}", backing_id);
+                        log::info!("Backing Id {} Ready", backing_id);
                         true
                     }
                     Ok(Err(e)) => {
-                        log::error!("heartbeat: processing pending {:?}", p);
                         log::error!("error {}", e);
                         false
                     }
                     Err(crossbeam_channel::TryRecvError::Empty) => {
-                        log::debug!("heartbeat: processing pending {:?}", p);
                         log::debug!("waiting for reply");
                         true
                     }
                     Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        log::warn!("heartbeat: processing pending {:?}", p);
                         log::warn!("channel disconnected");
                         false
                     }
@@ -175,33 +188,30 @@ impl PassthroughFs {
                 if extend {
                     r.timestamp = now;
                 } else if now.duration_since(r.timestamp).unwrap() > BACKING_TIMEOUT {
-                    log::info!("heartbeat: processing ready {:?}", r);
+                    log::debug!("processing ready {:?}", r);
                     let (tx, rx) = crossbeam_channel::bounded(1);
+                    log::info!("Backing Id {} Timed Out", r.backing_id);
                     r.reply_sender = Some(tx);
                     *backing_status = BackingStatus::Closed(ClosedBackingId { reply: rx });
-                    log::info!("ready -> closed; timeout");
                 }
                 true // ready transitions to ready or closed. either way, we keep it in the cache.
             }
             BackingStatus::Closed(d) => {
+                log::debug!("processing closed {:?}", d);
                 match d.reply.try_recv() {
                     Ok(Ok(value)) => {
-                        log::info!("heartbeat: processing closed {:?}", d);
-                        log::info!("ok {:?}", value);
+                        log::debug!("ok {:?}", value);
                         false
                     }
                     Ok(Err(e)) => {
-                        log::error!("heartbeat: processing closed {:?}", d);
                         log::error!("error {}", e);
                         false
                     }
                     Err(crossbeam_channel::TryRecvError::Empty) => {
-                        log::debug!("heartbeat: processing closed {:?}", d);
                         log::debug!("waiting for reply");
                         true
                     }
                     Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        log::warn!("heartbeat: processing closed {:?}", d);
                         log::warn!("channel disconnected");
                         false
                     }
@@ -238,21 +248,7 @@ impl Filesystem for PassthroughFs {
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         log::info!("lookup(name={:?})", name);
         if parent == 1 && name.to_str() == Some("passthrough") {
-            let mut remove = false;
-            if let Some(backing_status) = self.backing_cache.get_mut(&2) {
-                if let Some(notifier) = self.notification_sender.clone() {
-                    if !Self::update_backing_status(backing_status, &notifier, true) {
-                        remove = true;
-                    }
-                }
-            }
-            // Mutation is weird. It is not safe to mutate the hash map while we have a mutable reference to one of its values.
-            // Therefore, we must drop the mutable reference before we can remove the item from the hash map.
-            if remove {
-                self.backing_cache.remove(&2);
-            }
-
-            if self.backing_cache.get(&2).is_none() {
+            if self.get_backing_status(2).is_none() {
                 log::info!("new pending backing id request");
                 if let Some(sender) = &self.notification_sender {
                     let (tx, rx) = crossbeam_channel::bounded(1);
@@ -300,21 +296,13 @@ impl Filesystem for PassthroughFs {
             return Err(Errno::ENOENT);
         }
 
-        let mut remove = false;
-        let mut backing_id_option: Option<u32> = None;
-        if let Some(backing_status) = self.backing_cache.get_mut(&ino) {
-            if let Some(notifier) = self.notification_sender.clone() {
-                if !Self::update_backing_status(backing_status, &notifier, true) {
-                    remove = true;
-                }
-            }
-            if let BackingStatus::Ready(ready_backing_id) = backing_status {
-                backing_id_option = Some(ready_backing_id.backing_id);
-            }
-        }
-        if remove {
-            self.backing_cache.remove(&ino);
-        }
+        let backing_id_option = if let Some(BackingStatus::Ready(ready_backing_id)) =
+            self.get_backing_status(ino)
+        {
+            Some(ready_backing_id.backing_id)
+        } else {
+            None
+        };
         let fh = self.next_fh();
         // TODO: track file handles
         log::info!("open: fh {}", fh);
