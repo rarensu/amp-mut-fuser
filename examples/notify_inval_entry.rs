@@ -9,6 +9,7 @@
 
 use std::{
     ffi::{OsStr, OsString},
+    path::Path,
     sync::{
         atomic::{AtomicU64, Ordering::SeqCst},
         Arc, Mutex,
@@ -20,10 +21,9 @@ use log::{warn,info};
 use clap::Parser;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
-    Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, Forget, FsStatus, InvalEntry,
-    MountOption, Notification, RequestMeta, FUSE_ROOT_ID,
+    Dirent, DirentList, Entry, Errno, FileAttr, FileType, Filesystem, Forget, 
+    FsStatus, InvalEntry, MountOption, RequestMeta, FUSE_ROOT_ID,
 };
-
 struct ClockFS<'a> {
     file_name: Arc<Mutex<String>>,
     lookup_cnt: &'a AtomicU64,
@@ -131,7 +131,7 @@ impl Filesystem for ClockFS<'_> {
         Ok(FsStatus::Ready)
     }
 
-    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
+    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name != OsStr::new(&self.get_filename()) {
             return Err(Errno::ENOENT);
         }
@@ -139,9 +139,11 @@ impl Filesystem for ClockFS<'_> {
         self.lookup_cnt.fetch_add(1, SeqCst);
         match ClockFS::stat(ClockFS::FILE_INO) {
             Some(attr) => Ok(Entry {
+                ino: attr.ino,
+                generation: None,
+                file_ttl: self.timeout,
                 attr,
-                ttl: self.timeout,
-                generation: 0,
+                attr_ttl: self.timeout,
             }),
             None => Err(Errno::EIO), // Should not happen if FILE_INO is valid
         }
@@ -156,38 +158,42 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
+    fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<(FileAttr, Duration), Errno> {
         match ClockFS::stat(ino) {
-            Some(attr) => Ok(Attr {
-                attr,
-                ttl: self.timeout,
-            }),
+            Some(attr) => Ok((attr, self.timeout)),
             None => Err(Errno::ENOENT),
         }
     }
 
-    fn readdir(
+    fn readdir<'dir, 'name>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirentList<'dir, 'name>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
-        let mut entries = Vec::new();
+        // In this example, construct and return an owned vector,
+        // containing owned bytes.
+        let mut entries= Vec::new();
         if offset == 0 {
-            entries.push(DirEntry {
+            let filename_string = self.get_filename(); // Returns String
+            let filename_os_string = OsString::from(filename_string);
+
+            let entry = Dirent {
                 ino: ClockFS::FILE_INO,
-                offset: 1, // Next offset is 1
+                offset: 1, // This entry's cookie
                 kind: FileType::RegularFile,
-                name: OsString::from(self.get_filename()),
-            });
+                name: filename_os_string.into(),
+            };
+            entries.push(entry);
         }
-        // If offset is > 0, we've already returned the single entry, so return an empty vector.
-        Ok(entries)
+        // If offset is > 0, we've already returned the single entry during a previous request,
+        // so just return the empty vector.
+        Ok(entries.into())
     }
 }
 

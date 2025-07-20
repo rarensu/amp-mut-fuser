@@ -1,9 +1,10 @@
 # FUSE for Rust - Changelog
 
-## 0.16.0 - 2025-06-24
+## 0.16.0 - 2025-07-16
 * **Major API Refactor**: The `Filesystem` trait methods have been refactored to return `Result` instead of using `Reply` objects for callbacks.
     * All `Filesystem` trait methods that previously accepted a `reply: ReplyT` parameter now return a `Result<T, Errno>`, where `T` is a struct containing the success data for that operation.
     * The `Request` object passed to `Filesystem` methods has been replaced with `RequestMeta`, a smaller struct containing only the request's metadata (uid, gid, pid, unique id). The full request parsing is now handled internally.
+    * A generic enum `Container` has been implemented to enable flexible ownership models in returned data.
     * Additional public structs are introduced to simplify handling of request data, response data, and errors.
     * This change unifies the implementation of `Filesystem` methods and brings them more in line with Idiomatic Rust.
     * Examples and tests have been updated to match this new API. A few unrelated bugs in examples and tests have been fixed.

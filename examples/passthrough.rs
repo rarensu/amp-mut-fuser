@@ -10,13 +10,12 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use crossbeam_channel::{Sender, Receiver};
 use fuser::{
-    consts, Attr, DirEntry, Entry, Errno, FileAttr, FileType, Filesystem, KernelConfig,
-    MountOption, Open, RequestMeta, Notification,
-
+    consts, Bytes, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
+    Filesystem, KernelConfig, MountOption, Open, RequestMeta, Notification,
 };
 use std::collections::HashMap;
 use std::io;
-use std::ffi::OsString;
+use std::path::Path;
 use std::fs::File;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -83,6 +82,12 @@ struct PassthroughFs {
     next_fh: u64,
     notification_sender: Option<Sender<Notification>>,
 }
+
+const ROOT_DIR_ENTRIES: [Dirent; 3] = [
+    Dirent { ino: 1, offset: 1, kind: FileType::Directory,   name: Bytes::Ref(b".") },
+    Dirent { ino: 1, offset: 2, kind: FileType::Directory,   name: Bytes::Ref(b"..") },
+    Dirent { ino: 2, offset: 3, kind: FileType::RegularFile, name: Bytes::Ref(b"passthrough") },
+];
 
 impl PassthroughFs {
     fn new() -> Self {
@@ -241,7 +246,8 @@ impl Filesystem for PassthroughFs {
         config: KernelConfig,
     ) -> Result<KernelConfig, Errno> {
         let mut config = config;
-        config.add_capabilities(consts::FUSE_PASSTHROUGH).unwrap();
+        config.add_capabilities(consts::FUSE_PASSTHROUGH)
+            .expect("FUSE Kernel support for passthrough: capability refused.");
         config.set_max_stack_depth(2).unwrap();
         Ok(config)
     }
@@ -259,7 +265,7 @@ impl Filesystem for PassthroughFs {
     // It is not generally safe to contact the kernel to obtain a backing id 
     // while the kernel is waiting for a response to an open operation in progress.
     // Therefore, this example requests the backing id on lookup instead of on open.
-    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
+    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         log::info!("lookup(name={:?})", name);
         if parent == 1 && name.to_str() == Some("passthrough") {
             if self.get_update_backing_status(2).is_none() {
@@ -282,11 +288,12 @@ impl Filesystem for PassthroughFs {
                     log::warn!("unable to request a backing id. no notification sender available");
                 }
             }
-
             Ok(Entry {
+                ino: self.passthrough_file_attr.ino,
+                generation: None,
+                file_ttl: TTL,
                 attr: self.passthrough_file_attr,
-                ttl: TTL,
-                generation: 0,
+                attr_ttl: TTL,
             })
         } else {
             Err(Errno::ENOENT)
@@ -297,10 +304,10 @@ impl Filesystem for PassthroughFs {
         _req: RequestMeta,
         ino: u64,
         _fh: Option<u64>,
-    ) -> Result<Attr, Errno> {
+    ) -> Result<(FileAttr, Duration), Errno> {
         match ino {
-            1 => Ok(Attr{attr: self.root_attr, ttl: TTL}),
-            2 => Ok(Attr{attr: self.passthrough_file_attr, ttl: TTL}),
+            1 => Ok((self.root_attr, TTL)),
+            2 => Ok((self.passthrough_file_attr, TTL)),
             _ =>Err(Errno::ENOENT),
         }
     }
@@ -347,43 +354,45 @@ impl Filesystem for PassthroughFs {
         _size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<Bytes, Errno> {
         unimplemented!();
     }
 
-    fn readdir(
+    fn readdir<'dir, 'name>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirentList<'dir, 'name>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
-
-        let entries = vec![
-            (1, FileType::Directory, "."),
-            (1, FileType::Directory, ".."),
-            (2, FileType::RegularFile, "passthrough"),
-        ];
-        let mut result = Vec::new();
-
-        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-            // i + 1 means the index of the next entry
-            result.push(DirEntry {
-                ino: entry.0,
-                offset: i as i64 + 1,
-                kind: entry.1,
-                name: OsString::from(entry.2),
-            });
+        // In this example, return up to three entries depending on the offset.
+        if offset > 2 || offset < 0 {
+            // Case 1: offset out of range:
+            // No need to allocate anything; just use the Empty enum case.
+            Ok(DirentList::Empty)
+        } else {
+            // Case 2: offset in range:
+            // Return a borrowed ('static) slice of entries.
+            Ok((&ROOT_DIR_ENTRIES[offset as usize..]).into())
         }
-        Ok(result)
     }
     
-    // A flush() implementation would be a nice addition to the example.
-    // The kernel seems to want to perform that operation after a passthrough open().
+    fn release(
+        &mut self,
+        _req: RequestMeta,
+        _ino: u64,
+        fh: u64,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        _flush: bool,
+    ) -> Result<(), Errno> {
+        // TODO: mark fh as unused
+        Ok(())
+    }
 }
 
 fn main() {

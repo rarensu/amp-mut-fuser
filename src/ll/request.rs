@@ -5,7 +5,7 @@
 
 use super::fuse_abi::{fuse_in_header, fuse_opcode, InvalidOpcodeError};
 
-use super::{fuse_abi as abi, Errno, Response};
+use super::{fuse_abi as abi};
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom, fmt::Display, path::Path};
@@ -226,11 +226,6 @@ pub trait Request: Sized {
 
     /// Returns the PID of the process that triggered this request.
     fn pid(&self) -> u32;
-
-    /// Create an error response for this Request
-    fn reply_err(&self, errno: Errno) -> Response<'_> {
-        Response::new_error(errno)
-    }
 }
 
 macro_rules! impl_request {

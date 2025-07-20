@@ -9,22 +9,24 @@
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
 use mnt::mount_options::parse_options_from_args;
+/* 
+#[cfg(feature = "serializable")]
+use serde::de::value::F64Deserializer;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
-use std::ffi::{OsStr, OsString};
+*/
+use std::ffi::OsStr;
 use std::io;
-use std::path::{Path, PathBuf};
-#[cfg(feature = "abi-7-23")]
-use std::time::Duration;
-use std::time::SystemTime;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
 use std::{convert::AsRef, io::ErrorKind};
 
 use crate::ll::fuse_abi::consts::*;
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
 pub use crate::ll::{fuse_abi::consts, TimeOrNow};
+pub use ll::Errno;
 use crate::mnt::mount_options::check_option_conflicts;
 use crate::session::MAX_WRITE_SIZE;
-pub use ll::Errno;
 pub use mnt::mount_options::MountOption;
 #[cfg(feature = "abi-7-11")]
 pub use notify::{Notification, Poll};
@@ -38,15 +40,20 @@ pub use notify::Delete;
 pub use reply::Ioctl;
 #[cfg(target_os = "macos")]
 pub use reply::XTimes;
-pub use reply::{Attr, DirEntry, Entry, Lock, Open, Statfs, Xattr};
+pub use reply::{Entry, FileAttr, FileType, Dirent, DirentList, DirentPlusList, Open, Statfs, Xattr, Lock};
 pub use request::RequestMeta;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
+pub use container::{Container, Borrow};
+/// A container for bytes, implementing flexible ownership.
+pub type Bytes<'a> = Container<'a, u8>;
+
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
 #[cfg(feature = "abi-7-13")]
 use std::cmp::min;
 
 mod channel;
+mod container;
 mod ll;
 mod mnt;
 #[cfg(feature = "abi-7-11")]
@@ -87,60 +94,15 @@ const fn default_init_flags(capabilities: u64) -> u64 {
     }
 }
 
-/// File types
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-pub enum FileType {
-    /// Named pipe (S_IFIFO)
-    NamedPipe,
-    /// Character device (S_IFCHR)
-    CharDevice,
-    /// Block device (S_IFBLK)
-    BlockDevice,
-    /// Directory (S_IFDIR)
-    Directory,
-    /// Regular file (S_IFREG)
-    RegularFile,
-    /// Symbolic link (S_IFLNK)
-    Symlink,
-    /// Unix domain socket (S_IFSOCK)
-    Socket,
-}
-
-/// File attributes
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-pub struct FileAttr {
-    /// Inode number
+#[derive(Debug)]
+/// Target of a `forget` or `batch_forget` operation.
+pub struct Forget {
+    /// Inode of the file to be forgotten.
     pub ino: u64,
-    /// Size in bytes
-    pub size: u64,
-    /// Size in blocks
-    pub blocks: u64,
-    /// Time of last access
-    pub atime: SystemTime,
-    /// Time of last modification
-    pub mtime: SystemTime,
-    /// Time of last change
-    pub ctime: SystemTime,
-    /// Time of creation (macOS only)
-    pub crtime: SystemTime,
-    /// Kind of file (directory, file, pipe, etc)
-    pub kind: FileType,
-    /// Permissions
-    pub perm: u16,
-    /// Number of hard links
-    pub nlink: u32,
-    /// User id
-    pub uid: u32,
-    /// Group id
-    pub gid: u32,
-    /// Rdev
-    pub rdev: u32,
-    /// Block size
-    pub blksize: u32,
-    /// Flags (macOS only, see chflags(2))
-    pub flags: u32,
+    /// The number of times the file has been looked up (and not yet forgotten).
+    /// When a `forget` operation is received, the filesystem should typically
+    /// decrement its internal reference count for the inode by `nlookup`.
+    pub nlookup: u64
 }
 
 #[derive(Debug)]
@@ -365,7 +327,7 @@ pub trait Filesystem {
 
     /// Look up a directory entry by name and get its attributes.
     /// The method should return `Ok(Entry)` if the entry is found, or `Err(Errno)` otherwise.
-    fn lookup(&mut self, req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
+    fn lookup(&mut self, req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         warn!(
             "[Not Implemented] lookup(parent: {:#x?}, name {:?})",
             parent, name
@@ -393,7 +355,7 @@ pub trait Filesystem {
 
     /// Get file attributes.
     /// The method should return `Ok(Attr)` with the file attributes, or `Err(Errno)` otherwise.
-    fn getattr(&mut self, req: RequestMeta, ino: u64, fh: Option<u64>) -> Result<Attr, Errno> {
+    fn getattr(&mut self, req: RequestMeta, ino: u64, fh: Option<u64>) -> Result<(FileAttr, Duration), Errno> {
         warn!(
             "[Not Implemented] getattr(ino: {:#x?}, fh: {:#x?})",
             ino, fh
@@ -419,7 +381,7 @@ pub trait Filesystem {
         chgtime: Option<SystemTime>,
         bkuptime: Option<SystemTime>,
         flags: Option<u32>
-    ) -> Result<Attr, Errno> {
+    ) -> Result<(FileAttr, std::time::Duration), Errno> {
         warn!(
             "[Not Implemented] setattr(ino: {:#x?}, mode: {:?}, uid: {:?}, \
             gid: {:?}, size: {:?}, fh: {:?}, flags: {:?})",
@@ -429,8 +391,10 @@ pub trait Filesystem {
     }
 
     /// Read symbolic link.
-    /// The method should return `Ok(Vec<u8>)` with the link target, or `Err(Errno)` otherwise.
-    fn readlink(&mut self, req: RequestMeta, ino: u64) -> Result<Vec<u8>, Errno> {
+    /// The method should return `Ok(Bytes<'a>)` with the link target (an OS native string),
+    /// or `Err(Errno)` otherwise.
+    /// `Bytes` allows for returning data under various ownership models potentially avoiding a copy.
+    fn readlink<'a>(&mut self, req: RequestMeta, ino: u64) -> Result<Bytes<'a>, Errno> {
         warn!("[Not Implemented] readlink(ino: {:#x?})", ino);
         Err(Errno::ENOSYS)
     }
@@ -442,7 +406,7 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: OsString,
+        name: &Path,
         mode: u32,
         umask: u32,
         rdev: u32,
@@ -461,7 +425,7 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: OsString,
+        name: &Path,
         mode: u32,
         umask: u32,
     ) -> Result<Entry, Errno> {
@@ -474,7 +438,7 @@ pub trait Filesystem {
 
     /// Remove a file.
     /// The method should return `Ok(())` on success, or `Err(Errno)` otherwise.
-    fn unlink(&mut self, req: RequestMeta, parent: u64, name: OsString) -> Result<(), Errno> {
+    fn unlink(&mut self, req: RequestMeta, parent: u64, name: &Path) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] unlink(parent: {:#x?}, name: {:?})",
             parent, name,
@@ -484,7 +448,7 @@ pub trait Filesystem {
 
     /// Remove a directory.
     /// The method should return `Ok(())` on success, or `Err(Errno)` otherwise.
-    fn rmdir(&mut self, req: RequestMeta, parent: u64, name: OsString) -> Result<(), Errno> {
+    fn rmdir(&mut self, req: RequestMeta, parent: u64, name: &Path) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] rmdir(parent: {:#x?}, name: {:?})",
             parent, name,
@@ -498,8 +462,8 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        link_name: OsString,
-        target: PathBuf,
+        link_name: &Path,
+        target: &Path,
     ) -> Result<Entry, Errno> {
         warn!(
             "[Not Implemented] symlink(parent: {:#x?}, link_name: {:?}, target: {:?})",
@@ -515,9 +479,9 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: OsString,
+        name: &Path,
         newparent: u64,
-        newname: OsString,
+        newname: &Path,
         flags: u32,
     ) -> Result<(), Errno> {
         warn!(
@@ -535,7 +499,7 @@ pub trait Filesystem {
         req: RequestMeta,
         ino: u64,
         newparent: u64,
-        newname: OsString,
+        newname: &Path,
     ) -> Result<Entry, Errno> {
         warn!(
             "[Not Implemented] link(ino: {:#x?}, newparent: {:#x?}, newname: {:?})",
@@ -565,11 +529,12 @@ pub trait Filesystem {
     /// return value of the read system call will reflect the return value of this
     /// operation. `fh` will contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
-    /// The method should return `Ok(Vec<u8>)` with the read data, or `Err(Errno)` otherwise.
+    /// The method should return `Ok(Bytes<'a>)` with the read data, or `Err(Errno)` otherwise.
+    /// `Bytes` allows for returning borrowed or owned data, potentially avoiding data copies.
     ///
     /// `flags`: these are the file flags, such as O_SYNC. Only supported with ABI >= 7.9
     /// `lock_owner`: only supported with ABI >= 7.9
-    fn read(
+    fn read<'a>(
         &mut self,
         req: RequestMeta,
         ino: u64,
@@ -578,7 +543,7 @@ pub trait Filesystem {
         size: u32,
         flags: i32,
         lock_owner: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<Bytes<'a>, Errno> {
         warn!(
             "[Not Implemented] read(ino: {:#x?}, fh: {}, offset: {}, size: {}, \
             flags: {:#x?}, lock_owner: {:?})",
@@ -692,19 +657,19 @@ pub trait Filesystem {
     }
 
     /// Read directory.
-    /// The filesystem should return a buffer filled with directory entries. The buffer
-    /// must not exceed the `max_bytes` parameter. An empty buffer indicates the end of
-    /// the stream. `fh` will contain the value set by the opendir method, or will be
-    /// undefined if the opendir method didn't set any value.
-    /// The method should return `Ok(Vec<DirEntry>)` with the directory entries, or `Err(Errno)` otherwise.
-    fn readdir(
+    /// The filesystem should return a list of directory entries.
+    /// A buffer will be filled with entries from up to `max_bytes`.
+    /// An empty list indicates the end of the stream.
+    /// `fh` will contain the value set by the opendir method, or will be undefined if the
+    /// opendir method didn't set any value.
+    fn readdir<'dir, 'name>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirentList<'dir, 'name>, Errno> {
         warn!(
             "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
@@ -714,20 +679,20 @@ pub trait Filesystem {
 
     /// Read directory.
     /// Similar to `readdir`, but also returns the attributes of each directory entry.
-    /// The filesystem should return a buffer filled with directory entries and their attributes.
-    /// The buffer must not exceed the `max_bytes` parameter. An empty buffer indicates the end of
-    /// the stream. `fh` will contain the value set by the opendir method, or will be
+    /// The filesystem should return a list of tuples of directory entries and their attributes.
+    /// A buffer will be filled with entries and attributes up to `max_bytes`.
+    /// An empty list indicates the end of the stream.
+    /// `fh` will contain the value set by the opendir method, or will be
     /// undefined if the opendir method didn't set any value.
-    /// The method should return `Ok(Vec<(DirEntry, Entry)>)` with the directory entries and their attributes, or `Err(Errno)` otherwise.
     #[cfg(feature = "abi-7-21")]
-    fn readdirplus(
+    fn readdirplus<'dir, 'name>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32,
-    ) -> Result<Vec<(DirEntry, Entry)>, Errno>{
+    ) -> Result<DirentPlusList<'dir, 'name>, Errno> {
         warn!(
             "[Not Implemented] readdirplus(ino: {:#x?}, fh: {}, offset: {}, max_bytes: {})",
             ino, fh, offset, max_bytes
@@ -783,8 +748,8 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         ino: u64,
-        name: OsString,
-        value: Vec<u8>, 
+        name: &OsStr,
+        value: &[u8],
         flags: i32,
         position: u32,
     ) -> Result<(), Errno> {
@@ -797,16 +762,17 @@ pub trait Filesystem {
 
     /// Get an extended attribute.
     /// If `size` is 0, the size of the value should be returned in `Xattr::Size(u32)`.
-    /// If `size` is not 0, and the value fits, the value should be returned in `Xattr::Data(Vec<u8>)`.
+    /// If `size` is not 0, and the value fits, the value should be returned in `Xattr::Data(Bytes<'a>)`.
+    /// `Bytes` allows for returning borrowed or owned data for the attribute value.
     /// If the value does not fit, `Err(Errno::ERANGE)` should be returned.
-    /// The method should return `Ok(Xattr)` on success, or `Err(Errno)` otherwise.
-    fn getxattr(
+    /// The method should return `Ok(Xattr<'a>)` on success, or `Err(Errno)` otherwise.
+    fn getxattr<'a>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         name: OsString,
         size: u32,
-    ) -> Result<Xattr, Errno> {
+    ) -> Result<Xattr<'a>, Errno> {
         warn!(
             "[Not Implemented] getxattr(ino: {:#x?}, name: {:?}, size: {})",
             ino, name, size
@@ -816,15 +782,16 @@ pub trait Filesystem {
 
     /// List extended attribute names.
     /// If `size` is 0, the size of the names list should be returned in `Xattr::Size(u32)`.
-    /// If `size` is not 0, and the names list fits, it should be returned in `Xattr::Data(Vec<u8>)`.
+    /// If `size` is not 0, and the names list fits, it should be returned in `Xattr::Data(ByteBox<'a>)`.
+    /// `ByteBox` allows for returning borrowed or owned data for the concatenated list of names.
     /// If the list does not fit, `Err(Errno::ERANGE)` should be returned.
-    /// The method should return `Ok(Xattr)` on success, or `Err(Errno)` otherwise.
-    fn listxattr(
+    /// The method should return `Ok(Xattr<'a>)` on success, or `Err(Errno)` otherwise.
+    fn listxattr<'a>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         size: u32,
-    ) -> Result<Xattr, Errno> {
+    ) -> Result<Xattr<'a>, Errno> {
         warn!(
             "[Not Implemented] listxattr(ino: {:#x?}, size: {})",
             ino, size
@@ -838,7 +805,7 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         ino: u64,
-        name: OsString,
+        name: &OsStr,
     ) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] removexattr(ino: {:#x?}, name: {:?})",
@@ -872,7 +839,7 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: OsString,
+        name: &Path,
         mode: u32,
         umask: u32,
         flags: i32,
@@ -949,16 +916,16 @@ pub trait Filesystem {
     /// Control device.
     /// The method should return `Ok(Ioctl)` with the ioctl result, or `Err(Errno)` otherwise.
     #[cfg(feature = "abi-7-11")]
-    fn ioctl(
+    fn ioctl<'a>(
         &mut self,
-        req: RequestMeta,
+        _req: RequestMeta,
         ino: u64,
         fh: u64,
         flags: u32,
         cmd: u32,
         in_data: Vec<u8>,
         out_size: u32,
-    ) -> Result<Ioctl, Errno> {
+    ) -> Result<Ioctl<'a>, Errno> {
         warn!(
             "[Not Implemented] ioctl(ino: {:#x?}, fh: {}, flags: {}, cmd: {}, \
             in_data.len(): {}, out_size: {})",
@@ -975,9 +942,9 @@ pub trait Filesystem {
     /// Poll for events.
     /// The method should return `Ok(u32)` with the poll events, or `Err(Errno)` otherwise.
     /// With the channel-based polling mechanism, this method is expected to register
-    /// the poll handle (`ph`) with the filesystem's `PollData`.
-    /// It might return an initial set of events if the file is already ready, or 0 otherwise.
-    /// Asynchronous notifications will be sent via the channel.
+    /// the poll handle (`ph`) in the filesystem's internal structure.
+    /// Poll() may return an nonzero events flag if the file is ready now, or 0 otherwise.
+    /// Later events should be sent via the notification channel.
     #[cfg(feature = "abi-7-11")]
     fn poll(
         &mut self,
@@ -1078,7 +1045,7 @@ pub trait Filesystem {
     #[cfg(target_os = "macos")]
     fn setvolname(&mut self, req: RequestMeta, name: OsStr) -> Result<(), Errno> {
         warn!("[Not Implemented] setvolname(name: {:?})", name);
-        Err(Errno::ENOSYS);
+        Err(Errno::ENOSYS)
     }
 
     /// macOS only (undocumented).
@@ -1088,9 +1055,9 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: OsString,
+        name: &Path,
         newparent: u64,
-        newname: OsString,
+        newname: &Path,
         options: u64
     ) -> Result<(), Errno> {
         warn!(
@@ -1098,7 +1065,7 @@ pub trait Filesystem {
             newname: {:?}, options: {})",
             parent, name, newparent, newname, options
         );
-        Err(Errno::ENOSYS);
+        Err(Errno::ENOSYS)
     }
 
     /// macOS only: Query extended times (bkuptime and crtime). Set `fuse_init_out.flags`

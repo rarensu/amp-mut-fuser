@@ -10,8 +10,11 @@
 // Requires feature = "abi-7-11"
 
 use std::{
-    convert::TryInto, ffi::OsString, os::unix::ffi::{OsStrExt, OsStringExt}, 
-    time::{Duration, UNIX_EPOCH}
+    convert::TryInto,
+    ffi::OsString,
+    path::Path,
+    os::unix::ffi::{OsStrExt, OsStringExt}, // for converting to and from
+    time::{Duration, UNIX_EPOCH},
 };
 
 #[cfg(feature = "abi-7-11")]
@@ -22,17 +25,8 @@ use poll_data::PollData;
 
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
-    Attr,
-    DirEntry,
-    Entry,
-    Errno,
-    FileAttr,
-    FileType,
-    Filesystem,
-    MountOption,
-    Notification,
-    Open,
-    RequestMeta,
+    Bytes, Dirent, DirentList, Entry, Errno, FileAttr, Filesystem,
+    FileType, MountOption, Notification, Open, RequestMeta,
     FUSE_ROOT_ID,
 };
 
@@ -65,7 +59,7 @@ struct FSelData {
 }
 
 struct FSelFS {
-    data: FSelData, // This remains for original example's byte counting logic
+    data: FSelData, // Byte counting logic
     poll_handler: PollData, //  Helper functions for handling polls
     producer: ProducerData
 }
@@ -122,6 +116,7 @@ impl FSelFS {
     }
 }
 
+
 impl Filesystem for FSelFS { 
     fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
         self.poll_handler.check_replies();
@@ -133,12 +128,17 @@ impl Filesystem for FSelFS {
         Ok(fuser::FsStatus::Ready)
     }
 
-    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
-        if parent != FUSE_ROOT_ID || name.len() != 1 {
+    fn lookup(
+        &mut self,
+        _req: RequestMeta,
+        parent: u64,
+        name: &Path
+    ) -> Result<Entry, Errno> {
+        if parent != FUSE_ROOT_ID || name.as_os_str().len() != 1 {
             return Err(Errno::ENOENT);
         }
 
-        let name_bytes = name.as_bytes();
+        let name_bytes = name.as_os_str().as_bytes();
 
         let idx = match name_bytes[0] {
             b'0'..=b'9' => name_bytes[0] - b'0',
@@ -147,15 +147,22 @@ impl Filesystem for FSelFS {
                 return Err(Errno::ENOENT);
             }
         };
-
         Ok(Entry {
+            ino: FSelData::idx_to_ino(idx),
+            generation: None,
+            file_ttl: Duration::ZERO,
             attr: self.data.filestat(idx),
-            ttl: Duration::ZERO,
-            generation: 0,
+            attr_ttl: Duration::ZERO,
         })
     }
 
-    fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<Attr, Errno> {
+    fn getattr(
+        &mut self,
+        _req:
+        RequestMeta,
+        ino: u64,
+        _fh: Option<u64>
+    ) -> Result<(FileAttr, Duration), Errno> {
         if ino == FUSE_ROOT_ID {
             let a = FileAttr {
                 ino: FUSE_ROOT_ID,
@@ -174,27 +181,24 @@ impl Filesystem for FSelFS {
                 flags: 0,
                 blksize: 0,
             };
-            return Ok(Attr { ttl: Duration::ZERO, attr: a });
+            return Ok((a, Duration::ZERO));
         }
         let idx = FSelData::ino_to_idx(ino);
         if idx < NUMFILES {
-            Ok(Attr {
-                attr: self.data.filestat(idx),
-                ttl: Duration::ZERO,
-            })
+            Ok((self.data.filestat(idx), Duration::ZERO))
         } else {
             Err(Errno::ENOENT)
         }
     }
 
-    fn readdir(
+    fn readdir<'dir, 'name>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<Vec<DirEntry>, Errno> {
+    ) -> Result<DirentList<'dir, 'name>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
@@ -210,17 +214,23 @@ impl Filesystem for FSelFS {
                 10..=15 => b'A' + idx - 10, // Corrected range to 15 for NUMFILES = 16
                 _ => panic!("idx out of range for NUMFILES"),
             };
-            let name_bytes = vec![ascii_char_val]; // Byte vector (but just one byte)
-            let name = OsString::from_vec(name_bytes);
-            entries.push(DirEntry {
+            // Create OsString from the single byte character
+            let name_os_string = OsString::from_vec(vec![ascii_char_val]);
+            let entry_data = Dirent {
                 ino: FSelData::idx_to_ino(idx),
                 offset: (idx + 1).into(),
                 kind: FileType::RegularFile,
-                name,
-            });
-            // TODO: compare to _max_bytes; stop if full.
+                // Convert the OsString back into an owned vector, 
+                // and then into an appropriate Bytes variant, in one step, 
+                // using the From trait.
+                name: Bytes::from(name_os_string),
+            };
+            entries.push(entry_data);
+            // Fuser library will ensure that max_bytes is respected.
         }
-        Ok(entries)
+        // convert the vector of entries into an appropriate DirentList variant,
+        // using the Into trait
+        Ok(entries.into())
     }
 
     fn open(&mut self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
@@ -262,7 +272,7 @@ impl Filesystem for FSelFS {
         Ok(())
     }
 
-    fn read(
+    fn read<'a>(
         &mut self,
         _req: RequestMeta,
         _ino: u64,
@@ -271,7 +281,7 @@ impl Filesystem for FSelFS {
         max_size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Vec<u8>, Errno> {
+    ) -> Result<Bytes<'a>, Errno> {
         let Ok(idx): Result<u8, _> = fh.try_into() else {
             return Err(Errno::EINVAL);
         };
@@ -293,7 +303,8 @@ impl Filesystem for FSelFS {
             _ => panic!("idx out of range for NUMFILES"),
         };
         let data = vec![elt; size.try_into().unwrap()];
-        Ok(data)
+        // example of converting to an explicit Bytes Box variant
+        Ok(Bytes::Box(data.into_boxed_slice()))
     }
 
     #[cfg(feature = "abi-7-11")]
@@ -310,7 +321,13 @@ impl Filesystem for FSelFS {
         if flags & FUSE_POLL_SCHEDULE_NOTIFY == 0 { 
             // TODO: handle this unexpected case.
         }
-        let ino = FSelData::idx_to_ino(fh.try_into().expect("fh should be a valid index"));
+        let Ok(idx): Result<u8, _> = fh.try_into() else {
+            return Err(Errno::EINVAL);
+        };
+        if idx >= NUMFILES {
+            return Err(Errno::EBADF);
+        }
+        let ino = FSelData::idx_to_ino(idx);
         if let Some(initial_events) = self.poll_handler.register_poll_handle(ph, ino, events) {
             log::debug!("poll(): Registered poll handle {ph} for ino {ino}, initial_events={initial_events}");
             Ok(initial_events)
