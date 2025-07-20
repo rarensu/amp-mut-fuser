@@ -186,7 +186,9 @@ impl PassthroughFs {
             BackingStatus::Ready(r) => {
                 let now = SystemTime::now();
                 if extend {
+                    log::debug!("processing ready {:?}", r);
                     r.timestamp = now;
+                    log::debug!("timestamp renewed");
                 } else if now.duration_since(r.timestamp).unwrap() > BACKING_TIMEOUT {
                     log::debug!("processing ready {:?}", r);
                     let (tx, rx) = crossbeam_channel::bounded(1);
