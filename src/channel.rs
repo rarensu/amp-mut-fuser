@@ -99,7 +99,7 @@ impl Channel {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ChannelSender(Arc<File>);
+pub(crate) struct ChannelSender(pub Arc<File>);
 
 impl ReplySender for ChannelSender {
     fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {

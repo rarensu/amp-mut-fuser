@@ -1385,6 +1385,7 @@ impl Filesystem for SimpleFS {
                     return Ok(Open {
                         fh: self.allocate_next_file_handle(read, write),
                         flags: open_flags,
+                        backing_id: None,
                     });
                 } else {
                     return Err(Errno::EACCES);
@@ -1512,6 +1513,7 @@ impl Filesystem for SimpleFS {
                     return Ok(Open {
                         fh: self.allocate_next_file_handle(read, write),
                         flags: open_flags,
+                        backing_id: None,
                     });
                 } else {
                     return Err(Errno::EACCES);
@@ -1782,6 +1784,7 @@ impl Filesystem for SimpleFS {
             Open {
                 fh: self.allocate_next_file_handle(read, write),
                 flags: 0,
+                backing_id: None,
             }
         ));
     }

@@ -307,6 +307,7 @@ impl Filesystem for PassthroughFs {
         }
 
         let mut remove = false;
+        let mut backing_id_option: Option<u32> = None;
         if let Some(backing_status) = self.backing_cache.by_inode.get_mut(&ino) {
             if let Some(notifier) = self.notification_sender.clone() {
                 if !Self::update_backing_status(backing_status, &notifier, true) {
@@ -314,13 +315,12 @@ impl Filesystem for PassthroughFs {
                 }
             }
             if let BackingStatus::Ready(ready_backing_id) = backing_status {
-                log::info!("open: backing_id {}", ready_backing_id.backing_id);
+                backing_id_option = Some(ready_backing_id.backing_id);
             }
         }
         if remove {
             self.backing_cache.by_inode.remove(&ino);
         }
-
         let fh = self.next_fh();
         // self.open_files.insert(fh, id.clone());
 
@@ -328,7 +328,11 @@ impl Filesystem for PassthroughFs {
         // TODO: Ensure fd-passthrough is correctly set up if intended.
         // The Open struct would carry necessary info.
         // TODO: implement flags for Open struct
-        Ok(Open { fh, flags: 0 })
+        Ok(Open {
+            fh,
+            flags: 0,
+            backing_id: backing_id_option,
+        })
     }
 
     fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {

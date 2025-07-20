@@ -208,6 +208,7 @@ impl Filesystem for ClockFS<'_> {
             Ok(Open {
                 fh: ino, // Using ino as fh, as it's unique for the file
                 flags: consts::FOPEN_KEEP_CACHE,
+                backing_id: None,
             })
         }
     }

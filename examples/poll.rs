@@ -241,6 +241,7 @@ impl Filesystem for FSelFS {
         Ok(Open {
             fh: idx.into(), // Using idx as file handle
             flags: FOPEN_DIRECT_IO | FOPEN_NONSEEKABLE,
+            backing_id: None,
         })
     }
 

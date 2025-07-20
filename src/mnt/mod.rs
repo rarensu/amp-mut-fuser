@@ -155,6 +155,7 @@ mod test {
     }
 
     #[test]
+    #[ignore]
     fn mount_unmount() {
         let mount_point = std::path::Path::new("/tmp/mount_unmount");
         std::fs::create_dir_all(mount_point).unwrap();

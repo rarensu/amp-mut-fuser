@@ -124,9 +124,11 @@ pub struct Entry {
 /// Open file handle response data
 pub struct Open {
     /// File handle for the opened file
-    pub fh: u64, 
+    pub fh: u64,
     /// Flags for the opened file
-    pub flags: u32
+    pub flags: u32,
+    /// Backing id for the opened file
+    pub backing_id: Option<u32>,
 }
 
 
@@ -293,7 +295,12 @@ impl ReplyHandler {
 
     /// Reply to a request with a newly opened file handle
     pub fn opened(self, open: Open) {
-        self.send_ll(&ll::Response::new_open(ll::FileHandle(open.fh), open.flags, 0))
+        let backing_id = open.backing_id.unwrap_or(0);
+        self.send_ll(&ll::Response::new_open(
+            ll::FileHandle(open.fh),
+            open.flags,
+            backing_id,
+        ))
     }
 
     /// Reply to a request with the number of bytes written
@@ -317,13 +324,14 @@ impl ReplyHandler {
 
     /// Reply to a request with a newle created file entry and its newly open file handle
     pub fn created(self, entry: Entry, open: Open) {
+        let backing_id = open.backing_id.unwrap_or(0);
         self.send_ll(&ll::Response::new_create(
             &entry.ttl,
             &entry.attr.into(),
             ll::Generation(entry.generation),
             ll::FileHandle(open.fh),
             open.flags,
-            0,
+            backing_id,
         ))
     }
 
@@ -685,13 +693,14 @@ mod test {
             expected: vec![
                 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
                 0x00, 0x00, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
+                0x44, 0x00, 0x00, 0x00,
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.opened(Open {
             fh: 0x1122,
             flags: 0x33,
+            backing_id: Some(0x44),
         });
     }
 
@@ -762,7 +771,7 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
                 0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00,
                 0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0xbb, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0xcc, 0x00, 0x00, 0x00,
             ]
         };
 
@@ -798,14 +807,15 @@ mod test {
         };
         replyhandler.created(
             Entry {
-                attr, 
+                attr,
                 ttl,
-                generation: 0xaa
+                generation: 0xaa,
             },
             Open {
                 fh: 0xbb,
-                flags: 0x0f
-            }
+                flags: 0x0f,
+                backing_id: Some(0xcc),
+            },
         );
     }
 
