@@ -1,6 +1,11 @@
-// This example requires fuse 7.40 or later. Run with:
+// This example requires fuse 7.40 or later.
 //
-//   cargo run --example passthrough --features abi-7-40 /tmp/foobar
+// To run this example, do the following:
+//
+//     sudo RUST_LOG=info ./target/debug/examples/passthrough /tmp/mnt &
+//     sudo cat /tmp/mnt/passthrough
+//     sudo pkill passthrough
+//     sudo umount /tmp/mnt
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
@@ -23,17 +28,19 @@ use std::io;
 
 #[derive(Debug)]
 struct PendingBackingId {
-    #[allow(dead_code)]
     reply: crossbeam_channel::Receiver<io::Result<u32>>,
+    // The file needs to stay open until the kernel finishes processing the openbacking request.
     #[allow(dead_code)]
     _file: Arc<File>,
 }
 
 #[derive(Debug)]
 struct ReadyBackingId {
+    // The notifier is used to safely close the backing id after any miscellaneous unexpected failures.
     notifier: crossbeam_channel::Sender<Notification>,
     backing_id: u32,
     timestamp: SystemTime,
+    // The reply_sender is just for extra logging.
     reply_sender: Option<crossbeam_channel::Sender<io::Result<u32>>>,
 }
 
@@ -44,6 +51,7 @@ impl Drop for ReadyBackingId {
     }
 }
 
+// The ClosedBackingId struct is not strictly necessary, but it is used for extra logging.
 #[derive(Debug)]
 struct ClosedBackingId {
     reply: crossbeam_channel::Receiver<io::Result<u32>>,
@@ -56,29 +64,13 @@ enum BackingStatus {
     Closed(ClosedBackingId),
 }
 
-/// A cache for `BackingId` objects.
-///
-/// This cache is designed to avoid creating more than one `BackingId` per file at a time. It
-/// uses a weak "by inode" hash table to map inode numbers to `BackingId`s. If a `BackingId`
-/// already exists for an inode, it is reused. Otherwise, a new one is created.
-///
-/// The cache also maintains a strong reference to the `BackingId` for each open file handle.
-/// This ensures that the `BackingId` is not dropped while it is still in use. The strong
-/// reference is dropped when the file is released.
-#[derive(Debug, Default)]
-struct BackingCache {
-    by_inode: HashMap<u64, BackingStatus>,
-}
-
 use crossbeam_channel::Sender;
 
 #[derive(Debug)]
 struct PassthroughFs {
     root_attr: FileAttr,
     passthrough_file_attr: FileAttr,
-    backing_cache: BackingCache,
-    #[allow(dead_code)]
-    open_files: HashMap<u64, u64>,
+    backing_cache: HashMap<u64, BackingStatus>,
     next_fh: u64,
     notification_sender: Option<Sender<Notification>>,
 }
@@ -127,8 +119,7 @@ impl PassthroughFs {
         Self {
             root_attr,
             passthrough_file_attr,
-            backing_cache: Default::default(),
-            open_files: HashMap::new(),
+            backing_cache: HashMap::new(),
             next_fh: 0,
             notification_sender: None,
         }
@@ -140,8 +131,8 @@ impl PassthroughFs {
     }
 
     // update_backing mutates a BackingStatus held by the backing cache.
-    // returns true if the item is valid and should be retained in the cache.
-    // returns false if the item is invalid and should be removed from the cache.
+    // It returns a boolean indicating whether the item is still valid and should be retained in the cache.
+    // This is so it works with `HashMap::retain` for efficiently dropping stale cache entries.
     fn update_backing_status(
         backing_status: &mut BackingStatus,
         notifier: &Sender<Notification>,
@@ -242,22 +233,26 @@ impl Filesystem for PassthroughFs {
         true
     }
 
+    // It is not safe to ioctl the fuse connection to obtain a backing id while the kernel is waiting for your response to an open operation you just accepted.
+    // Therefore, we must get the backing id on lookup instead of during open.
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: OsString) -> Result<Entry, Errno> {
         log::info!("lookup(name={:?})", name);
         if parent == 1 && name.to_str() == Some("passthrough") {
             let mut remove = false;
-            if let Some(backing_status) = self.backing_cache.by_inode.get_mut(&2) {
+            if let Some(backing_status) = self.backing_cache.get_mut(&2) {
                 if let Some(notifier) = self.notification_sender.clone() {
                     if !Self::update_backing_status(backing_status, &notifier, true) {
                         remove = true;
                     }
                 }
             }
+            // Mutation is weird. It is not safe to mutate the hash map while we have a mutable reference to one of its values.
+            // Therefore, we must drop the mutable reference before we can remove the item from the hash map.
             if remove {
-                self.backing_cache.by_inode.remove(&2);
+                self.backing_cache.remove(&2);
             }
 
-            if self.backing_cache.by_inode.get(&2).is_none() {
+            if self.backing_cache.get(&2).is_none() {
                 log::info!("new pending backing id request");
                 if let Some(sender) = &self.notification_sender {
                     let (tx, rx) = crossbeam_channel::bounded(1);
@@ -271,7 +266,6 @@ impl Filesystem for PassthroughFs {
                             _file: Arc::new(file),
                         };
                         self.backing_cache
-                            .by_inode
                             .insert(2, BackingStatus::Pending(backing_id));
                     }
                 } else {
@@ -308,7 +302,7 @@ impl Filesystem for PassthroughFs {
 
         let mut remove = false;
         let mut backing_id_option: Option<u32> = None;
-        if let Some(backing_status) = self.backing_cache.by_inode.get_mut(&ino) {
+        if let Some(backing_status) = self.backing_cache.get_mut(&ino) {
             if let Some(notifier) = self.notification_sender.clone() {
                 if !Self::update_backing_status(backing_status, &notifier, true) {
                     remove = true;
@@ -319,15 +313,10 @@ impl Filesystem for PassthroughFs {
             }
         }
         if remove {
-            self.backing_cache.by_inode.remove(&ino);
+            self.backing_cache.remove(&ino);
         }
         let fh = self.next_fh();
-        // self.open_files.insert(fh, id.clone());
-
-        // eprintln!("  -> opened_passthrough({fh:?}, 0, {id:?});\n");
-        // TODO: Ensure fd-passthrough is correctly set up if intended.
-        // The Open struct would carry necessary info.
-        // TODO: implement flags for Open struct
+        // TODO: track file handles
         log::info!("open: fh {}", fh);
         Ok(Open {
             fh,
@@ -336,15 +325,17 @@ impl Filesystem for PassthroughFs {
         })
     }
 
+    // The heartbeat function is called periodically by the FUSE session.
+    // We use it to ensure that the cache entries have accurate timestamps.
     fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
         if let Some(notifier) = self.notification_sender.clone() {
             self.backing_cache
-                .by_inode
                 .retain(|_, v| PassthroughFs::update_backing_status(v, &notifier, false));
         }
         Ok(fuser::FsStatus::Ready)
     }
 
+    // This deliberately unimplemented read() function is used to prove that the example demonstrates passthrough.
     fn read(
         &mut self,
         _req: RequestMeta,
@@ -388,6 +379,8 @@ impl Filesystem for PassthroughFs {
         }
         Ok(result)
     }
+    // A flush() implementation would be a nice addition to the example.
+    // The kernel seems to want to perform that operation after a passthrough open().
 }
 
 fn main() {
@@ -428,6 +421,7 @@ fn main() {
     let fs = PassthroughFs::new();
     let mut session = fuser::Session::new(fs, &std::path::Path::new(mountpoint), &options).unwrap();
     session.run_with_notifications().unwrap();
+    log::info!("unmounted");
 }
 
 #[cfg(test)]
@@ -452,9 +446,9 @@ mod tests {
 
         // First lookup should create a pending entry and send a notification
         fs.lookup(dummy_meta(), 1, "passthrough".into()).unwrap();
-        assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        assert_eq!(fs.backing_cache.len(), 1);
         assert!(matches!(
-            fs.backing_cache.by_inode.get(&2).unwrap(),
+            fs.backing_cache.get(&2).unwrap(),
             BackingStatus::Pending(_)
         ));
         let notification = rx.try_recv().unwrap();
@@ -467,9 +461,9 @@ mod tests {
 
         // Heartbeat should not do anything yet
         fs.heartbeat().unwrap();
-        assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        assert_eq!(fs.backing_cache.len(), 1);
         assert!(matches!(
-            fs.backing_cache.by_inode.get(&2).unwrap(),
+            fs.backing_cache.get(&2).unwrap(),
             BackingStatus::Pending(_)
         ));
 
@@ -478,9 +472,9 @@ mod tests {
 
         // Heartbeat should transition to ready
         fs.heartbeat().unwrap();
-        assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        assert_eq!(fs.backing_cache.len(), 1);
         assert!(matches!(
-            fs.backing_cache.by_inode.get(&2).unwrap(),
+            fs.backing_cache.get(&2).unwrap(),
             BackingStatus::Ready(_)
         ));
 
@@ -494,9 +488,9 @@ mod tests {
 
         // Heartbeat should transition to closed
         fs.heartbeat().unwrap();
-        assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        assert_eq!(fs.backing_cache.len(), 1);
         assert!(matches!(
-            fs.backing_cache.by_inode.get(&2).unwrap(),
+            fs.backing_cache.get(&2).unwrap(),
             BackingStatus::Closed(_)
         ));
 
@@ -511,6 +505,6 @@ mod tests {
 
         // Heartbeat should remove the closed entry
         fs.heartbeat().unwrap();
-        assert_eq!(fs.backing_cache.by_inode.len(), 0);
+        assert_eq!(fs.backing_cache.len(), 0);
     }
 }
