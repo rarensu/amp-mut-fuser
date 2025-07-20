@@ -258,19 +258,20 @@ impl Filesystem for PassthroughFs {
 
             if self.backing_cache.by_inode.get(&2).is_none() {
                 log::info!("new pending backing id request");
-                let (tx, rx) = crossbeam_channel::bounded(1);
-                let file = File::open("/etc/os-release").unwrap();
-                let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
-                let backing_id = PendingBackingId {
-                    reply: rx,
-                    _file: Arc::new(file),
-                };
-                self.backing_cache
-                    .by_inode
-                    .insert(2, BackingStatus::Pending(backing_id));
                 if let Some(sender) = &self.notification_sender {
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    let file = File::open("/etc/os-release").unwrap();
+                    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
                     if let Err(e) = sender.send(Notification::OpenBacking((fd as u32, Some(tx)))) {
                         log::error!("failed to send OpenBacking notification: {}", e);
+                    } else {
+                        let backing_id = PendingBackingId {
+                            reply: rx,
+                            _file: Arc::new(file),
+                        };
+                        self.backing_cache
+                            .by_inode
+                            .insert(2, BackingStatus::Pending(backing_id));
                     }
                 } else {
                     log::warn!("unable to request a backing id. no notification sender available");
