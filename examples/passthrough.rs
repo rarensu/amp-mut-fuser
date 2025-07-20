@@ -318,7 +318,7 @@ impl Filesystem for PassthroughFs {
         };
         let fh = self.next_fh();
         // TODO: track file handles
-        log::info!("open: fh {}, backing_id_option {}", fh, backing_id_option);
+        log::info!("open: fh {}, backing_id_option {:?}", fh, backing_id_option);
         Ok(Open {
             fh,
             flags: consts::FOPEN_PASSTHROUGH,
