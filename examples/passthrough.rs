@@ -188,9 +188,8 @@ impl PassthroughFs {
                     r.reply_sender = Some(tx);
                     *backing_status = BackingStatus::Closed(ClosedBackingId { reply: rx });
                     log::info!("ready -> closed; timeout");
-                    return false;
                 }
-                true
+                true // ready transitions to ready or closed. either way, we keep it in the cache.
             }
             BackingStatus::Closed(d) => {
                 match d.reply.try_recv() {
@@ -469,7 +468,24 @@ mod tests {
         // Wait for 2 seconds
         std::thread::sleep(Duration::from_secs(2));
 
-        // Heartbeat should remove the ready entry
+        // Heartbeat should transition to closed
+        fs.heartbeat().unwrap();
+        assert_eq!(fs.backing_cache.by_inode.len(), 1);
+        assert!(matches!(
+            fs.backing_cache.by_inode.get(&2).unwrap(),
+            BackingStatus::Closed(_)
+        ));
+
+        // Simulate kernel reply
+        let notification = rx.try_recv().unwrap();
+        let (backing_id, sender) = match notification {
+            Notification::CloseBacking(d) => d,
+            _ => panic!("unexpected notification"),
+        };
+        assert_eq!(backing_id, 123);
+        sender.unwrap().send(Ok(0)).unwrap();
+
+        // Heartbeat should remove the closed entry
         fs.heartbeat().unwrap();
         assert_eq!(fs.backing_cache.by_inode.len(), 0);
     }
