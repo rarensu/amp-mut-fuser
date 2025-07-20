@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
+const BACKING_TIMEOUT: Duration = Duration::from_secs(2); // 2 seconds
 
 // ----- BackingID -----
 
@@ -182,7 +183,7 @@ impl PassthroughFs {
                 let now = SystemTime::now();
                 if extend {
                     r.timestamp = now;
-                } else if now.duration_since(r.timestamp).unwrap().as_secs() > 1 {
+                } else if now.duration_since(r.timestamp).unwrap() > BACKING_TIMEOUT {
                     log::info!("heartbeat: processing ready {:?}", r);
                     let (tx, rx) = crossbeam_channel::bounded(1);
                     r.reply_sender = Some(tx);
