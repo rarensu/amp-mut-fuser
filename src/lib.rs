@@ -17,7 +17,9 @@ use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
 use std::time::SystemTime;
-use std::{convert::AsRef, io::ErrorKind};
+use std::convert::AsRef;
+#[cfg(feature = "threaded")]
+use std::io::ErrorKind;
 
 use crate::ll::fuse_abi::consts::*;
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;

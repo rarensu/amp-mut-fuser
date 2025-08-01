@@ -8,12 +8,14 @@
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 use log::{info, warn};
 use nix::unistd::geteuid;
-use std::fmt;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 use std::{io, ops::DerefMut};
+#[cfg(feature = "threaded")]
+use std::thread::{self, JoinHandle};
+#[cfg(feature = "threaded")]
+use std::fmt;
 
 use crate::ll::fuse_abi as abi;
 use crate::request::Request;
