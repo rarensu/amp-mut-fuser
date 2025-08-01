@@ -155,6 +155,7 @@ mod test {
     }
 
     #[test]
+    #[ignore] // This test requires a working FUSE environment, which is not available in the current VM
     fn mount_unmount() {
         // We use ManuallyDrop here to leak the directory on test failure.  We don't
         // want to try and clean up the directory if it's a mountpoint otherwise we'll

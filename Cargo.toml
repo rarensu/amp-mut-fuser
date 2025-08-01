@@ -36,6 +36,8 @@ pkg-config = { version = "0.3.14", optional = true }
 
 [features]
 default = []
+serial = []
+threaded = []
 libfuse = ["pkg-config"]
 serializable = ["serde"]
 macfuse-4-compat = []

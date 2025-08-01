@@ -1,4 +1,7 @@
 fn main() {
+    #[cfg(all(feature = "serial", feature = "threaded"))]
+    compile_error!("The 'serial' and 'threaded' features are mutually exclusive and cannot be enabled at the same time.");
+
     // Register rustc cfg for switching between mount implementations.
     // When fuser MSRV is updated to v1.77 or above, we should switch from 'cargo:' to 'cargo::' syntax.
     println!("cargo:rustc-check-cfg=cfg(fuser_mount_impl, values(\"pure-rust\", \"libfuse2\", \"libfuse3\"))");

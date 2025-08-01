@@ -42,7 +42,9 @@ pub use reply::{
     ReplyStatfs, ReplyWrite,
 };
 pub use request::Request;
-pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
+pub use session::{Session, SessionACL, SessionUnmounter};
+#[cfg(feature = "threaded")]
+pub use session::BackgroundSession;
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
 #[cfg(feature = "abi-7-13")]
@@ -1058,6 +1060,7 @@ pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
 /// and therefore returns immediately. The returned handle should be stored
 /// to reference the mounted filesystem. If it's dropped, the filesystem will
 /// be unmounted.
+#[cfg(feature = "threaded")]
 #[deprecated(note = "use spawn_mount2() instead")]
 pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     filesystem: FS,
@@ -1079,6 +1082,7 @@ pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
 /// be unmounted.
 ///
 /// NOTE: This is the corresponding function to mount2.
+#[cfg(feature = "threaded")]
 pub fn spawn_mount2<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,

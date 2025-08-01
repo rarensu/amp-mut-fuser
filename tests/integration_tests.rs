@@ -8,6 +8,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 #[test]
+#[ignore] // This test requires a working FUSE environment, which is not available in the current VM
 #[cfg(target_os = "linux")]
 fn unmount_no_send() {
     struct NoSendFS(
