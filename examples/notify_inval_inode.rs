@@ -20,10 +20,11 @@ use std::{
 use clap::Parser;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
-    consts, Bytes, Dirent, DirentList, Entry, Errno, FileAttr, FileType, Filesystem,
+    consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType, Filesystem,
     Forget, FsStatus, InvalInode, MountOption, Notification, Open, Store, RequestMeta,
     FUSE_ROOT_ID,
 };
+use bytes::Bytes;
 use log::{warn,info};
 
 struct ClockFS<'a> {
@@ -106,7 +107,7 @@ impl Filesystem for ClockFS<'_> {
                             Store {
                                 ino: Self::FILE_INO,
                                 offset: 0,
-                                data: self.file_contents.lock().unwrap().as_bytes().to_vec(),
+                                data: self.file_contents.lock().unwrap().as_bytes().to_vec().into(),
                             },
                             Some(s),
                         ));
@@ -178,14 +179,14 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn readdir<'dir, 'name>(
+    fn readdir<'dir>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir, 'name>, Errno> {
+    ) -> Result<DirentList<'dir>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
@@ -197,7 +198,7 @@ impl Filesystem for ClockFS<'_> {
                 ino: ClockFS::FILE_INO,
                 offset: 1, // This entry's cookie
                 kind: FileType::RegularFile,
-                name: Bytes::Ref(Self::FILE_NAME.as_bytes()),
+                name: Bytes::from_static(Self::FILE_NAME.as_bytes()),
             };
             entries.push(entry_data);
         }
@@ -223,7 +224,7 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn read<'a>(
+    fn read(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -232,7 +233,7 @@ impl Filesystem for ClockFS<'_> {
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Bytes<'a>, Errno> {
+    ) -> Result<Bytes, Errno> {
         assert!(ino == Self::FILE_INO);
         if offset < 0 {
             return Err(Errno::EINVAL);

@@ -1,12 +1,11 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    FileAttr, Bytes, Dirent, DirentList, Entry, Errno,
+    FileAttr, Dirent, DirentList, Entry, Errno,
     Filesystem, FileType, MountOption, RequestMeta,
 };
-use std::ffi::{OsStr, OsString};
+use bytes::Bytes;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
-use std::rc::Rc;
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
@@ -51,41 +50,34 @@ const HELLO_TXT_ATTR: FileAttr = FileAttr {
 // An example of reusable Borrowed data.
 // This entry derives its lifetime from string literal, 
 // which is 'static.
-const DOT_ENTRY: Dirent<'static> = Dirent {
+const DOT_DIRENT: Dirent = Dirent {
     ino: 1,
     offset: 1,
     kind: FileType::Directory,
-    name: Bytes::Ref(b"."),
+    name: Bytes::from_static(b"."),
 };
 
 /// Example Filesystem data
-struct HelloFS<'a> {
-    hello_entry: Rc<Dirent<'a>>,
+struct HelloFS {
+    hello_filename: Bytes,
 }
 
-impl HelloFS<'_> {
+impl HelloFS {
+
     fn new() -> Self {
         HelloFS{
             // An example of reusable Shared data.
-            // Entry #3 is allocated here once.
+            // The filename for Dirent #3 is allocated here once.
             // It is persistent until replaced.
-            hello_entry: Rc::new(
-            Dirent {
-                    ino: 2,
-                    offset: 3,
-                    kind: FileType::RegularFile,
-                    name: OsString::from("hello.txt").into(),
-                }
-            )
+            hello_filename: Bytes::from_owner(Vec::from(b"hello.txt")),
         }
     }
 }
 
-impl Filesystem for HelloFS<'static> {
-    // Must specify HelloFS lifetime ('static) here 
-    // to enable its methods to return borrowed data
+impl Filesystem for HelloFS {
+
     fn lookup(&mut self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
-        if parent == 1 && name == OsStr::new("hello.txt") {
+        if parent == 1 && name.as_os_str().as_encoded_bytes() == self.hello_filename {
             Ok(Entry{
                 ino: 2,
                 generation: None,
@@ -112,7 +104,7 @@ impl Filesystem for HelloFS<'static> {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn read<'a>(
+    fn read(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -121,17 +113,17 @@ impl Filesystem for HelloFS<'static> {
         _size: u32,
         _flags: i32,
         _lock: Option<u64>,
-    ) -> Result<Bytes<'a>, Errno> {
+    ) -> Result<Bytes, Errno> {
         if ino == 2 {
             // HELLO_TXT_CONTENT is &'static str, so its bytes are &'static [u8]
             let bytes = HELLO_TXT_CONTENT.as_bytes();
             let slice_len = bytes.len();
             let offset = offset as usize;
             if offset >= slice_len {
-                Ok(Bytes::Ref(&[]))
+                Ok(Bytes::from_static(&[]))
             } else {
                 // Returning as Borrowed to avoid a copy.
-                Ok(Bytes::Ref(&bytes[offset..]))
+                Ok(Bytes::from_static(&bytes[offset..]))
             }
         } else {
             Err(Errno::ENOENT)
@@ -139,14 +131,14 @@ impl Filesystem for HelloFS<'static> {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn readdir<'dir, 'name>(
+    fn readdir<'dir>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir, 'name>, Errno> {
+    ) -> Result<DirentList<'dir>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
@@ -157,35 +149,42 @@ impl Filesystem for HelloFS<'static> {
 
         // Entry 1: example of borrowed data.
         // - name: "."
-        // - entry is constructed in the global scope. 
-        // - lifetime is 'static.
+        // - Dirent is constructed in the global scope. 
+        // - lifetime is 'static by definition.
         // - a reference is passed along.
-        entries.push(DOT_ENTRY.clone());
+        entries.push(DOT_DIRENT.clone());
 
         // Entry 2: example of single-use Owned data.
         // - name: ".."
         // - entry is constructed during each call to readdir(). 
-        let dotdot_entry = Dirent {
+        let dotdot_dirent = Dirent {
                 ino: 1, // Parent of root is itself for simplicity. 
                         // Note: this can cause some weird behavior for an observer.
                 offset: 2,
                 kind: FileType::Directory,
-                // ownership of the string is moved into the DirEntry
-                name: OsString::from("..").into()
+                // ownership of this new byte vector is moved into the new Dirent
+                name: Bytes::from_owner(Vec::from(".."))
             };
         // Ownership of the entry is passed along
-        entries.push(dotdot_entry);
+        entries.push(dotdot_dirent);
 
         // Entry 3: an example of shared data.
-        // - name: "hello.txt"
-        // - entry is constructed in HelloFS::new()
-        // - Ownership of a smart reference is passed along.
-        entries.push(self.hello_entry.as_ref().clone());
+        // - hello_filename is owned by HelloFS
+        // - A clone of a Bytes is a reference counted pointer, not a deep copy.
+        // - Therefore, the Dirent and HelloFS share ownership.
+        let hello_dirent = Dirent {
+                ino: 2,
+                offset: 3,
+                kind: FileType::RegularFile,
+                // a copy of the smart pointer is moved into the Dirent
+                name: self.hello_filename.clone()
+            };
+        entries.push(hello_dirent);
 
         // Slice the collected entries based on the requested offset.
         let entries: Vec<Dirent> = entries.into_iter().skip(offset as usize).collect();
         // ( Only references and smart pointers are being reorganized at this time;
-        // the underlying data should just stay where it is.)
+        // the underlying filename data should stay where it is.)
         
         // Entries may be returned as borrowed, owned, or shared.
         // From<...> and Into<...> methods can be used to help construct the return type.  
@@ -271,7 +270,7 @@ mod test {
         let result = hellofs.readdir(req, 1, 0, 0, 4096);
         assert!(result.is_ok(), "Readdir on root should succeed");
         if let Ok(entries_list) = result {
-            let entries_slice = entries_list.as_ref();
+            let entries_slice = entries_list.borrow();
             assert_eq!(entries_slice.len(), 3, "Root directory should contain exactly 3 entries");
 
             // Check entry 0: "."

@@ -16,6 +16,8 @@ use std::time::{Duration, SystemTime};
 use zerocopy::IntoBytes;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
+use bytes::Bytes;
+use std::convert::AsRef;
 
 /// Generic reply callback to send data
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
@@ -169,14 +171,11 @@ pub struct Open {
     pub backing_id: Option<u32>
 }
 
-/// A container for bytes, implementing flexible ownership.
-pub type Bytes<'a> = Container<'a, u8>;
-
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
+// TODO: implement Deserialize on Bytes or Dirent, somehow
+// #[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
 /// A single directory entry.
-/// The `'name` lifetime parameter is associated with the `name` field if it is a borrowed value.
-pub struct Dirent<'name> {
+pub struct Dirent {
     /// file inode number
     pub ino: u64,
     /// entry number in directory
@@ -184,14 +183,14 @@ pub struct Dirent<'name> {
     /// kind of file
     pub kind: FileType,
     /// name of file
-    pub name: Bytes<'name>,
+    pub name: Bytes,
 }
 
 /// A list of directory entries.
-pub type DirentList<'dir, 'name> = Container<'dir, Dirent<'name>>;
+pub type DirentList<'dir> = Container<'dir, Dirent>;
 
 /// A list of directory entries, plus additional file data for the kernel cache.
-pub type DirentPlusList<'dir, 'name> = Container<'dir, (Dirent<'name>, Entry)>;
+pub type DirentPlusList<'dir> = Container<'dir, (Dirent, Entry)>;
 
 #[cfg(target_os = "macos")]
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -243,23 +242,23 @@ pub struct Lock {
 /// It can either indicate the size of the attribute data or provide the data itself
 /// using `Bytes` for flexible ownership.
 #[derive(Clone, Debug)]
-pub enum Xattr<'a> {
+pub enum Xattr {
     /// Indicates the size of the extended attribute data. Used when the caller
     /// provides a zero-sized buffer to query the required buffer size.
     Size(u32),
     /// Contains the extended attribute data. `Bytes` allows this data to be
     /// returned in a zero-copy data ownership model.
-    Data(Bytes<'a>),
+    Data(Bytes),
 }
 
 #[cfg(feature = "abi-7-11")]
 #[derive(Clone, Debug)]
 /// File io control reponse data
-pub struct Ioctl<'a> {
+pub struct Ioctl {
     /// Result of the ioctl operation
     pub result: i32,
     /// Data to be returned with the ioctl operation
-    pub data: Bytes<'a>
+    pub data: Bytes
 }
 
 //
@@ -279,16 +278,8 @@ impl ReplyHandler {
     }
 
     /// Reply to a general request with data
-    pub fn data(self, data: Bytes<'_>) {
-        match data.try_borrow(){
-            Ok(slice) => {
-                self.send_ll(&ll::Response::new_slice(&slice));
-            },
-            Err(e) => {
-                log::error!("ReplyHandler::data: Borrow Error: {e:?}");
-                self.error(Errno::EIO);
-            }
-        }
+    pub fn data(self, data: Bytes) {
+        self.send_ll(&ll::Response::new_slice(data.as_ref()));
     }
 
     // Reply to an init request with available features
@@ -403,16 +394,8 @@ impl ReplyHandler {
 
     #[cfg(feature = "abi-7-11")]
     /// Reply to a request with an ioctl
-    pub fn ioctl(self, ioctl: Ioctl<'_>) {
-        match ioctl.data.try_borrow(){
-            Ok(slice) => {
-                self.send_ll(&ll::Response::new_ioctl(ioctl.result, &slice));
-            },
-            Err(e) => {
-                log::error!("ReplyHandler::ioctl: Borrow Error: {e:?}");
-                self.error(Errno::EIO);
-            }
-        }
+    pub fn ioctl(self, ioctl: Ioctl) {
+        self.send_ll(&ll::Response::new_ioctl(ioctl.result, ioctl.data.as_ref()));
     }
 
     #[cfg(feature = "abi-7-11")]
@@ -424,7 +407,7 @@ impl ReplyHandler {
     /// Reply to a request with a filled directory buffer
     pub fn dir(
         self,
-        entries_list: &DirentList<'_, '_>,
+        entries_list: &DirentList<'_>,
         size: usize,
         min_offset: i64,
     ) {
@@ -464,7 +447,7 @@ impl ReplyHandler {
     // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
         self,
-        entries_plus_list: &DirentPlusList<'_, '_>,
+        entries_plus_list: &DirentPlusList<'_>,
         size: usize,
         min_offset: i64,
     ) {
@@ -501,7 +484,7 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with extended attributes.
-    pub fn xattr(self, reply: Xattr<'_>) {
+    pub fn xattr(self, reply: Xattr) {
         match reply {
             Xattr::Size(s) => self.xattr_size(s),
             Xattr::Data(d) => self.xattr_data(d),
@@ -514,16 +497,8 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with the data in an xattr result.
-    pub fn xattr_data(self, data: Bytes<'_>) {
-        match data.try_borrow(){
-            Ok(slice) => {
-                self.send_ll(&ll::Response::new_slice(&slice));
-            },
-            Err(e) => {
-                log::error!("ReplyHandler::xattr_data: Borrow Error: {e:?}");
-                self.error(Errno::EIO);
-            }
-        }
+    pub fn xattr_data(self, data: Bytes) {
+        self.send_ll(&ll::Response::new_slice(data.as_ref()));
     }
 
     #[cfg(feature = "abi-7-24")]
@@ -550,7 +525,10 @@ mod test {
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
     use zerocopy::{Immutable, IntoBytes};
-    use std::ffi::OsString;
+    #[cfg(feature = "abi-7-24")]
+    use std::ffi::OsStr;
+    #[cfg(feature = "abi-7-24")]
+    use std::os::unix::ffi::OsStrExt;
 
     #[derive(Debug, IntoBytes, Immutable)]
     #[repr(C)]
@@ -646,7 +624,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.data(Bytes::Ref(&[0xde, 0xad, 0xbe, 0xef]));
+        replyhandler.data(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
     }
 
     #[test]
@@ -1015,13 +993,13 @@ mod test {
                 ino: 0xaabb,
                 offset: 1,
                 kind: FileType::Directory,
-                name: OsString::from("hello").into(),
+                name: Bytes::from_static(b"hello"),
             },
             Dirent {
                 ino: 0xccdd,
                 offset: 2,
                 kind: FileType::RegularFile,
-                name: OsString::from("world.rs").into(),
+                name: Bytes::from_static(b"world.rs"),
             }
         );
         replyhandler.dir(&entries.into(), std::mem::size_of::<u8>()*128, 0);
@@ -1135,7 +1113,7 @@ mod test {
                     ino: 0xaabb,
                     offset: 1,
                     kind: FileType::Directory,
-                    name: OsString::from("hello").into(),
+                    name: Bytes::from_static(OsStr::new("hello").as_bytes()),
                 },
                 Entry {
                     ino: 0xaabb,
@@ -1150,7 +1128,7 @@ mod test {
                     ino: 0xccdd,
                     offset: 2,
                     kind: FileType::RegularFile,
-                    name: OsString::from("world.rs").into(),
+                    name: Bytes::from_static(OsStr::new("world.rs").as_bytes()),
                 },
                 Entry {
                     ino:0xccdd,
@@ -1185,7 +1163,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.xattr(Xattr::Data(vec![0x11, 0x22, 0x33, 0x44].into()));
+        replyhandler.xattr(Xattr::Data(Bytes::from_static(&[0x11, 0x22, 0x33, 0x44])));
     }
 
     impl super::ReplySender for SyncSender<()> {

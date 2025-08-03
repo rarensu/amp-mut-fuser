@@ -409,21 +409,14 @@ impl DirentBuf {
     /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
-    pub fn push(&mut self, ent: &crate::Dirent<'_>) -> Result<bool, Errno> {
-        let name = match ent.name.try_borrow() {
-            Ok(slice) => slice,
-            Err(e) => {
-                log::error!("Dirent.name Borrow error {e:?}");
-                return Err(Errno::EIO);
-            }
-        };
+    pub fn push(&mut self, ent: &crate::Dirent) -> Result<bool, Errno> {
         let header = abi::fuse_dirent {
             ino: ent.ino,
             off: ent.offset,
-            namelen: name.len().try_into().expect("Name too long"),
+            namelen: ent.name.len().try_into().expect("Name too long"),
             typ: mode_from_kind_and_perm(ent.kind, 0) >> 12,
         };
-        Ok(self.0.push([header.as_bytes(), &name]))
+        Ok(self.0.push([header.as_bytes(), &ent.name]))
     }
 }
 
@@ -448,14 +441,7 @@ impl DirentPlusBuf {
     /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
-    pub fn push(&mut self, x: &crate::Dirent<'_>, y: &crate::Entry) -> Result<bool, Errno> {
-        let name = match x.name.try_borrow() {
-            Ok(slice) => slice,
-            Err(e) => {
-                log::error!("Dirent.name Borrow error {e:?}");
-                return Err(Errno::EIO);
-            }
-        };
+    pub fn push(&mut self, x: &crate::Dirent, y: &crate::Entry) -> Result<bool, Errno> {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {
                 nodeid: y.ino,
@@ -469,16 +455,16 @@ impl DirentPlusBuf {
             dirent: abi::fuse_dirent {
                 ino: x.ino,
                 off: x.offset,
-                namelen: name.len().try_into().expect("Name too long"),
+                namelen: x.name.len().try_into().expect("Name too long"),
                 typ: mode_from_kind_and_perm(x.kind, 0) >> 12,
             },
         };
-        Ok(self.0.push([header.as_bytes(), &name]))
+        Ok(self.0.push([header.as_bytes(), &x.name]))
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_possible_truncation)] // predetermined literals will not be truncated
+#[allow(clippy::cast_possible_truncation)] // these byte literals are not in danger of being truncated
 mod test {
     use std::num::NonZeroI32;
 

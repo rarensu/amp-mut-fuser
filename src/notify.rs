@@ -3,6 +3,7 @@ use std::io;
 #[allow(unused)]
 use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
 use crossbeam_channel::{SendError, Sender};
+use bytes::Bytes;
 
 use crate::{
     channel::ChannelSender,
@@ -31,8 +32,7 @@ pub struct InvalEntry {
     /// Parent: the inode of the parent of the invalid entry
     pub parent: u64,
     /// Name: the file name of the invalid entry
-    pub name: OsString
-    // TODO: maybe Bytes<'_> instead?
+    pub name: Bytes
 }
 
 /// Invalid inode notification to be sent to the kernel
@@ -56,8 +56,7 @@ pub struct Store {
     /// The start location of the metadata to be updated
     pub offset: u64,
     /// The new metadata
-    pub data: Vec<u8>
-    // TODO: maybe Bytes<'_> instead?
+    pub data: Bytes
 }
 
 /// Deleted file notification to be sent to the kernel
@@ -69,8 +68,7 @@ pub struct Delete {
     /// ino: the inode of the deleted file
     pub ino: u64,
     /// Name: the file name of the deleted entry
-    pub name: OsString
-    // TODO: maybe Bytes<'_> instead?
+    pub name: Bytes
 }
 
 /// The list of supported notification types
@@ -248,7 +246,7 @@ impl Notifier {
     /// Update the kernel's cached copy of a given inode's data
     #[cfg(feature = "abi-7-15")]
     pub fn store(&self, notification: Store) -> io::Result<()> {
-        let notif = NotificationBuf::new_store(notification.ino, notification.offset, &notification.data).map_err(Self::too_big_err)?;
+        let notif = NotificationBuf::new_store(notification.ino, notification.offset, notification.data.as_ref()).map_err(Self::too_big_err)?;
         // Not strictly an invalidate, but the inode we're operating
         // on may have been evicted anyway, so treat is as such
         self.send_inval(notify_code::FUSE_NOTIFY_STORE, &notif)

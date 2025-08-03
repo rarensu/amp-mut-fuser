@@ -10,9 +10,10 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use crossbeam_channel::{Sender, Receiver};
 use fuser::{
-    consts, Bytes, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
+    consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
     Filesystem, KernelConfig, MountOption, Open, Notification, RequestMeta,
 };
+use bytes::Bytes;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
@@ -83,10 +84,10 @@ struct PassthroughFs {
     notification_sender: Option<Sender<Notification>>,
 }
 
-const ROOT_DIR_ENTRIES: [Dirent; 3] = [
-    Dirent { ino: 1, offset: 1, kind: FileType::Directory,   name: Bytes::Ref(b".") },
-    Dirent { ino: 1, offset: 2, kind: FileType::Directory,   name: Bytes::Ref(b"..") },
-    Dirent { ino: 2, offset: 3, kind: FileType::RegularFile, name: Bytes::Ref(b"passthrough") },
+static ROOT_DIRENTS: [Dirent; 3] = [
+    Dirent { ino: 1, offset: 1, kind: FileType::Directory,   name: Bytes::from_static(b".") },
+    Dirent { ino: 1, offset: 2, kind: FileType::Directory,   name: Bytes::from_static(b"..") },
+    Dirent { ino: 2, offset: 3, kind: FileType::RegularFile, name: Bytes::from_static(b"passthrough") },
 ];
 
 impl PassthroughFs {
@@ -351,7 +352,7 @@ impl Filesystem for PassthroughFs {
 
     // This deliberately unimplemented read() function proves that the example demonstrates passthrough.
     // If a user is able to read the file, it could only have been via the kernel.
-    fn read<'a>(
+    fn read(
         &mut self,
         _req: RequestMeta,
         _ino: u64,
@@ -360,19 +361,19 @@ impl Filesystem for PassthroughFs {
         _size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Bytes<'a>, Errno> {
+    ) -> Result<Bytes, Errno> {
         unimplemented!();
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn readdir<'dir, 'name>(
+    fn readdir<'dir>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<DirentList<'dir, 'name>, Errno> {
+    ) -> Result<DirentList<'dir>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
@@ -380,7 +381,7 @@ impl Filesystem for PassthroughFs {
         if (0..=2).contains(&offset) {
             // Case: offset in range:
             // Return a borrowed ('static) slice of entries.
-            Ok((&ROOT_DIR_ENTRIES[offset as usize..]).into())
+            Ok(DirentList::Ref(&ROOT_DIRENTS[offset as usize..]))
         } else {
             // Case: offset out of range:
             // No need to allocate anything; just use the Empty enum case.

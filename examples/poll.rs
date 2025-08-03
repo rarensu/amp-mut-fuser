@@ -25,10 +25,11 @@ use poll_data::PollData;
 
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
-    Bytes, Dirent, DirentList, Entry, Errno, FileAttr, Filesystem,
+    Dirent, DirentList, Entry, Errno, FileAttr, Filesystem,
     FileType, MountOption, Notification, Open, RequestMeta,
     FUSE_ROOT_ID,
 };
+use bytes::Bytes;
 
 const NUMFILES: u8 = 16;
 const MAXBYTES: u64 = 10;
@@ -192,14 +193,14 @@ impl Filesystem for FSelFS {
         }
     }
 
-    fn readdir<'dir, 'name>(
+    fn readdir<'dir>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir, 'name>, Errno> {
+    ) -> Result<DirentList<'dir>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
@@ -224,7 +225,7 @@ impl Filesystem for FSelFS {
                 // Convert the OsString back into an owned vector, 
                 // and then into an appropriate Bytes variant, in one step, 
                 // using the From trait.
-                name: Bytes::from(name_os_string),
+                name: Bytes::from_owner(name_os_string.into_vec()),
             };
             entries.push(entry_data);
             // Fuser library will ensure that max_bytes is respected.
@@ -273,7 +274,7 @@ impl Filesystem for FSelFS {
         Ok(())
     }
 
-    fn read<'a>(
+    fn read(
         &mut self,
         _req: RequestMeta,
         _ino: u64,
@@ -282,7 +283,7 @@ impl Filesystem for FSelFS {
         max_size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Bytes<'a>, Errno> {
+    ) -> Result<Bytes, Errno> {
         let Ok(idx): Result<u8, _> = fh.try_into() else {
             return Err(Errno::EINVAL);
         };
@@ -304,8 +305,8 @@ impl Filesystem for FSelFS {
             _ => panic!("idx out of range for NUMFILES"),
         };
         let data = vec![elt; size.try_into().unwrap()];
-        // example of converting to an explicit Bytes Box variant
-        Ok(Bytes::Box(data.into_boxed_slice()))
+        // example of converting to an explicit Owned Bytes variant
+        Ok(Bytes::from_owner(data))
     }
 
     #[cfg(feature = "abi-7-11")]

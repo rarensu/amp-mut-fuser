@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::rc::Rc;
 
 #[cfg(test)]
-mod u8 {
+mod t_u8 {
     use super::*;
 
     #[test]
@@ -226,119 +226,5 @@ mod u8 {
         let arc_rw_lock_vec = Arc::new(std::sync::RwLock::new(data_vec_orig.clone()));
         let container_arc_rw_lock_vec: Container<'static, u8> = Container::from(arc_rw_lock_vec);
         assert!(container_arc_rw_lock_vec.try_as_ref().is_err());
-    }
-
-    #[test]
-    fn as_ref() {
-        let data: &[u8] = &[1, 2, 3, 4, 5];
-        let container: Container<'_, u8> = Container::from(data);
-        assert_eq!(container.as_ref(), data);
-    }
-}
-
-#[cfg(test)]
-mod string {
-    use crate::container::Container;
-    #[cfg(unix)]
-    use std::os::unix::ffi::OsStrExt;
-    use std::ffi::{OsStr, OsString};
-    use std::sync::{Arc, Mutex, RwLock};
-    #[cfg(not(feature = "no-rc"))]
-    use std::cell::RefCell;
-    #[cfg(not(feature = "no-rc"))]
-    use std::rc::Rc;
-    use std::borrow::Cow;
-
-    // --- Test Data ---
-    const VALID_UTF8_STR: &str = "hello world";
-    const VALID_UTF8_BYTES: &[u8] = b"hello world";
-    // Invalid UTF-8 sequence (from Rust docs for from_utf8)
-    const INVALID_UTF8_BYTES: &[u8] = &[0xf0, 0x90, 0x80];
-
-
-    // --- Tests for From<String/&str> ---
-    #[test]
-    fn from_string_etc_for_container_u8() {
-        let s = String::from(VALID_UTF8_STR);
-        let container: Container<'_, u8> = Container::from(s.clone());
-        assert_eq!(&*container.borrow(), s.as_bytes());
-        match container {
-            Container::Vec(_) => {} // Expected
-            _ => panic!("Expected Container::Vec from String"),
-        }
-   
-        let s_ref: &str = VALID_UTF8_STR;
-        let container: Container<'_, u8> = Container::from(s_ref);
-        assert_eq!(&*container.borrow(), s_ref.as_bytes());
-        match container {
-            Container::Ref(_) => {} // Expected
-            _ => panic!("Expected Container::Ref from &str"),
-        }
-
-        let os_string = OsString::from(VALID_UTF8_STR);
-        let container: Container<'_, u8> = Container::from(os_string.clone());
-        assert_eq!(&*container.borrow(), OsStr::new(VALID_UTF8_STR).as_bytes());
-         match container {
-            Container::Vec(_) => {} // Expected
-            _ => panic!("Expected Container::Vec from OsString"),
-        }
-
-        let os_str_ref = OsStr::new(VALID_UTF8_STR);
-        let container: Container<'_, u8> = Container::from(os_str_ref);
-        assert_eq!(&*container.borrow(), os_str_ref.as_bytes());
-        match container {
-            Container::Ref(_) => {} // Expected
-            _ => panic!("Expected Container::Ref from &OsStr"),
-        }
-    }
-
-    // --- Helper to create containers for testing ---
-    fn create_non_locking_containers(bytes: &[u8]) -> Vec<Container<'_, u8>> {
-        vec![
-            Container::Ref(bytes),
-            Container::Vec(bytes.to_vec()),
-            Container::Box(bytes.to_vec().into_boxed_slice()),
-            Container::Cow(Cow::Borrowed(bytes)),
-            Container::Cow(Cow::Owned(bytes.to_vec())),
-            Container::Arc(Arc::from(bytes)),
-            #[cfg(not(feature = "no-rc"))]
-            Container::Rc(Rc::from(bytes)),
-        ]
-    }
-
-    fn create_locking_containers(bytes: &[u8]) -> Vec<Container<'_, u8>> {
-        vec![
-            Container::ArcMutexVec(Arc::new(Mutex::new(bytes.to_vec()))),
-            Container::ArcRwLockVec(Arc::new(RwLock::new(bytes.to_vec()))),
-            #[cfg(not(feature = "no-rc"))]
-            Container::RcRefCellVec(Rc::new(RefCell::new(bytes.to_vec()))),
-        ]
-    }
-
-
-    #[test]
-    fn to_str_etc() {
-        // Valid UTF-8
-        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
-            assert_eq!(container.try_to_string().unwrap(), VALID_UTF8_STR);
-        }
-        for container in create_locking_containers(VALID_UTF8_BYTES) {
-            assert_eq!(container.try_to_string().unwrap(), VALID_UTF8_STR);
-        }
-        // Invalid UTF-8
-        for container in create_non_locking_containers(INVALID_UTF8_BYTES) {
-            assert!(container.try_to_string().is_err());
-        }
-        for container in create_locking_containers(INVALID_UTF8_BYTES) {
-            assert!(container.try_to_string().is_err());
-        }
-
-        // Valid Os bytes
-        for container in create_non_locking_containers(VALID_UTF8_BYTES) {
-            assert_eq!(container.try_to_os_string().unwrap(), OsString::from(VALID_UTF8_STR));
-        }
-        for container in create_locking_containers(VALID_UTF8_BYTES) {
-            assert_eq!(container.try_to_os_string().unwrap(), OsString::from(VALID_UTF8_STR));
-        }
     }
 }

@@ -106,7 +106,7 @@ impl Filesystem for ClockFS {
                         // invalidate old_filename
                         let notification = Notification::from(InvalEntry {
                             parent: FUSE_ROOT_ID,
-                            name: old_filename,
+                            name: old_filename.into_encoded_bytes().into(),
                         });
                         if let Err(e) = sender.send(notification) {
                             warn!("Warning: failed to send InvalEntry notification: {e}");
@@ -118,7 +118,7 @@ impl Filesystem for ClockFS {
                         let notification = Notification::InvalEntry((
                             InvalEntry {
                                 parent: FUSE_ROOT_ID,
-                                name: self.get_filename(),
+                                name: self.get_filename().into_encoded_bytes().into(),
                             },
                             Some(s),
                         ));
@@ -168,14 +168,14 @@ impl Filesystem for ClockFS {
         }
     }
 
-    fn readdir<'dir, 'name>(
+    fn readdir<'dir>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir, 'name>, Errno> {
+    ) -> Result<DirentList<'dir>, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }
@@ -187,7 +187,7 @@ impl Filesystem for ClockFS {
                 ino: ClockFS::FILE_INO,
                 offset: 1,
                 kind: FileType::RegularFile,
-                name: self.get_filename().into(),
+                name: self.get_filename().into_encoded_bytes().into(),
             };
             entries.push(entry);
         }

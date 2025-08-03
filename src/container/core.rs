@@ -203,13 +203,3 @@ impl<T: Clone> Container<'_, T> {
         }
     }
 }
-
-impl<T: Clone> AsRef<[T]> for Container<'_, T> {
-    /// Returns a borrowed slice &[] from the container.
-    /// # Panics
-    /// Will panic if the container is a locking variant.
-    /// Hint: use `borrow()` to handle locking variants. 
-    fn as_ref(&self) -> &[T] {
-        self.try_as_ref().unwrap()
-    }
-}

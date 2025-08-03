@@ -6,9 +6,10 @@
 
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
-    Bytes, Dirent, DirentList, Entry, Errno, FileAttr,
+    Dirent, DirentList, Entry, Errno, FileAttr,
     Filesystem, FileType, Ioctl, MountOption, RequestMeta,
 };
+use bytes::Bytes;
 use log::debug;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -25,11 +26,10 @@ struct FiocFS {
     fioc_file_attr: FileAttr,
 }
 
-// Constant data can be stored as Borrowed to prevent unnecessary copying
-const DIR_ENTRIES: [Dirent; 3] = [
-    Dirent { ino: 1, offset: 1, kind: FileType::Directory,   name: Bytes::Ref(b".") },
-    Dirent { ino: 1, offset: 2, kind: FileType::Directory,   name: Bytes::Ref(b"..") },
-    Dirent { ino: 2, offset: 3, kind: FileType::RegularFile, name: Bytes::Ref(b"fioc")},
+static DIRENTS: [Dirent; 3] = [
+    Dirent { ino: 1, offset: 1, kind: FileType::Directory,   name: Bytes::from_static(b".") },
+    Dirent { ino: 1, offset: 2, kind: FileType::Directory,   name: Bytes::from_static(b"..") },
+    Dirent { ino: 2, offset: 3, kind: FileType::RegularFile, name: Bytes::from_static(b"fioc")},
 ];
 
 impl FiocFS {
@@ -105,7 +105,7 @@ impl Filesystem for FiocFS{
     }
 
     #[allow(clippy::cast_sign_loss)]
-    fn read<'a>(
+    fn read(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -114,19 +114,14 @@ impl Filesystem for FiocFS{
         _size: u32,
         _flags: i32,
         _lock: Option<u64>,
-    ) -> Result<Bytes<'a>, Errno> {
+    ) -> Result<Bytes, Errno> {
         if ino == 2 {
             let offset = offset as usize;
             if offset >= self.content.len() {
-                // No need to allocate anything, just borrow from this 'static empty literal.
-                Ok(Bytes::Ref(&[]))
+                // No need to allocate anything: just use `Bytes::new()`, which does not allocate.
+                Ok(Bytes::new())
             } else {
-                /***********
-                // Option 1: Copy the bytes into a new boxed slice
-                let copy_of_bytes = self.content[offset..].to_owned().into_boxed_slice();
-                Ok(ByteBox::Owned(copy_of_bytes))
-                ***********/
-                // Option 2: Using From<...>/Into<...> trait methods
+                // Using `From` trait to construct onwed Bytes
                 Ok(self.content[offset..].to_vec().into())
             }
         } else {
@@ -135,7 +130,7 @@ impl Filesystem for FiocFS{
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn readdir<'dir, 'name>(
+    fn readdir<'dir>(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -143,16 +138,17 @@ impl Filesystem for FiocFS{
         // Fuser library will ensure that offset and max_bytes are respected.
         _offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir, 'name>, Errno> {
+    ) -> Result<DirentList<'dir>, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
+        // Static data can be borrowed to prevent unnecessary copying
         // In this example, return a borrowed reference to the (static) list of dir entries.
-        Ok(DirentList::Ref(&DIR_ENTRIES))
+        Ok(DirentList::Ref(&DIRENTS))
     }
 
     #[cfg(feature = "abi-7-11")]
-    fn ioctl<'a>(
+    fn ioctl(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -161,7 +157,7 @@ impl Filesystem for FiocFS{
         cmd: u32,
         in_data: &[u8],
         _out_size: u32,
-    ) -> Result<Ioctl<'a>, Errno> {
+    ) -> Result<Ioctl, Errno> {
         if ino != 2 {
             return Err(Errno::EINVAL);
         }
@@ -171,7 +167,7 @@ impl Filesystem for FiocFS{
                 let size_bytes = self.content.len().to_ne_bytes();
                 Ok(Ioctl {
                     result: 0,
-                    data: Bytes::Box(Box::new(size_bytes)),
+                    data: Bytes::from(size_bytes.to_vec()),
                 })
             }
             FIOC_SET_SIZE => {
@@ -179,7 +175,7 @@ impl Filesystem for FiocFS{
                 self.content = vec![0_u8; new_size];
                 Ok(Ioctl {
                     result: 0,
-                    data: Bytes::Empty,
+                    data: Bytes::new(),
                 })
             }
             _ => {

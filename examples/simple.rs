@@ -14,10 +14,11 @@ use fuser::consts::FUSE_WRITE_KILL_PRIV;
 */
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Bytes, Dirent, DirentList, Entry, Errno, FileAttr, Filesystem,
+    Dirent, DirentList, Entry, Errno, FileAttr, Filesystem,
     Forget, KernelConfig, MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr,
     FUSE_ROOT_ID,
 };
+use bytes::Bytes;
 #[allow(unused_imports)]
 use log::{debug, info, warn, error, LevelFilter};
 use serde::{Deserialize, Serialize};
@@ -753,7 +754,7 @@ impl Filesystem for SimpleFS {
         Ok((final_attrs.into(), Duration::new(0, 0)))
     }
 
-    fn readlink<'a>(&mut self, _req: RequestMeta, inode: u64) -> Result<Bytes<'a>, Errno> {
+    fn readlink(&mut self, _req: RequestMeta, inode: u64) -> Result<Bytes, Errno> {
         debug!("readlink() called on {inode:?}");
         let path = self.content_path(inode);
         match File::open(path) {
@@ -765,7 +766,6 @@ impl Filesystem for SimpleFS {
                 let mut buffer = vec![0; file_size as usize];
                 match file.read_exact(&mut buffer) {
                     Ok(()) => {
-                        // OsString into OsBox::Owned
                         Ok(Bytes::from(buffer))
                     }
                     Err(_) => Err(Errno::EIO), // Or some other appropriate error
@@ -1418,7 +1418,7 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn read<'a>(
+    fn read(
         &mut self,
         _req: RequestMeta,
         inode: u64,
@@ -1427,7 +1427,7 @@ impl Filesystem for SimpleFS {
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-    ) -> Result<Bytes<'a>, Errno> {
+    ) -> Result<Bytes, Errno> {
         debug!("read() called on {inode:?} offset={offset:?} size={size:?}");
         assert!(offset >= 0);
         if !self.check_file_handle_read(fh) {
@@ -1549,14 +1549,14 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn readdir<'dir, 'name>(
+    fn readdir<'dir>(
         &mut self,
         _req: RequestMeta,
         inode: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir, 'name>, Errno> {
+    ) -> Result<DirentList<'dir>, Errno> {
         debug!("readdir() called with {inode:?}");
         assert!(offset >= 0);
         // get_directory_content() returns an owned tree structure, or an error.
@@ -1638,13 +1638,13 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn getxattr<'a>(
+    fn getxattr(
         &mut self,
         request: RequestMeta,
         inode: u64,
         key: &OsStr,
         size: u32,
-    ) -> Result<Xattr<'a>, Errno> {
+    ) -> Result<Xattr, Errno> {
         // attrs is declared mutable so that it can be disassembled for parts later.
         if let Ok(mut attrs) = self.get_inode(inode) {
             if let Err(error) = xattr_access_check(key.as_bytes(), libc::R_OK, &attrs, request) {
@@ -1665,12 +1665,12 @@ impl Filesystem for SimpleFS {
         Err(Errno::EBADF)
     }
 
-    fn listxattr<'a>(
+    fn listxattr(
         &mut self,
         _req: RequestMeta,
         inode: u64,
         size: u32
-    ) -> Result<Xattr<'a>, Errno> {
+    ) -> Result<Xattr, Errno> {
         if let Ok(attrs) = self.get_inode(inode) {
             let mut bytes = vec![];
             // into_keys() takes ownership, potentially avoiding an accidental copy

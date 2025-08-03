@@ -42,7 +42,8 @@ pub use notify::Delete;
 pub use reply::Ioctl;
 #[cfg(target_os = "macos")]
 pub use reply::XTimes;
-pub use reply::{Bytes, Entry, FileAttr, FileType, Dirent, DirentList, DirentPlusList, Open, Statfs, Xattr, Lock};
+pub use bytes::Bytes;
+pub use reply::{Dirent, DirentList, DirentPlusList, Entry, FileAttr, FileType, Open, Statfs, Xattr, Lock};
 pub use request::RequestMeta;
 pub use session::{Session, SessionACL, SessionUnmounter};
 #[cfg(feature = "threaded")]
@@ -373,10 +374,10 @@ pub trait Filesystem {
     }
 
     /// Read symbolic link.
-    /// The method should return `Ok(Bytes<'a>)` with the link target (an OS native string),
+    /// The method should return `Ok(Bytes)` with the link target (an OS native string),
     /// or `Err(Errno)` otherwise.
     /// `Bytes` allows for returning data under various ownership models potentially avoiding a copy.
-    fn readlink<'a>(&mut self, req: RequestMeta, ino: u64) -> Result<Bytes<'a>, Errno> {
+    fn readlink(&mut self, req: RequestMeta, ino: u64) -> Result<Bytes, Errno> {
         warn!("[Not Implemented] readlink(ino: {ino:#x?})");
         Err(Errno::ENOSYS)
     }
@@ -494,12 +495,12 @@ pub trait Filesystem {
     /// return value of the read system call will reflect the return value of this
     /// operation. `fh` will contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
-    /// The method should return `Ok(Bytes<'a>)` with the read data, or `Err(Errno)` otherwise.
+    /// The method should return `Ok(Bytes)` with the read data, or `Err(Errno)` otherwise.
     /// `Bytes` allows for returning borrowed or owned data, potentially avoiding data copies.
     ///
     /// `flags`: these are the file flags, such as `O_SYNC`. Only supported with ABI >= 7.9
     /// `lock_owner`: only supported with ABI >= 7.9
-    fn read<'a>(
+    fn read(
         &mut self,
         req: RequestMeta,
         ino: u64,
@@ -508,7 +509,7 @@ pub trait Filesystem {
         size: u32,
         flags: i32,
         lock_owner: Option<u64>,
-    ) -> Result<Bytes<'a>, Errno> {
+    ) -> Result<Bytes, Errno> {
         warn!(
             "[Not Implemented] read(ino: {ino:#x?}, fh: {fh}, offset: {offset}, size: {size}, \
             flags: {flags:#x?}, lock_owner: {lock_owner:?})"
@@ -620,14 +621,14 @@ pub trait Filesystem {
     /// An empty list indicates the end of the stream.
     /// `fh` will contain the value set by the opendir method, or will be undefined if the
     /// opendir method didn't set any value.
-    fn readdir<'dir, 'name>(
+    fn readdir<'dir>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32
-    ) -> Result<DirentList<'dir, 'name>, Errno> {
+    ) -> Result<DirentList<'dir>, Errno> {
         warn!("[Not Implemented] readdir(ino: {ino:#x?}, fh: {fh}, offset: {offset}, max_bytes: {max_bytes})");
         Err(Errno::ENOSYS)
     }
@@ -640,14 +641,14 @@ pub trait Filesystem {
     /// `fh` will contain the value set by the opendir method, or will be
     /// undefined if the opendir method didn't set any value.
     #[cfg(feature = "abi-7-21")]
-    fn readdirplus<'dir, 'name>(
+    fn readdirplus<'dir>(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32,
-    ) -> Result<DirentPlusList<'dir, 'name>, Errno> {
+    ) -> Result<DirentPlusList<'dir>, Errno> {
         warn!(
             "[Not Implemented] readdirplus(ino: {ino:#x?}, fh: {fh}, \
             offset: {offset}, max_bytes: {max_bytes})"
@@ -711,33 +712,33 @@ pub trait Filesystem {
 
     /// Get an extended attribute.
     /// If `size` is 0, the size of the value should be returned in `Xattr::Size(u32)`.
-    /// If `size` is not 0, and the value fits, the value should be returned in `Xattr::Data(Bytes<'a>)`.
+    /// If `size` is not 0, and the value fits, the value should be returned in `Xattr::Data(Bytes)`.
     /// `Bytes` allows for returning borrowed or owned data for the attribute value.
     /// If the value does not fit, `Err(Errno::ERANGE)` should be returned.
-    /// The method should return `Ok(Xattr<'a>)` on success, or `Err(Errno)` otherwise.
-    fn getxattr<'a>(
+    /// The method should return `Ok(Xattr)` on success, or `Err(Errno)` otherwise.
+    fn getxattr(
         &mut self,
         req: RequestMeta,
         ino: u64,
         name: &OsStr,
         size: u32,
-    ) -> Result<Xattr<'a>, Errno> {
+    ) -> Result<Xattr, Errno> {
         warn!("[Not Implemented] getxattr(ino: {ino:#x?}, name: {name:?}, size: {size})");
         Err(Errno::ENOSYS)
     }
 
     /// List extended attribute names.
     /// If `size` is 0, the size of the names list should be returned in `Xattr::Size(u32)`.
-    /// If `size` is not 0, and the names list fits, it should be returned in `Xattr::Data(ByteBox<'a>)`.
+    /// If `size` is not 0, and the names list fits, it should be returned in `Xattr::Data(Bytes)`.
     /// `ByteBox` allows for returning borrowed or owned data for the concatenated list of names.
     /// If the list does not fit, `Err(Errno::ERANGE)` should be returned.
-    /// The method should return `Ok(Xattr<'a>)` on success, or `Err(Errno)` otherwise.
-    fn listxattr<'a>(
+    /// The method should return `Ok(Xattr)` on success, or `Err(Errno)` otherwise.
+    fn listxattr(
         &mut self,
         req: RequestMeta,
         ino: u64,
         size: u32,
-    ) -> Result<Xattr<'a>, Errno> {
+    ) -> Result<Xattr, Errno> {
         warn!("[Not Implemented] listxattr(ino: {ino:#x?}, size: {size})");
         Err(Errno::ENOSYS)
     }
@@ -850,7 +851,7 @@ pub trait Filesystem {
     /// Control device.
     /// The method should return `Ok(Ioctl)` with the ioctl result, or `Err(Errno)` otherwise.
     #[cfg(feature = "abi-7-11")]
-    fn ioctl<'a>(
+    fn ioctl(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -859,7 +860,7 @@ pub trait Filesystem {
         cmd: u32,
         in_data: &[u8],
         out_size: u32,
-    ) -> Result<Ioctl<'a>, Errno> {
+    ) -> Result<Ioctl, Errno> {
         warn!(
             "[Not Implemented] ioctl(ino: {:#x?}, fh: {}, flags: {}, cmd: {}, \
             in_data.len(): {}, out_size: {})",

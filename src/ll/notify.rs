@@ -59,7 +59,7 @@ impl<'a> Notification<'a> {
     }
 
     #[cfg(feature = "abi-7-12")]
-    pub(crate) fn new_inval_entry(parent: u64, name: &'a OsStr) -> Result<Self, TryFromIntError> {
+    pub(crate) fn new_inval_entry(parent: u64, name: &'a [u8]) -> Result<Self, TryFromIntError> {
         let r = abi::fuse_notify_inval_entry_out {
             parent,
             namelen: name.len().try_into()?,
@@ -97,7 +97,7 @@ impl<'a> Notification<'a> {
     pub(crate) fn new_delete(
         parent: u64,
         child: u64,
-        name: &'a OsStr,
+        name: &'a [u8],
     ) -> Result<Self, TryFromIntError> {
         let r = abi::fuse_notify_delete_out {
             parent,
@@ -137,7 +137,7 @@ mod test {
     #[test]
     #[cfg(feature = "abi-7-12")]
     fn inval_entry() {
-        let n = Notification::new_inval_entry(0x42, OsStr::new("abc"))
+        let n = Notification::new_inval_entry(0x42, OsStr::new("abc").as_bytes())
             .unwrap()
             .with_iovec(
                 abi::fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY,
@@ -188,7 +188,7 @@ mod test {
     #[test]
     #[cfg(feature = "abi-7-18")]
     fn delete() {
-        let n = Notification::new_inval_entry(0x42, OsStr::new("abc"))
+        let n = Notification::new_inval_entry(0x42, OsStr::new("abc").as_bytes())
             .unwrap()
             .with_iovec(abi::fuse_notify_code::FUSE_NOTIFY_DELETE, ioslice_to_vec)
             .unwrap();
