@@ -10,7 +10,7 @@ use fuser::{
     Filesystem, FileType, Ioctl, MountOption, RequestMeta,
 };
 use bytes::Bytes;
-use log::debug;
+use log::{debug, info};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
@@ -226,5 +226,13 @@ fn main() {
     }
 
     let fs = FiocFS::new();
-    fuser::mount2(fs, mountpoint, &options).unwrap();
+    // fuser::mount2(fs, mountpoint, &options).unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let mut se = fuser::Session::new(fs, mountpoint, &options)
+        .expect("Failed to create Session");
+    match rt.block_on(async { se.run_with_notifications().await }) {
+        Ok(()) => info!("Session ended safely"),
+        Err(e) => info!("Session ended with error {e:?}")
+    }
+
 }

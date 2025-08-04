@@ -19,7 +19,7 @@ use std::thread::{self, JoinHandle};
 use std::fmt;
 
 use crate::ll::fuse_abi as abi;
-use crate::request::Request;
+use crate::request::RequestHandler;
 use crate::{Filesystem, FsStatus};
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
@@ -57,7 +57,7 @@ pub enum SessionACL {
 #[derive(Debug)]
 pub struct Session<FS: Filesystem> {
     /// Filesystem operation implementations
-    pub(crate) filesystem: FS,
+    pub(crate) filesystem: Arc<FS>,
     /// Communication channel to the kernel driver
     pub(crate) ch: Channel,
     /// Handle to the mount.  Dropping this unmounts.
@@ -92,7 +92,7 @@ impl<FS: Filesystem> AsFd for Session<FS> {
     }
 }
 
-impl<FS: Filesystem> Session<FS> {
+impl<FS: Filesystem + 'static> Session<FS> {
     /// Create a new session by mounting the given filesystem to the given mountpoint
     pub fn new<P: AsRef<Path>>(
         filesystem: FS,
@@ -135,7 +135,7 @@ impl<FS: Filesystem> Session<FS> {
             filesystem.init_notification_sender(ns.clone())
         );
         let new_session = Session {
-            filesystem,
+            filesystem: Arc::new(filesystem),
             ch,
             mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
             allowed,
@@ -170,7 +170,7 @@ impl<FS: Filesystem> Session<FS> {
             filesystem.init_notification_sender(ns.clone())
         );
         Session {
-            filesystem,
+            filesystem: Arc::new(filesystem),
             ch,
             mount: Arc::new(Mutex::new(None)),
             allowed: acl,
@@ -204,11 +204,14 @@ impl<FS: Filesystem> Session<FS> {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
             match self.ch.receive(buf) {
-                Ok(size) => match Request::new(self.ch.sender(), &buf[..size]) {
-                    // Dispatch request
-                    Some(req) => req.dispatch(self).await,
-                    // Quit loop on illegal request
-                    None => break,
+                Ok(size) => {
+                    let data = Vec::from(&buf[..size]);
+                    match RequestHandler::new(self.ch.sender(), data) {
+                        // Dispatch request
+                        Some(req) => req.dispatch(self.filesystem.clone()).await,
+                        // Quit loop on illegal request
+                        None => break,
+                    }
                 },
                 Err(err) => match err.raw_os_error() {
                     // Operation interrupted. Accordingly to FUSE, this is safe to retry
@@ -291,15 +294,19 @@ impl<FS: Filesystem> Session<FS> {
                 Ok(ready) => {
                     if ready {
                         // Read a FUSE request (blocks until read succeeds)
-                        match self.ch.receive(buf) {
+                        let result = self.ch.receive(buf);
+                        match result {
                             Ok(size) => {
                                 if size == 0 {
                                     // Read of 0 bytes on FUSE FD typically means it was closed (unmounted)
                                     info!("FUSE channel read 0 bytes, session ending.");
                                     break;
                                 }
-                                if let Some(req) = Request::new(self.ch.sender(), &buf[..size]) {
-                                    req.dispatch(self).await;
+                                let data = Vec::from(&buf[..size]);
+                                if let Some(req) = RequestHandler::new(self.ch.sender(), data) {
+                                    //req.dispatch(self).await;
+                                    let fs = self.filesystem.clone();
+                                    tokio::spawn(async move { req.dispatch(fs).await; });
                                 } else {
                                     // Illegal request, quit loop
                                     warn!("Failed to parse FUSE request, session ending.");

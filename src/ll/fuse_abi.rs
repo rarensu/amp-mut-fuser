@@ -1045,7 +1045,7 @@ pub struct fuse_fallocate_in {
 }
 
 #[repr(C)]
-#[derive(Debug, FromBytes, KnownLayout, Immutable)]
+#[derive(Clone, Debug, FromBytes, KnownLayout, Immutable)]
 pub struct fuse_in_header {
     pub len: u32,
     pub opcode: u32,

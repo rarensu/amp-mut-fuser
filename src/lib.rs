@@ -645,7 +645,7 @@ pub trait Filesystem: Send + Sync {
     /// undefined if the opendir method didn't set any value.
     #[cfg(feature = "abi-7-21")]
     async fn readdirplus(
-        &mut self,
+        &self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
@@ -1019,7 +1019,7 @@ pub trait Filesystem: Send + Sync {
 /// # Errors
 /// Error if the mount does not succeed.
 #[deprecated(note = "Use `mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity.")]
-pub fn mount<FS: Filesystem, P: AsRef<Path>>(
+pub fn mount<FS: Filesystem + 'static, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,
     options: &[&OsStr],
@@ -1038,7 +1038,7 @@ pub fn mount<FS: Filesystem, P: AsRef<Path>>(
 /// This is the recommended way to mount a FUSE filesystem.
 /// # Errors
 /// Error if the mount does not succeed.
-pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
+pub fn mount2<FS: Filesystem + 'static, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,
     options: &[MountOption],
