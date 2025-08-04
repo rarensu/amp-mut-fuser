@@ -94,5 +94,9 @@ name = "ioctl"
 required-features = ["abi-7-11"]
 
 [[example]]
+name = "ioctl_client"
+required-features = ["abi-7-11"]
+
+[[example]]
 name = "passthrough"
 required-features = ["abi-7-40"]

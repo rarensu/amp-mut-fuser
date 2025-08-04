@@ -15,13 +15,16 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
+use std::sync::Mutex;
+use async_trait::async_trait;
+
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
 const FIOC_GET_SIZE: u64 = nix::request_code_read!('E', 0, std::mem::size_of::<usize>());
 const FIOC_SET_SIZE: u64 = nix::request_code_write!('E', 1, std::mem::size_of::<usize>());
 
 struct FiocFS {
-    content: Vec<u8>,
+    content: Mutex<Vec<u8>>,
     root_attr: FileAttr,
     fioc_file_attr: FileAttr,
 }
@@ -74,15 +77,16 @@ impl FiocFS {
         };
 
         Self {
-            content: vec![],
+            content: Mutex::new(vec![]),
             root_attr,
             fioc_file_attr,
         }
     }
 }
 
+#[async_trait]
 impl Filesystem for FiocFS{
-    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         if parent == 1 && name == OsStr::new("fioc") {
             Ok(Entry {
                 ino: self.fioc_file_attr.ino,
@@ -96,7 +100,7 @@ impl Filesystem for FiocFS{
         }
     }
 
-    fn getattr(&mut self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<(FileAttr, Duration), Errno> {
+    async fn getattr(&self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<(FileAttr, Duration), Errno> {
         match ino {
             1 => Ok((self.root_attr, TTL)),
             2 => Ok((self.fioc_file_attr, TTL)),
@@ -105,8 +109,8 @@ impl Filesystem for FiocFS{
     }
 
     #[allow(clippy::cast_sign_loss)]
-    fn read(
-        &mut self,
+    async fn read(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -117,12 +121,12 @@ impl Filesystem for FiocFS{
     ) -> Result<Bytes, Errno> {
         if ino == 2 {
             let offset = offset as usize;
-            if offset >= self.content.len() {
+            if offset >= self.content.lock().unwrap().len() {
                 // No need to allocate anything: just use `Bytes::new()`, which does not allocate.
                 Ok(Bytes::new())
             } else {
                 // Using `From` trait to construct onwed Bytes
-                Ok(self.content[offset..].to_vec().into())
+                Ok(self.content.lock().unwrap()[offset..].to_vec().into())
             }
         } else {
             Err(Errno::ENOENT)
@@ -130,8 +134,8 @@ impl Filesystem for FiocFS{
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn readdir(
-        &mut self,
+    async fn readdir(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -148,8 +152,8 @@ impl Filesystem for FiocFS{
     }
 
     #[cfg(feature = "abi-7-11")]
-    fn ioctl(
-        &mut self,
+    async fn ioctl(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -164,7 +168,7 @@ impl Filesystem for FiocFS{
 
         match cmd.into() {
             FIOC_GET_SIZE => {
-                let size_bytes = self.content.len().to_ne_bytes();
+                let size_bytes = self.content.lock().unwrap().len().to_ne_bytes();
                 Ok(Ioctl {
                     result: 0,
                     data: Bytes::from(size_bytes.to_vec()),
@@ -172,7 +176,7 @@ impl Filesystem for FiocFS{
             }
             FIOC_SET_SIZE => {
                 let new_size = usize::from_ne_bytes(in_data.try_into().unwrap());
-                self.content = vec![0_u8; new_size];
+                *self.content.lock().unwrap() = vec![0_u8; new_size];
                 Ok(Ioctl {
                     result: 0,
                     data: Bytes::new(),

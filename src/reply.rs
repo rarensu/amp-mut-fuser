@@ -422,7 +422,7 @@ impl ReplyHandler {
             }
         };
         for item in entries_safe_borrow.iter() {
-            if item.offset < min_offset {
+            if item.offset <= min_offset {
                 log::debug!("ReplyHandler::dir: skipping item with offset #{}", item.offset);
                 continue;
             }
@@ -462,7 +462,7 @@ impl ReplyHandler {
             }
         };
         for (dirent, entry) in entries_safe_borrow.iter() {
-            if dirent.offset < min_offset {
+            if dirent.offset <= min_offset {
                 log::debug!("ReplyHandler::dirplus: skipping item with offset #{}", dirent.offset);
                 continue;
             }
