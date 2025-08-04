@@ -70,7 +70,7 @@ impl<'a> Request<'a> {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch<FS: Filesystem>(self, se: &mut Session<FS>) {
+    pub(crate) async fn dispatch<FS: Filesystem>(self, se: &mut Session<FS>) {
         debug!("{}", self.request);
         let op_result = self.request.operation().map_err(|_| Errno::ENOSYS);
 
@@ -130,7 +130,7 @@ impl<'a> Request<'a> {
                 let config = KernelConfig::new(x.capabilities(), x.max_readahead());
                 // Call filesystem init method and give it a chance to 
                 // propose a different config or return an error
-                match se.filesystem.init(self.meta, config) {
+                match se.filesystem.init(self.meta, config).await {
                     Ok(config) => {
                         // Reply with our desired version and settings. If the kernel supports a
                         // larger major version, it'll re-send a matching init message. If it
@@ -159,7 +159,7 @@ impl<'a> Request<'a> {
             }
             // Filesystem destroyed
             ll::Operation::Destroy(_x) => {
-                se.filesystem.destroy();
+                se.filesystem.destroy().await;
                 se.destroyed = true;
                 self.replyhandler.ok();
             }
@@ -179,7 +179,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name()
-                );
+                ).await;
                 match response {
                     Ok(entry) => {
                         self.replyhandler.entry(entry);
@@ -194,7 +194,7 @@ impl<'a> Request<'a> {
                     ino: self.request.nodeid().into(),
                     nlookup: x.nlookup(),
                 };
-                se.filesystem.forget(self.meta, target); // no response
+                se.filesystem.forget(self.meta, target).await; // no response
                 self.replyhandler.no_reply(); // no reply
             }
             ll::Operation::GetAttr(_attr) => {
@@ -203,14 +203,14 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into)
-                );
+                ).await;
                 // Pre-abi-7-9 does not support providing a file handle.
                 #[cfg(not(feature = "abi-7-9"))]
                 let response = se.filesystem.getattr(
                     self.meta,
                     self.request.nodeid().into(),
                     None,
-                );
+                ).await;
                 match response {
                     Ok((attr,ttl))=> {
                         self.replyhandler.attr(attr, ttl);
@@ -236,7 +236,7 @@ impl<'a> Request<'a> {
                     x.chgtime(),
                     x.bkuptime(),
                     x.flags()
-                );
+                ).await;
                 match response {
                     Ok((attr, ttl))=> {
                         self.replyhandler.attr(attr, ttl);
@@ -250,7 +250,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.readlink(
                     self.meta,
                      self.request.nodeid().into()
-                );
+                ).await;
                 match response {
                     Ok(data)=> {
                         self.replyhandler.data(data);
@@ -268,7 +268,7 @@ impl<'a> Request<'a> {
                     x.mode(),
                     x.umask(),
                     x.rdev()
-                );
+                ).await;
                 match response {
                     Ok(entry)=> {
                         self.replyhandler.entry(entry);
@@ -285,7 +285,7 @@ impl<'a> Request<'a> {
                     x.name(),
                     x.mode(),
                     x.umask()
-                );
+                ).await;
                 match response {
                     Ok(entry)=> {
                         self.replyhandler.entry(entry);
@@ -300,7 +300,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -315,7 +315,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -331,7 +331,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.link_name(),
                     x.target()
-                );
+                ).await;
                 match response {
                     Ok(entry)=> {
                         self.replyhandler.entry(entry);
@@ -349,7 +349,7 @@ impl<'a> Request<'a> {
                     x.dest().dir.into(),
                     x.dest().name,
                     0
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -365,7 +365,7 @@ impl<'a> Request<'a> {
                     x.inode_no().into(),
                     self.request.nodeid().into(),
                     x.dest().name
-                );
+                ).await;
                 match response {
                     Ok(entry)=> {
                         self.replyhandler.entry(entry);
@@ -380,7 +380,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(), 
                     x.flags()
-                );
+                ).await;
                 match response {
                     Ok(open)=> {
                         self.replyhandler.opened(open);
@@ -399,7 +399,7 @@ impl<'a> Request<'a> {
                     x.size(),
                     x.flags(),
                     x.lock_owner().map(Into::into)
-                );
+                ).await;
                 match response {
                     Ok(data)=> {
                         self.replyhandler.data(data);
@@ -419,7 +419,7 @@ impl<'a> Request<'a> {
                     x.write_flags(),
                     x.flags(),
                     x.lock_owner().map(Into::into)
-                );
+                ).await;
                 match response {
                     Ok(size)=> {
                         self.replyhandler.written(size);
@@ -435,7 +435,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.lock_owner().into()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -453,7 +453,7 @@ impl<'a> Request<'a> {
                     x.flags(),
                     x.lock_owner().map(Into::into),
                     x.flush()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -469,7 +469,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -484,7 +484,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(), 
                     x.flags()
-                );
+                ).await;
                 match response {
                     Ok(open)=> {
                         self.replyhandler.opened(open);
@@ -501,7 +501,7 @@ impl<'a> Request<'a> {
                     x.file_handle().into(),
                     x.offset(),
                     x.size()
-                );
+                ).await;
                 match response {
                     Ok(dirent_list)=> {
                         self.replyhandler.dir(
@@ -521,7 +521,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.flags()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -537,7 +537,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -551,7 +551,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.statfs(
                     self.meta,
                     self.request.nodeid().into()
-                );
+                ).await;
                 match response {
                     Ok(statfs)=> {
                         self.replyhandler.statfs(statfs);
@@ -569,7 +569,7 @@ impl<'a> Request<'a> {
                     x.value(),
                     x.flags(),
                     x.position()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -585,7 +585,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.name(),
                     x.size_u32()
-                );
+                ).await;
                 match response {
                     Ok(xattr)=> {
                         self.replyhandler.xattr(xattr);
@@ -600,7 +600,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     x.size()
-                );
+                ).await;
                 match response {
                     Ok(xattr)=> {
                         self.replyhandler.xattr(xattr);
@@ -615,7 +615,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -630,7 +630,7 @@ impl<'a> Request<'a> {
                     self.meta,
                     self.request.nodeid().into(),
                     x.mask()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -648,7 +648,7 @@ impl<'a> Request<'a> {
                     x.mode(),
                     x.umask(),
                     x.flags()
-                );
+                ).await;
                 match response {
                     Ok((entry, open))=> {
                         self.replyhandler.created(entry, open);
@@ -668,7 +668,7 @@ impl<'a> Request<'a> {
                     x.lock().range.1,
                     x.lock().typ,
                     x.lock().pid
-                );
+                ).await;
                 match response {
                     Ok(lock)=> {
                         self.replyhandler.locked(lock);
@@ -689,7 +689,7 @@ impl<'a> Request<'a> {
                     x.lock().typ,
                     x.lock().pid,
                     false
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -710,7 +710,7 @@ impl<'a> Request<'a> {
                     x.lock().typ,
                     x.lock().pid,
                     true
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -726,7 +726,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.block_size(),
                     x.block()
-                );
+                ).await;
                 match response {
                     Ok(block)=> {
                         self.replyhandler.bmap(block);
@@ -750,7 +750,7 @@ impl<'a> Request<'a> {
                         x.command(),
                         x.in_data(),
                         x.out_size()
-                    );
+                    ).await;
                     match response {
                         Ok(ioctl)=> {
                             self.replyhandler.ioctl(ioctl);
@@ -770,7 +770,7 @@ impl<'a> Request<'a> {
                     x.kernel_handle(),
                     x.events(),
                     x.flags()
-                );
+                ).await;
                 match response {
                     Ok(ready_events)=> {
                         self.replyhandler.poll(ready_events);
@@ -787,7 +787,7 @@ impl<'a> Request<'a> {
             }
             #[cfg(feature = "abi-7-16")]
             ll::Operation::BatchForget(x) => {
-                se.filesystem.batch_forget(self.meta, x.into()); // no response
+                se.filesystem.batch_forget(self.meta, x.into()).await; // no response
                 self.replyhandler.no_reply(); // no reply
             }
             #[cfg(feature = "abi-7-19")]
@@ -799,7 +799,7 @@ impl<'a> Request<'a> {
                     x.offset(),
                     x.len(),
                     x.mode()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -817,7 +817,7 @@ impl<'a> Request<'a> {
                     x.file_handle().into(),
                     x.offset(),
                     x.size()
-                );
+                ).await;
                 match response {
                     Ok(dirent_plus_list)=> {
                         self.replyhandler.dirplus(
@@ -840,7 +840,7 @@ impl<'a> Request<'a> {
                     x.to().dir.into(),
                     x.to().name,
                     x.flags()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok();
@@ -858,7 +858,7 @@ impl<'a> Request<'a> {
                     x.file_handle().into(),
                     x.offset(),
                     x.whence()
-                );
+                ).await;
                 match response {
                     Ok(offset)=> {
                         self.replyhandler.offset(offset);
@@ -881,7 +881,7 @@ impl<'a> Request<'a> {
                     o.offset,
                     x.len(),
                     x.flags().try_into().unwrap()
-                );
+                ).await;
                 match response {
                     Ok(written)=> {
                         self.replyhandler.written(written);
@@ -896,7 +896,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.setvolname(
                     self.meta,
                     x.name()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok()
@@ -911,7 +911,7 @@ impl<'a> Request<'a> {
                 let response = se.filesystem.getxtimes(
                     self.meta,
                     x.nodeid().into()
-                );
+                ).await;
                 match response {
                     Ok(xtimes)=> {
                         self.replyhandler.xtimes(xtimes)
@@ -930,7 +930,7 @@ impl<'a> Request<'a> {
                     x.to().dir.into(),
                     x.to().name,
                     x.options()
-                );
+                ).await;
                 match response {
                     Ok(())=> {
                         self.replyhandler.ok()

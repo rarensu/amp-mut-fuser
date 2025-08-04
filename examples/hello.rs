@@ -7,6 +7,8 @@ use bytes::Bytes;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
+use async_trait::async_trait;
+
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
 const HELLO_DIR_ATTR: FileAttr = FileAttr {
@@ -74,9 +76,10 @@ impl HelloFS {
     }
 }
 
+#[async_trait]
 impl Filesystem for HelloFS {
 
-    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         if parent == 1 && name.as_os_str().as_encoded_bytes() == self.hello_filename {
             Ok(Entry{
                 ino: 2,
@@ -90,8 +93,8 @@ impl Filesystem for HelloFS {
         }
     }
 
-    fn getattr(
-        &mut self,
+    async fn getattr(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: Option<u64>,
@@ -104,8 +107,8 @@ impl Filesystem for HelloFS {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn read(
-        &mut self,
+    async fn read(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -131,8 +134,8 @@ impl Filesystem for HelloFS {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn readdir(
-        &mut self,
+    async fn readdir(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -242,9 +245,11 @@ mod test {
 
     #[test]
     fn test_lookup_hello_txt() {
-        let mut hellofs = super::HelloFS::new();
+        let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = hellofs.lookup(req, 1, &PathBuf::from("hello.txt"));
+        let result = futures::executor::block_on(
+            hellofs.lookup(req, 1, &PathBuf::from("hello.txt"))
+        );
         assert!(result.is_ok(), "Lookup for hello.txt should succeed");
         if let Ok(entry) = result {
             assert_eq!(entry.attr.ino, 2, "Lookup should return inode 2 for hello.txt");
@@ -255,9 +260,11 @@ mod test {
 
     #[test]
     fn test_read_hello_txt() {
-        let mut hellofs = super::HelloFS::new();
+        let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = hellofs.read(req, 2, 0, 0, 13, 0, None);
+        let result = futures::executor::block_on(
+            hellofs.read(req, 2, 0, 0, 13, 0, None)
+        );
         assert!(result.is_ok(), "Read for hello.txt should succeed");
         if let Ok(content) = result {
             assert_eq!(String::from_utf8_lossy(content.as_ref()), "Hello World!\n", "Content of hello.txt should be 'Hello World!\\n'");
@@ -266,9 +273,11 @@ mod test {
 
     #[test]
     fn test_readdir_root() {
-        let mut hellofs = super::HelloFS::new();
+        let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = hellofs.readdir(req, 1, 0, 0, 4096);
+        let result = futures::executor::block_on(
+            hellofs.readdir(req, 1, 0, 0, 4096)
+        );
         assert!(result.is_ok(), "Readdir on root should succeed");
         if let Ok(entries_list) = result {
             // using unlock().unwrap() in case locking variants are enabled in the current build.
@@ -301,9 +310,11 @@ mod test {
 
     #[test]
     fn test_create_fails_readonly() {
-        let mut hellofs = super::HelloFS::new();
+        let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = hellofs.create(req, 1, &PathBuf::from("newfile.txt"), 0o644, 0, 0);
+        let result = futures::executor::block_on(
+            hellofs.create(req, 1, &PathBuf::from("newfile.txt"), 0o644, 0, 0)
+        );
         assert!(result.is_err(), "Create should fail for read-only filesystem");
         if let Err(e) = result {
             assert_eq!(e, Errno::ENOSYS, "Create should return ENOSYS for unsupported operation");

@@ -124,14 +124,16 @@ impl<FS: Filesystem> Session<FS> {
         } else {
             SessionACL::Owner
         };
-        #[cfg(feature = "abi-7-11")]
-        let mut filesystem = filesystem;
+        // #[cfg(feature = "abi-7-11")]
+        // let mut filesystem = filesystem;
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (ns, nr) = crossbeam_channel::unbounded();
         #[cfg(feature = "abi-7-11")]
         // Pass the sender to the filesystem.
-        let notify = filesystem.init_notification_sender(ns.clone());
+        let notify = futures::executor::block_on(
+            filesystem.init_notification_sender(ns.clone())
+        );
         let new_session = Session {
             filesystem,
             ch,
@@ -157,14 +159,16 @@ impl<FS: Filesystem> Session<FS> {
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
         // Create the channel for fuse messages
         let ch = Channel::new(Arc::new(fd.into()));
-        #[cfg(feature = "abi-7-11")]
-        let mut filesystem = filesystem;
+        // #[cfg(feature = "abi-7-11")]
+        // let mut filesystem = filesystem;
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (ns, nr) = crossbeam_channel::unbounded();
         #[cfg(feature = "abi-7-11")]
         // Pass the sender to the filesystem.
-        let notify = filesystem.init_notification_sender(ns.clone());
+        let notify = futures::executor::block_on(
+            filesystem.init_notification_sender(ns.clone())
+        );
         Session {
             filesystem,
             ch,
@@ -188,7 +192,7 @@ impl<FS: Filesystem> Session<FS> {
     /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
     /// having multiple buffers (which take up much memory), but the filesystem methods
     /// may run concurrent by spawning threads.
-    pub fn run(&mut self) -> io::Result<()> {
+    pub async fn run(&mut self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
@@ -202,7 +206,7 @@ impl<FS: Filesystem> Session<FS> {
             match self.ch.receive(buf) {
                 Ok(size) => match Request::new(self.ch.sender(), &buf[..size]) {
                     // Dispatch request
-                    Some(req) => req.dispatch(self),
+                    Some(req) => req.dispatch(self).await,
                     // Quit loop on illegal request
                     None => break,
                 },
@@ -250,7 +254,7 @@ impl<FS: Filesystem> Session<FS> {
 
     /// Run the session loop in a single thread, same as `run()`, but additionally
     /// processing both FUSE requests and poll events without blocking.
-    pub fn run_with_notifications(&mut self) -> io::Result<()> {
+    pub async fn run_with_notifications(&mut self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
         let buf = aligned_sub_buf(
@@ -295,7 +299,7 @@ impl<FS: Filesystem> Session<FS> {
                                     break;
                                 }
                                 if let Some(req) = Request::new(self.ch.sender(), &buf[..size]) {
-                                    req.dispatch(self);
+                                    req.dispatch(self).await;
                                 } else {
                                     // Illegal request, quit loop
                                     warn!("Failed to parse FUSE request, session ending.");
@@ -335,7 +339,7 @@ impl<FS: Filesystem> Session<FS> {
                 // Sleep briefly to yield CPU.
                 std::thread::sleep(SYNC_SLEEP_INTERVAL);
                 // Do a heartbeat to let the Filesystem know that some time has passed.
-                match FS::heartbeat(&mut self.filesystem) {
+                match FS::heartbeat(&self.filesystem).await {
                     Ok(status) => {
                         if let FsStatus::Stopped = status {
                             break;
@@ -423,7 +427,9 @@ impl<FS: 'static + Filesystem + Send> Session<FS> {
 impl<FS: Filesystem> Drop for Session<FS> {
     fn drop(&mut self) {
         if !self.destroyed {
-            self.filesystem.destroy();
+            futures::executor::block_on(
+                self.filesystem.destroy()
+            );
             self.destroyed = true;
         }
 
@@ -459,11 +465,11 @@ impl BackgroundSession {
         #[cfg(not(feature = "abi-7-11"))]
         // The main session (se) is moved into this thread.
         let main_loop_guard = thread::spawn(move || {
-            se.run()
+            futures::executor::block_on(se.run())
         });
         #[cfg(feature = "abi-7-11")]
         let main_loop_guard = thread::spawn(move || {
-            se.run_with_notifications()
+            futures::executor::block_on(se.run_with_notifications())
         });
 
         Ok(BackgroundSession {
