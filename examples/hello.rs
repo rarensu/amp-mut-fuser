@@ -131,32 +131,32 @@ impl Filesystem for HelloFS {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn readdir<'dir>(
+    fn readdir(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir>, Errno> {
+    ) -> Result<DirentList, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }
 
-        // This example builds the list of 3 directory entries from scratch 
+        // This example builds the list of 3 dirents from scratch 
         // on each call to readdir().
         let mut entries= Vec::new();
 
         // Entry 1: example of borrowed data.
         // - name: "."
         // - Dirent is constructed in the global scope. 
-        // - lifetime is 'static by definition.
-        // - a reference is passed along.
-        entries.push(DOT_DIRENT.clone());
+        // - lifetime of the `name` field is 'static by definition.
+        // - the vector will hold a reference to the `name` field.
+        entries.push(DOT_DIRENT);
 
         // Entry 2: example of single-use Owned data.
         // - name: ".."
-        // - entry is constructed during each call to readdir(). 
+        // - dirent is constructed during each call to readdir(). 
         let dotdot_dirent = Dirent {
                 ino: 1, // Parent of root is itself for simplicity. 
                         // Note: this can cause some weird behavior for an observer.
@@ -181,12 +181,13 @@ impl Filesystem for HelloFS {
             };
         entries.push(hello_dirent);
 
-        // Slice the collected entries based on the requested offset.
+        // Slice the collected dirents based on the requested offset.
         let entries: Vec<Dirent> = entries.into_iter().skip(offset as usize).collect();
         // ( Only references and smart pointers are being reorganized at this time;
         // the underlying filename data should stay where it is.)
         
-        // Entries may be returned as borrowed, owned, or shared.
+        // A DirentList itself may also be returned as borrowed, owned, or shared.
+        // In this example, it is owned (Vec).
         // From<...> and Into<...> methods can be used to help construct the return type.  
         Ok(entries.into())
     }
@@ -270,7 +271,9 @@ mod test {
         let result = hellofs.readdir(req, 1, 0, 0, 4096);
         assert!(result.is_ok(), "Readdir on root should succeed");
         if let Ok(entries_list) = result {
-            let entries_slice = entries_list.borrow();
+            // using unlock().unwrap() in case locking variants are enabled in the current build.
+            // otherwise, one could simply use as_ref() or &
+            let entries_slice = entries_list.unlock().unwrap();
             assert_eq!(entries_slice.len(), 3, "Root directory should contain exactly 3 entries");
 
             // Check entry 0: "."

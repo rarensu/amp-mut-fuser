@@ -1549,14 +1549,14 @@ impl Filesystem for SimpleFS {
         }
     }
 
-    fn readdir<'dir>(
+    fn readdir(
         &mut self,
         _req: RequestMeta,
         inode: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir>, Errno> {
+    ) -> Result<DirentList, Errno> {
         debug!("readdir() called with {inode:?}");
         assert!(offset >= 0);
         // get_directory_content() returns an owned tree structure, or an error.
@@ -1566,7 +1566,6 @@ impl Filesystem for SimpleFS {
                 return Err(Errno::from_i32(error_code));
             }
         };
-        // Implicit anonymous lifetime '_ because this function won't be returning any borrowed data.
         let mut entries = Vec::new();
         // into_iter() moves ownership of the elements into the loop variables, to avoid a copy
         // This tree structure does not include an index; enumerate() adds an index

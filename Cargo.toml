@@ -32,6 +32,7 @@ bincode = "1.3.1"
 serde = { version = "1.0.102", features = ["std", "derive"] }
 tempfile = "3.10.1"
 nix = { version = "0.29.0", features = ["poll", "fs", "ioctl"] }
+once_cell = "*"
 
 [build-dependencies]
 pkg-config = { version = "0.3.14", optional = true }
@@ -40,6 +41,7 @@ pkg-config = { version = "0.3.14", optional = true }
 default = ["threaded"]
 threaded = ["no-rc"]
 no-rc = []
+locking = []
 libfuse = ["pkg-config"]
 serializable = ["serde"]
 macfuse-4-compat = []

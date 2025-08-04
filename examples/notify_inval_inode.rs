@@ -179,14 +179,14 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn readdir<'dir>(
+    fn readdir(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir>, Errno> {
+    ) -> Result<DirentList, Errno> {
         if ino != FUSE_ROOT_ID {
             return Err(Errno::ENOTDIR);
         }

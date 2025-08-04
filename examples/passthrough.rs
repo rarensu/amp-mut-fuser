@@ -366,14 +366,14 @@ impl Filesystem for PassthroughFs {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn readdir<'dir>(
+    fn readdir(
         &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
         _max_bytes: u32
-    ) -> Result<DirentList<'dir>, Errno> {
+    ) -> Result<DirentList, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }

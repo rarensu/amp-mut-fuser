@@ -5,7 +5,7 @@ pub mod core;
 pub mod utils;
 
 pub use self::core::Container;
-pub use self::core::Borrow;
+pub use self::core::SafeBorrow;
 
 #[cfg(test)]
 mod tests;

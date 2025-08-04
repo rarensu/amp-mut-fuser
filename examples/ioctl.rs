@@ -130,7 +130,7 @@ impl Filesystem for FiocFS{
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn readdir<'dir>(
+    fn readdir(
         &mut self,
         _req: RequestMeta,
         ino: u64,
@@ -138,7 +138,7 @@ impl Filesystem for FiocFS{
         // Fuser library will ensure that offset and max_bytes are respected.
         _offset: i64,
         _max_bytes: u32,
-    ) -> Result<DirentList<'dir>, Errno> {
+    ) -> Result<DirentList, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
         }

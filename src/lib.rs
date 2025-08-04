@@ -48,7 +48,7 @@ pub use request::RequestMeta;
 pub use session::{Session, SessionACL, SessionUnmounter};
 #[cfg(feature = "threaded")]
 pub use session::BackgroundSession;
-pub use container::{Container, Borrow};
+pub use container::{Container, SafeBorrow};
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
 #[cfg(feature = "abi-7-13")]
@@ -621,14 +621,14 @@ pub trait Filesystem {
     /// An empty list indicates the end of the stream.
     /// `fh` will contain the value set by the opendir method, or will be undefined if the
     /// opendir method didn't set any value.
-    fn readdir<'dir>(
+    fn readdir(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32
-    ) -> Result<DirentList<'dir>, Errno> {
+    ) -> Result<DirentList, Errno> {
         warn!("[Not Implemented] readdir(ino: {ino:#x?}, fh: {fh}, offset: {offset}, max_bytes: {max_bytes})");
         Err(Errno::ENOSYS)
     }
@@ -641,14 +641,14 @@ pub trait Filesystem {
     /// `fh` will contain the value set by the opendir method, or will be
     /// undefined if the opendir method didn't set any value.
     #[cfg(feature = "abi-7-21")]
-    fn readdirplus<'dir>(
+    fn readdirplus(
         &mut self,
         req: RequestMeta,
         ino: u64,
         fh: u64,
         offset: i64,
         max_bytes: u32,
-    ) -> Result<DirentPlusList<'dir>, Errno> {
+    ) -> Result<DirentPlusList, Errno> {
         warn!(
             "[Not Implemented] readdirplus(ino: {ino:#x?}, fh: {fh}, \
             offset: {offset}, max_bytes: {max_bytes})"

@@ -187,10 +187,10 @@ pub struct Dirent {
 }
 
 /// A list of directory entries.
-pub type DirentList<'dir> = Container<'dir, Dirent>;
+pub type DirentList = Container<Dirent>;
 
 /// A list of directory entries, plus additional file data for the kernel cache.
-pub type DirentPlusList<'dir> = Container<'dir, (Dirent, Entry)>;
+pub type DirentPlusList = Container<(Dirent, Entry)>;
 
 #[cfg(target_os = "macos")]
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -407,13 +407,13 @@ impl ReplyHandler {
     /// Reply to a request with a filled directory buffer
     pub fn dir(
         self,
-        entries_list: &DirentList<'_>,
+        entries_list: &DirentList,
         size: usize,
         min_offset: i64,
     ) {
         let mut buf = DirentBuf::new(size);
         // Alternatively, consider a panic if the borrow fails.
-        let entries = match entries_list.try_borrow(){
+        let entries_safe_borrow = match entries_list.unlock(){
             Ok(entries) => entries,
             Err(e) => {
                 log::error!("ReplyHandler::dir: Borrow Error: {e:?}");
@@ -421,7 +421,7 @@ impl ReplyHandler {
                 return;
             }
         };
-        for item in entries.iter() {
+        for item in entries_safe_borrow.iter() {
             if item.offset < min_offset {
                 log::debug!("ReplyHandler::dir: skipping item with offset #{}", item.offset);
                 continue;
@@ -447,13 +447,13 @@ impl ReplyHandler {
     // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
         self,
-        entries_plus_list: &DirentPlusList<'_>,
+        entries_plus_list: &DirentPlusList,
         size: usize,
         min_offset: i64,
     ) {
         let mut buf = DirentPlusBuf::new(size);
         // Alternatively, consider a panic if the borrow fails.
-        let entries = match entries_plus_list.try_borrow(){
+        let entries_safe_borrow = match entries_plus_list.unlock(){
             Ok(entries) => entries,
             Err(e) => {
                 log::error!("ReplyHandler::dirplus: Borrow Error: {e:?}");
@@ -461,7 +461,7 @@ impl ReplyHandler {
                 return;
             }
         };
-        for (dirent, entry) in entries.iter() {
+        for (dirent, entry) in entries_safe_borrow.iter() {
             if dirent.offset < min_offset {
                 log::debug!("ReplyHandler::dirplus: skipping item with offset #{}", dirent.offset);
                 continue;
