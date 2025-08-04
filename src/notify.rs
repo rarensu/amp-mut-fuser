@@ -3,6 +3,7 @@ use std::io;
 #[allow(unused)]
 use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
 use crossbeam_channel::{SendError, Sender};
+#[cfg(feature = "abi-7-12")]
 use bytes::Bytes;
 
 use crate::{

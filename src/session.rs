@@ -53,17 +53,9 @@ pub enum SessionACL {
     Owner,
 }
 
-/// The session data structure
+/// Session metadata
 #[derive(Debug)]
-pub struct Session<FS: Filesystem> {
-    /// Filesystem operation implementations
-    pub(crate) filesystem: Arc<FS>,
-    /// Communication channel to the kernel driver
-    pub(crate) ch: Channel,
-    /// Handle to the mount.  Dropping this unmounts.
-    mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
-    /// Whether to restrict access to owner, root + owner, or unrestricted
-    /// Used to implement `allow_root` and `auto_unmount`
+pub(crate) struct SessionMeta {
     pub(crate) allowed: SessionACL,
     /// User that launched the fuser process
     pub(crate) session_owner: u32,
@@ -75,6 +67,20 @@ pub struct Session<FS: Filesystem> {
     pub(crate) initialized: bool,
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: bool,
+}
+
+/// The session data structure
+#[derive(Debug)]
+pub struct Session<FS: Filesystem> {
+    /// Filesystem operation implementations
+    pub(crate) filesystem: Arc<FS>,
+    /// Communication channel to the kernel driver
+    pub(crate) ch: Channel,
+    /// Handle to the mount.  Dropping this unmounts.
+    mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
+    /// Whether to restrict access to owner, root + owner, or unrestricted
+    /// Used to implement `allow_root` and `auto_unmount`
+    meta: Arc<Mutex<SessionMeta>>,
     #[cfg(feature = "abi-7-11")]
     /// Whether this session currently has notification support
     pub(crate) notify: bool,
@@ -124,6 +130,14 @@ impl<FS: Filesystem + 'static> Session<FS> {
         } else {
             SessionACL::Owner
         };
+        let meta = SessionMeta {
+            allowed,
+            session_owner: geteuid().as_raw(),
+            proto_major: 0,
+            proto_minor: 0,
+            initialized: false,
+            destroyed: false,
+        };
         // #[cfg(feature = "abi-7-11")]
         // let mut filesystem = filesystem;
         #[cfg(feature = "abi-7-11")]
@@ -138,12 +152,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
             filesystem: Arc::new(filesystem),
             ch,
             mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
-            allowed,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
+            meta: Arc::new(Mutex::new(meta)),
             #[cfg(feature = "abi-7-11")]
             notify,
             #[cfg(feature = "abi-7-11")]
@@ -159,6 +168,14 @@ impl<FS: Filesystem + 'static> Session<FS> {
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
         // Create the channel for fuse messages
         let ch = Channel::new(Arc::new(fd.into()));
+        let meta = SessionMeta {
+            allowed: acl,
+            session_owner: geteuid().as_raw(),
+            proto_major: 0,
+            proto_minor: 0,
+            initialized: false,
+            destroyed: false,
+        };
         // #[cfg(feature = "abi-7-11")]
         // let mut filesystem = filesystem;
         #[cfg(feature = "abi-7-11")]
@@ -173,12 +190,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
             filesystem: Arc::new(filesystem),
             ch,
             mount: Arc::new(Mutex::new(None)),
-            allowed: acl,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
+            meta: Arc::new(Mutex::new(meta)),
             #[cfg(feature = "abi-7-11")]
             notify,
             #[cfg(feature = "abi-7-11")]
@@ -208,7 +220,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
                     let data = Vec::from(&buf[..size]);
                     match RequestHandler::new(self.ch.sender(), data) {
                         // Dispatch request
-                        Some(req) => req.dispatch(self.filesystem.clone()).await,
+                        Some(req) => req.dispatch(self.filesystem.clone(), self.meta.clone()).await,
                         // Quit loop on illegal request
                         None => break,
                     }
@@ -306,7 +318,8 @@ impl<FS: Filesystem + 'static> Session<FS> {
                                 if let Some(req) = RequestHandler::new(self.ch.sender(), data) {
                                     //req.dispatch(self).await;
                                     let fs = self.filesystem.clone();
-                                    tokio::spawn(async move { req.dispatch(fs).await; });
+                                    let meta = self.meta.clone();
+                                    tokio::spawn(async move { req.dispatch(fs, meta).await; });
                                 } else {
                                     // Illegal request, quit loop
                                     warn!("Failed to parse FUSE request, session ending.");
@@ -433,11 +446,12 @@ impl<FS: 'static + Filesystem + Send> Session<FS> {
 
 impl<FS: Filesystem> Drop for Session<FS> {
     fn drop(&mut self) {
-        if !self.destroyed {
+        let mut meta = self.meta.lock().unwrap();
+        if !meta.destroyed {
             futures::executor::block_on(
                 self.filesystem.destroy()
             );
-            self.destroyed = true;
+            meta.destroyed = true;
         }
 
         if let Some((mountpoint, _mount)) = std::mem::take(&mut *self.mount.lock().unwrap()) {

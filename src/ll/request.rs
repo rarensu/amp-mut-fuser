@@ -6,7 +6,6 @@
 use super::fuse_abi::{fuse_in_header, fuse_opcode, InvalidOpcodeError};
 
 use super::{fuse_abi as abi};
-use log::debug;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom, fmt::Display, path::Path};
