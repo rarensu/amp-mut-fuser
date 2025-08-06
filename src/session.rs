@@ -9,7 +9,7 @@ use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
 use nix::unistd::geteuid;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::io;
@@ -20,7 +20,7 @@ use std::fmt;
 
 use crate::ll::fuse_abi as abi;
 use crate::request::RequestHandler;
-use crate::{Filesystem, FsStatus};
+use crate::{channel, Filesystem, FsStatus};
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
@@ -39,7 +39,7 @@ pub const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
 const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
 
 /// This value is used to prevent a busy loop in the synchronous run with notification
-const SYNC_SLEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+use crate::channel::SYNC_SLEEP_INTERVAL;
 
 #[derive(Default, Eq, PartialEq, Debug)]
 /// How requests should be filtered based on the calling UID.
@@ -67,6 +67,9 @@ pub(crate) struct SessionMeta {
     pub(crate) initialized: bool,
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: bool,
+    #[cfg(feature = "abi-7-11")]
+    /// Whether this session currently has notification support
+    pub(crate) notify: bool,
 }
 
 /// The session data structure
@@ -75,15 +78,12 @@ pub struct Session<FS: Filesystem> {
     /// Filesystem operation implementations
     pub(crate) filesystem: Arc<FS>,
     /// Communication channel to the kernel driver
-    pub(crate) ch: Channel,
+    pub(crate) chs: Vec<Channel>,
     /// Handle to the mount.  Dropping this unmounts.
     mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Whether to restrict access to owner, root + owner, or unrestricted
     /// Used to implement `allow_root` and `auto_unmount`
     meta: Arc<Mutex<SessionMeta>>,
-    #[cfg(feature = "abi-7-11")]
-    /// Whether this session currently has notification support
-    pub(crate) notify: bool,
     #[cfg(feature = "abi-7-11")]
     /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
     pub(crate) ns: Sender<Notification>,
@@ -92,11 +92,14 @@ pub struct Session<FS: Filesystem> {
     pub(crate) nr: Receiver<Notification>,
 }
 
+/*
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 impl<FS: Filesystem> AsFd for Session<FS> {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.ch.as_fd()
+        self.chs[0].as_borrowed() // doesn't work
     }
 }
+*/
 
 impl<FS: Filesystem + 'static> Session<FS> {
     /// Create a new session by mounting the given filesystem to the given mountpoint
@@ -107,13 +110,14 @@ impl<FS: Filesystem + 'static> Session<FS> {
     ) -> io::Result<Session<FS>> {
         let mountpoint = mountpoint.as_ref();
         info!("Mounting {}", mountpoint.display());
-        // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
-        // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
-        // to handle the auto_unmount option
-        let (file, mount) = if options.contains(&MountOption::AutoUnmount)
+        // Create the channel for fuse messages
+        let (ch, mount) = if options.contains(&MountOption::AutoUnmount)
             && !(options.contains(&MountOption::AllowRoot)
                 || options.contains(&MountOption::AllowOther))
         {
+            // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
+            // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
+            // to handle the auto_unmount option
             warn!("Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling");
             let mut modified_options = options.to_vec();
             modified_options.push(MountOption::AllowOther);
@@ -121,8 +125,6 @@ impl<FS: Filesystem + 'static> Session<FS> {
         } else {
             Mount::new(mountpoint, options)?
         };
-        // Create the channel for fuse messages
-        let ch = Channel::new(file);
         let allowed = if options.contains(&MountOption::AllowRoot) {
             SessionACL::RootAndOwner
         } else if options.contains(&MountOption::AllowOther) {
@@ -130,16 +132,6 @@ impl<FS: Filesystem + 'static> Session<FS> {
         } else {
             SessionACL::Owner
         };
-        let meta = SessionMeta {
-            allowed,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
-        };
-        // #[cfg(feature = "abi-7-11")]
-        // let mut filesystem = filesystem;
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (ns, nr) = crossbeam_channel::unbounded();
@@ -148,13 +140,21 @@ impl<FS: Filesystem + 'static> Session<FS> {
         let notify = futures::executor::block_on(
             filesystem.init_notification_sender(ns.clone())
         );
-        let new_session = Session {
-            filesystem: Arc::new(filesystem),
-            ch,
-            mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
-            meta: Arc::new(Mutex::new(meta)),
+        let meta = SessionMeta {
+            allowed,
+            session_owner: geteuid().as_raw(),
+            proto_major: 0,
+            proto_minor: 0,
+            initialized: false,
+            destroyed: false,
             #[cfg(feature = "abi-7-11")]
             notify,
+        };
+        let new_session = Session {
+            filesystem: Arc::new(filesystem),
+            chs: vec![ch],
+            mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
+            meta: Arc::new(Mutex::new(meta)),
             #[cfg(feature = "abi-7-11")]
             ns,
             #[cfg(feature = "abi-7-11")]
@@ -167,17 +167,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
         // Create the channel for fuse messages
-        let ch = Channel::new(Arc::new(fd.into()));
-        let meta = SessionMeta {
-            allowed: acl,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
-        };
-        // #[cfg(feature = "abi-7-11")]
-        // let mut filesystem = filesystem;
+        let ch = Channel::new(fd.into());
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (ns, nr) = crossbeam_channel::unbounded();
@@ -186,13 +176,21 @@ impl<FS: Filesystem + 'static> Session<FS> {
         let notify = futures::executor::block_on(
             filesystem.init_notification_sender(ns.clone())
         );
-        Session {
-            filesystem: Arc::new(filesystem),
-            ch,
-            mount: Arc::new(Mutex::new(None)),
-            meta: Arc::new(Mutex::new(meta)),
+        let meta = SessionMeta {
+            allowed: acl,
+            session_owner: geteuid().as_raw(),
+            proto_major: 0,
+            proto_minor: 0,
+            initialized: false,
+            destroyed: false,
             #[cfg(feature = "abi-7-11")]
             notify,
+        };
+        Session {
+            filesystem: Arc::new(filesystem),
+            chs: vec![ch],
+            mount: Arc::new(Mutex::new(None)),
+            meta: Arc::new(Mutex::new(meta)),
             #[cfg(feature = "abi-7-11")]
             ns,
             #[cfg(feature = "abi-7-11")]
@@ -200,27 +198,140 @@ impl<FS: Filesystem + 'static> Session<FS> {
         }
     }
 
+    /// Unmount the filesystem
+    pub fn unmount(&mut self) {
+        drop(std::mem::take(&mut *self.mount.lock().unwrap()));
+    }
+
+    /// Returns a thread-safe object that can be used to unmount the Filesystem
+    pub fn unmount_callable(&mut self) -> SessionUnmounter {
+        SessionUnmounter {
+            mount: self.mount.clone(),
+        }
+    }
+
+    /// Returns an object that can be used to send notifications to the kernel
+    #[cfg(feature = "abi-7-11")]
+    fn notifier(&self) -> Notifier {
+        Notifier::new(self.chs[0].clone())
+    }
+
+    /// Returns an object that can be used to send poll event notifications
+    #[cfg(feature = "abi-7-11")]
+    pub fn get_notification_sender(&self) -> Sender<Notification> {
+        self.ns.clone()
+    }
+
+    /// returns a copy of the channel associated with a specific channel id.
+    fn get_ch(&self, channel_id: usize) -> Channel {
+        self.chs[channel_id].clone()
+    }
+
+    /// Creates additional worker fuse file descriptors until the
+    /// Session has at least `channel_count` communication channels.
+    /// Reports the number of channels that were created.
+    /// # Errors
+    /// Propagates underlying errors. 
+    pub fn set_channels(&mut self, channel_count: u32) -> Result<u32, io::Error> {
+        let main_fuse_fd = self.chs[0].raw_fd as u32;
+        let mut new_channels = 0;
+        while self.chs.len() < channel_count as usize {
+            let fuse_device_name = "/dev/fuse";
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(fuse_device_name)?;
+            let ch = Channel::new(file);
+            ch.new_fuse_worker(main_fuse_fd)?;
+            self.chs.push(ch);
+            new_channels += 1;
+        }
+        Ok(new_channels)
+    }
+
     /// Run the session loop that receives kernel requests and dispatches them to method
     /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
     /// having multiple buffers (which take up much memory), but the filesystem methods
     /// may run concurrent by spawning threads.
-    pub async fn run(&mut self) -> io::Result<()> {
+    pub async fn run(self) -> io::Result<()> {
+        let se = Arc::new(self);
+        Session::do_all_events(se.clone(), 0).await
+    }
+
+    /// Starts a number of tokio tasks each of which is an independant sequential full event and notification loop.
+    pub async fn run_concurrently_sequential_full(self) -> io::Result<()> {
+        let channel_count = self.chs.len();
+        let se = Arc::new(self);
+        let mut futures = Vec::new();
+        for channel_id in 0..(channel_count) {
+            futures.push(
+                tokio::spawn(Session::do_all_events(se.clone(), channel_id))
+            )
+        }
+        for future in futures {
+            if let Err(e) = future.await.expect("Unable to await task?") {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Starts a number of tokio tasks each of which is an independant sequential event, heartbeat, or notification loop.
+    pub async fn run_concurrently_sequential_parts(self) -> io::Result<()> {
+        let channel_count = self.chs.len();
+        let se = Arc::new(self);
+        let mut futures = Vec::new();
+        #[cfg(feature = "abi-7-11")]
+        for channel_id in (0..(channel_count)).filter(|i| i%2==0) {
+            futures.push(
+                tokio::spawn(Session::do_requests(se.clone(), channel_id))
+            );
+        }
+        for channel_id in (0..(channel_count)).filter(|i| i%2==1) {
+            #[cfg(feature = "abi-7-11")]
+            futures.push(
+                tokio::spawn(Session::do_notifications(se.clone(), channel_id))
+            );
+            #[cfg(not(feature = "abi-7-11"))]
+            futures.push(
+                tokio::spawn(Session::do_requests(se.clone(), channel_id))
+            );
+        }
+        futures.push(
+            tokio::spawn(Session::do_heartbeats(se.clone()))
+        );
+        for future in futures {
+            if let Err(e) = future.await.expect("Unable to await task?") {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+
+    async fn do_requests(se: Arc<Session<FS>>, channel_id: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
-        let buf = aligned_sub_buf(
-            &mut buffer,
-            std::mem::align_of::<abi::fuse_in_header>(),
-        );
+
+        let sender = se.get_ch(channel_id);
+        info!("Starting request loop on channel {channel_id} with fd {}", &sender.raw_fd);
         loop {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
-            match self.ch.receive(buf) {
+            let (result, new_buffer) = se.chs[channel_id].receive_later(buffer).await;
+            buffer = new_buffer;
+            match result {
                 Ok(size) => {
+                    let buf = channel::aligned_sub_buf(&mut buffer, channel::FUSE_HEADER_ALIGNMENT);
                     let data = Vec::from(&buf[..size]);
-                    match RequestHandler::new(self.ch.sender(), data) {
+                    buf[..size].fill(0);
+                    match RequestHandler::new(sender.clone(), data) {
                         // Dispatch request
-                        Some(req) => req.dispatch(self.filesystem.clone(), self.meta.clone()).await,
+                        Some(req) => {
+                            debug!("Request {} on channel {channel_id}.", req.meta.unique);
+                            req.dispatch(se.filesystem.clone(), se.meta.clone()).await
+                        },
                         // Quit loop on illegal request
                         None => break,
                     }
@@ -243,57 +354,110 @@ impl<FS: Filesystem + 'static> Session<FS> {
         Ok(())
     }
 
-    /// Unmount the filesystem
-    pub fn unmount(&mut self) {
-        drop(std::mem::take(&mut *self.mount.lock().unwrap()));
-    }
-
-    /// Returns a thread-safe object that can be used to unmount the Filesystem
-    pub fn unmount_callable(&mut self) -> SessionUnmounter {
-        SessionUnmounter {
-            mount: self.mount.clone(),
+    /// Run the session loop in a single thread, same as `run()`, but additionally
+    /// processing both FUSE requests and poll events without blocking.
+    #[cfg(feature = "abi-7-11")]
+    async fn do_notifications(se: Arc<Session<FS>>, channel_id: usize) -> io::Result<()> {
+        let sender = se.get_ch(channel_id);
+        info!("Starting notification loop on channel {channel_id} with fd {}", &sender.raw_fd);
+        let notifier = Notifier::new(sender);
+        loop {
+            let notify = match se.meta.lock() {
+                Ok(meta) => meta.notify,
+                Err(e) => {
+                    error!("Notification loop on channel {channel_id}: {e:?}");
+                    break;
+                }
+            };
+            if notify {
+                if !Session::handle_one_notification(&se, &notifier, channel_id).await? {
+                    // If no more notifications, 
+                    // sleep to make sure that other tasks get attention.
+                    tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
+                }
+            } else {
+                // TODO: await on notify instead of sleeping
+                tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
+            }
         }
-    }
-
-    /// Returns an object that can be used to send notifications to the kernel
-    #[cfg(feature = "abi-7-11")]
-    fn notifier(&self) -> Notifier {
-        Notifier::new(self.ch.sender())
-    }
-
-    /// Returns an object that can be used to send poll event notifications
-    #[cfg(feature = "abi-7-11")]
-    pub fn get_notification_sender(&self) -> Sender<Notification> {
-        self.ns.clone()
+        Ok(())
     }
 
     /// Run the session loop in a single thread, same as `run()`, but additionally
     /// processing both FUSE requests and poll events without blocking.
-    pub async fn run_with_notifications(&mut self) -> io::Result<()> {
+    async fn do_heartbeats(se: Arc<Session<FS>>) -> io::Result<()> {
+        info!("Starting heartbeat loop");
+        loop {
+            tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
+            // Do a heartbeat to let the Filesystem know that some time has passed.
+            match FS::heartbeat(&se.filesystem).await {
+                Ok(status) => {
+                    if let FsStatus::Stopped = status {
+                        break;
+                    }
+                    // TODO: handle other cases
+                }
+                Err(e) => {
+                    warn!("Heartbeat error: {e:?}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Run the session loop in a single thread, same as `run()`, but additionally
+    /// processing both FUSE requests and poll events without blocking.
+    async fn do_all_events(se: Arc<Session<FS>>, channel_id: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
-        let buf = aligned_sub_buf(
+        let buf = channel::aligned_sub_buf(
             &mut buffer,
-            std::mem::align_of::<abi::fuse_in_header>(),
+            channel::FUSE_HEADER_ALIGNMENT,
         );
+        let sender = se.get_ch(channel_id);
+        #[cfg(feature = "abi-7-11")]
+        let notifier = Notifier::new(se.get_ch(channel_id));
 
-        info!("Running FUSE session in single-threaded mode");
-
+        info!("Starting full task loop on channel {channel_id}");
         loop {
             let mut work_done = false;
             // Check for outgoing Notifications (non-blocking)
             #[cfg(feature = "abi-7-11")]
-            if self.handle_notifications()? {
-                work_done = true;
+            let notify = match se.meta.lock() {
+                Ok(meta) => meta.notify,
+                Err(_) => {
+                    // TODO: something smarter than this
+                    false
+                }
+            };
+            #[cfg(feature = "abi-7-11")]
+            if notify {
+                match se.chs[channel_id].ready_write() {
+                    Err(err) => {
+                        if err.raw_os_error() == Some(EINTR) {
+                            debug!("FUSE fd connection interrupted, will retry.");
+                        } else {
+                            warn!("FUSE fd connection: {err}");
+                            // Assume very bad. Stop the run. TODO: maybe some handling.
+                            return Err(err);
+                        }
+                    }
+                    Ok(ready) => {
+                        if ready {    
+                            if Session::handle_one_notification(&se, &notifier, channel_id).await? {
+                                work_done = true;
+                            }
+                        }
+                    }
+                }
             }
-
             if work_done {
                 // skip checking for incoming FUSE requests,
                 // to prioritize checking for additional outgoing messages
                 continue;
             }
             // Check for incoming FUSE requests (non-blocking)
-            match self.ch.ready() {
+            match se.chs[channel_id].ready_read() {
                 Err(err) => {
                     if err.raw_os_error() == Some(EINTR) {
                         debug!("FUSE fd connection interrupted, will retry.");
@@ -306,7 +470,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
                 Ok(ready) => {
                     if ready {
                         // Read a FUSE request (blocks until read succeeds)
-                        let result = self.ch.receive(buf);
+                        let result = Channel::receive(se.chs[channel_id].raw_fd,buf);
                         match result {
                             Ok(size) => {
                                 if size == 0 {
@@ -315,11 +479,11 @@ impl<FS: Filesystem + 'static> Session<FS> {
                                     break;
                                 }
                                 let data = Vec::from(&buf[..size]);
-                                if let Some(req) = RequestHandler::new(self.ch.sender(), data) {
-                                    //req.dispatch(self).await;
-                                    let fs = self.filesystem.clone();
-                                    let meta = self.meta.clone();
-                                    tokio::spawn(async move { req.dispatch(fs, meta).await; });
+                                if let Some(req) = RequestHandler::new(sender.clone(), data) {
+                                    let fs = se.filesystem.clone();
+                                    let meta = se.meta.clone();
+                                    debug!("Request {} on channel {channel_id}.", req.meta.unique);
+                                    req.dispatch(fs, meta).await;
                                 } else {
                                     // Illegal request, quit loop
                                     warn!("Failed to parse FUSE request, session ending.");
@@ -357,9 +521,9 @@ impl<FS: Filesystem + 'static> Session<FS> {
             if !work_done {
                 // No actions taken this loop iteration.
                 // Sleep briefly to yield CPU.
-                std::thread::sleep(SYNC_SLEEP_INTERVAL);
+                tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
                 // Do a heartbeat to let the Filesystem know that some time has passed.
-                match FS::heartbeat(&self.filesystem).await {
+                match FS::heartbeat(&se.filesystem).await {
                     Ok(status) => {
                         if let FsStatus::Stopped = status {
                             break;
@@ -376,17 +540,26 @@ impl<FS: Filesystem + 'static> Session<FS> {
     }
 
     #[cfg(feature = "abi-7-11")]
-    fn handle_notifications(&mut self) -> io::Result<bool> {
-        if self.notify {
-            match self.nr.try_recv() {
+    async fn handle_one_notification(se: &Arc<Session<FS>>, notifier: &Notifier, channel_id: usize) -> io::Result<bool> {
+        let notify = match se.meta.lock() {
+            Ok(meta) => meta.notify,
+            Err(_) => {
+                // TODO: something smarter than this
+                return Ok(false);
+            }
+        };
+        if notify {
+            match se.nr.try_recv() {
                 Ok(notification) => {
-                    debug!("Notification: {:?}", &notification);
+                    debug!("Notification {:?} on channel {channel_id}", &notification.kind());
                     if let Notification::Stop = notification {
                         // Filesystem says no more notifications.
-                        info!("Filesystem sent Stop notification; disabling notifications.");
-                        self.notify = false;
+                        info!("Disabling notifications.");
+                        if let Ok(mut meta) = se.meta.lock() {
+                            meta.notify = false;
+                        }
                     }
-                    if let Err(_e) = self.notifier().notify(notification) {
+                    if let Err(_e) = notifier.notify(notification).await {
                         error!("Failed to send notification.");
                         // TODO. Decide if error is fatal. ENODEV might mean unmounted.
                     }
@@ -401,7 +574,9 @@ impl<FS: Filesystem + 'static> Session<FS> {
                     // This is not necessarily a fatal error for the session itself,
                     // as FUSE requests can still be processed.
                     warn!("Notification channel disconnected.");
-                    self.notify = false;
+                    if let Ok(mut meta) = se.meta.lock() {
+                        meta.notify = false;
+                    }                    
                     Ok(false)
                 }
             }
@@ -410,7 +585,6 @@ impl<FS: Filesystem + 'static> Session<FS> {
         }
     }
 }
-
 #[derive(Debug)]
 /// A thread-safe object that can be used to unmount a Filesystem
 pub struct SessionUnmounter {
@@ -422,15 +596,6 @@ impl SessionUnmounter {
     pub fn unmount(&mut self) -> io::Result<()> {
         drop(std::mem::take(&mut *self.mount.lock().unwrap()));
         Ok(())
-    }
-}
-
-fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
-    let off = alignment - (buf.as_ptr() as usize) % alignment;
-    if off == alignment {
-        buf
-    } else {
-        &mut buf[off..]
     }
 }
 
@@ -467,7 +632,7 @@ pub struct BackgroundSession {
     pub main_loop_guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
     #[cfg(feature = "abi-7-11")]
-    sender: Sender<Notification>,
+    extra_notification_sender: Sender<Notification>,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }
@@ -477,9 +642,9 @@ impl BackgroundSession {
     /// Create a new background session for the given session by running its
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
-    pub fn new<FS: Filesystem + Send + 'static>(mut se: Session<FS>) -> io::Result<BackgroundSession> {
+    pub fn new<FS: Filesystem + Send + 'static>(se: Session<FS>) -> io::Result<BackgroundSession> {
         #[cfg(feature = "abi-7-11")]
-        let sender = se.ns.clone();
+        let extra_notification_sender = se.ns.clone();
 
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
 
@@ -490,13 +655,13 @@ impl BackgroundSession {
         });
         #[cfg(feature = "abi-7-11")]
         let main_loop_guard = thread::spawn(move || {
-            futures::executor::block_on(se.run_with_notifications())
+            futures::executor::block_on(se.run_concurrently_sequential_full())
         });
 
         Ok(BackgroundSession {
             main_loop_guard,
             #[cfg(feature = "abi-7-11")]
-            sender,
+            extra_notification_sender,
             _mount: mount,
         })
     }
@@ -505,7 +670,7 @@ impl BackgroundSession {
         let Self {
             main_loop_guard,
             #[cfg(feature = "abi-7-11")]
-            sender: _,
+            extra_notification_sender: _,
             _mount,
         } = self;
         // Unmount the filesystem
@@ -521,7 +686,7 @@ impl BackgroundSession {
     #[cfg(feature = "abi-7-11")]
     #[must_use]
     pub fn get_notification_sender(&self) -> Sender<Notification> {
-       self.sender.clone()
+       self.extra_notification_sender.clone()
     }
 }
 
@@ -534,7 +699,7 @@ impl fmt::Debug for BackgroundSession {
         builder.field("main_loop_guard", &self.main_loop_guard);
         #[cfg(feature = "abi-7-11")]
         {
-            builder.field("sender", &self.sender);
+            builder.field("sender", &self.extra_notification_sender);
         }
         builder.field("_mount", &self._mount);
         builder.finish()

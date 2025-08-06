@@ -22,39 +22,49 @@ mod test {
 
     #[test]
     fn test_unsupported() {
-        let mut nullfs = super::NullFS {};
+        let nullfs = super::NullFS {};
         let req = dummy_meta();
 
         // Test lookup
-        let lookup_result = nullfs.lookup(req, 1, &PathBuf::from("nonexistent"));
+        let lookup_result = futures::executor::block_on(
+            nullfs.lookup(req, 1, &PathBuf::from("nonexistent"))
+        );
         assert!(lookup_result.is_err(), "Lookup should fail for NullFS");
         if let Err(e) = lookup_result {
             assert_eq!(e, Errno::ENOSYS, "Lookup should return ENOSYS");
         }
 
         // Test getattr
-        let getattr_result = nullfs.getattr(req, 1, None);
+        let getattr_result = futures::executor::block_on(
+            nullfs.getattr(req, 1, None)
+        );
         assert!(getattr_result.is_err(), "Getattr should fail for NullFS");
         if let Err(e) = getattr_result {
             assert_eq!(e, Errno::ENOSYS, "Getattr should return ENOSYS");
         }
 
         // Test readdir
-        let readdir_result = nullfs.readdir(req, 1, 0, 0, 4096);
+        let readdir_result = futures::executor::block_on(
+            nullfs.readdir(req, 1, 0, 0, 4096)
+        );
         assert!(readdir_result.is_err(), "Readdir should fail for NullFS");
         if let Err(e) = readdir_result {
             assert_eq!(e, Errno::ENOSYS, "Readdir should return ENOSYS");
         }
 
         // Test open
-        let open_result = nullfs.open(req, 1, 0);
+        let open_result = futures::executor::block_on(
+            nullfs.open(req, 1, 0)
+        );
         assert!(open_result.is_err(), "Open should fail for NullFS");
         if let Err(e) = open_result {
             assert_eq!(e, Errno::ENOSYS, "Open should return ENOSYS");
         }
 
         // Test create
-        let create_result = nullfs.create(req, 1, &PathBuf::from("testfile"), 0o644, 0, 0);
+        let create_result = futures::executor::block_on(
+            nullfs.create(req, 1, &PathBuf::from("testfile"), 0o644, 0, 0)
+        );
         assert!(create_result.is_err(), "Create should fail for NullFS");
         if let Err(e) = create_result {
             assert_eq!(e, Errno::ENOSYS, "Create should return ENOSYS");

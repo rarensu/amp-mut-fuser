@@ -18,11 +18,12 @@ use std::{
 };
 
 use clap::Parser;
+use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType, Filesystem,
     Forget, FsStatus, InvalInode, MountOption, Notification, Open, Store, RequestMeta,
-    FUSE_ROOT_ID,
+    FUSE_ROOT_ID, Session
 };
 use bytes::Bytes;
 use log::{warn,info};
@@ -30,8 +31,8 @@ use log::{warn,info};
 struct ClockFS<'a> {
     file_contents: Arc<Mutex<String>>,
     lookup_cnt: &'a AtomicU64,
-    notification_sender: Option<Sender<Notification>>,
-    notification_reply: Option<Receiver<std::io::Result<()>>>,
+    notification_sender: Mutex<Option<Sender<Notification>>>,
+    notification_reply: Mutex<Option<Receiver<std::io::Result<()>>>>,
     opts: Arc<Options>,
     last_update: Mutex<SystemTime>,
 }
@@ -71,25 +72,24 @@ impl ClockFS<'_> {
     }
 }
 
+#[async_trait]
 impl Filesystem for ClockFS<'_> {
     #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
+    async fn init_notification_sender(
+        &self,
         sender: Sender<Notification>,
     ) -> bool {
-        self.notification_sender = Some(sender);
+        *self.notification_sender.lock().unwrap() = Some(sender);
         true
     }
 
-    fn heartbeat(&mut self) -> Result<FsStatus, Errno> {
-        if let Some(r) = &self.notification_reply {
+    async fn heartbeat(&self) -> Result<FsStatus, Errno> {
+        if let Some(r) = self.notification_reply.lock().unwrap().take() {
             if let Ok(result) = r.try_recv() {
                 match result {
                     Ok(()) => info!("Received OK reply"),
                     Err(e) => warn!("Received error reply: {e}"),
                 }
-                // Only read a reply once.
-                self.notification_reply=None;
             }
         }
         let mut last_update_guard = self.last_update.lock().unwrap();
@@ -100,7 +100,7 @@ impl Filesystem for ClockFS<'_> {
             drop(s); // Release lock on file_contents
 
             if !self.opts.no_notify && self.lookup_cnt.load(SeqCst) != 0 {
-                if let Some(sender) = &self.notification_sender {
+                if let Some(sender) = self.notification_sender.lock().unwrap().as_ref().cloned() {
                     let (s, r) = crossbeam_channel::bounded(1);
                     if self.opts.notify_store {
                         let notification = Notification::Store((
@@ -115,7 +115,7 @@ impl Filesystem for ClockFS<'_> {
                             warn!("Warning: failed to send Store notification: {e}");
                         } else {
                             info!("Sent Store notification, preparing for reply.");
-                            self.notification_reply = Some(r);
+                            *self.notification_reply.lock().unwrap() = Some(r);
                         }
                     } else {
                         let notification = Notification::InvalInode((
@@ -130,7 +130,7 @@ impl Filesystem for ClockFS<'_> {
                             warn!("Warning: failed to send InvalInode notification: {e}");
                         } else {
                             info!("Sent InvalInode notification, preparing for reply.");
-                            self.notification_reply = Some(r);
+                            *self.notification_reply.lock().unwrap() = Some(r);
                         }
                     }
                 }
@@ -140,7 +140,7 @@ impl Filesystem for ClockFS<'_> {
         Ok(FsStatus::Ready)
     }
 
-    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name != OsStr::new(Self::FILE_NAME) {
             return Err(Errno::ENOENT);
         }
@@ -158,7 +158,7 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn forget(&mut self, _req: RequestMeta, target: Forget) {
+    async fn forget(&self, _req: RequestMeta, target: Forget) {
         if target.ino == ClockFS::FILE_INO {
             let prev = self.lookup_cnt.fetch_sub(target.nlookup, SeqCst);
             assert!(prev >= target.nlookup);
@@ -167,8 +167,8 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn getattr(
-        &mut self,
+    async fn getattr(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: Option<u64>,
@@ -179,8 +179,8 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn readdir(
-        &mut self,
+    async fn readdir(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -207,7 +207,7 @@ impl Filesystem for ClockFS<'_> {
         Ok(entries.into())
     }
 
-    fn open(&mut self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
+    async fn open(&self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
         if ino == FUSE_ROOT_ID {
             Err(Errno::EISDIR)
         } else if flags & libc::O_ACCMODE != libc::O_RDONLY {
@@ -224,8 +224,8 @@ impl Filesystem for ClockFS<'_> {
         }
     }
 
-    fn read(
-        &mut self,
+    async fn read(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64, // fh is ino in this implementation as set in open()
@@ -238,6 +238,7 @@ impl Filesystem for ClockFS<'_> {
         if offset < 0 {
             return Err(Errno::EINVAL);
         }
+        tokio::time::sleep(Duration::from_secs(3)).await;
         let file_guard = self.file_contents.lock().unwrap();
         let filedata = file_guard.as_bytes();
         let dlen: i64 = filedata.len().try_into().map_err(|_| Errno::EIO)?; // EIO if size doesn't fit i64
@@ -300,8 +301,8 @@ fn main() {
     let fs = ClockFS {
         file_contents: fdata.clone(),
         lookup_cnt,
-        notification_sender: None, // Will be initialized by the session
-        notification_reply: None,
+        notification_sender: Mutex::new(None), // Will be initialized by the session
+        notification_reply: Mutex::new(None),
         opts: opts.clone(),
         last_update: Mutex::new(SystemTime::now()),
     };
@@ -326,9 +327,13 @@ fn main() {
     let mut session = fuser::Session::new(fs, &opts.mount_point, &mount_options)
         .expect("Failed to create FUSE session.");
 
-    session
-        .run_with_notifications()
-        .expect("Session ended with an error."); //TODO: log the error
+    // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(1).build().unwrap();
+    session.set_channels(2).unwrap();
+    match rt.block_on(async { session.run_concurrently_sequential_parts().await }) {
+        Ok(()) => log::info!("Session ended safely"),
+        Err(e) => log::info!("Session ended with error: {e:?}"),
+    }
 
     eprintln!("ClockFS (inode invalidation) unmounted and exited.");
 }

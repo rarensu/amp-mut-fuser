@@ -10,6 +10,7 @@ use crate::ll::{self, reply::DirentBuf};
 use crate::ll::reply::{DirentPlusBuf};
 #[allow(unused_imports)]
 use log::{error, warn, info, debug};
+use smallvec::SmallVec;
 use std::fmt;
 use std::io::IoSlice;
 use std::time::{Duration, SystemTime};
@@ -19,10 +20,16 @@ use serde::{Deserialize, Serialize};
 use bytes::Bytes;
 use std::convert::AsRef;
 
+use async_trait::async_trait;
+
+
 /// Generic reply callback to send data
+#[async_trait]
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
     /// Send data.
-    fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()>;}
+    fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()>;
+    async fn send_later(self, data: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()>;
+}
 
 impl fmt::Debug for Box<dyn ReplySender> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
@@ -562,7 +569,9 @@ mod test {
     struct AssertSender {
         expected: Vec<u8>,
     }
+    use async_trait::async_trait;
 
+    #[async_trait]
     impl super::ReplySender for AssertSender {
         fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
             let mut v = vec![];
@@ -570,6 +579,9 @@ mod test {
                 v.extend_from_slice(x);
             }
             assert_eq!(self.expected, v);
+            Ok(())
+        }
+        async fn send_later(self, _: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()> {
             Ok(())
         }
     }
@@ -1166,9 +1178,13 @@ mod test {
         replyhandler.xattr(Xattr::Data(Bytes::from_static(&[0x11, 0x22, 0x33, 0x44])));
     }
 
+    #[async_trait]
     impl super::ReplySender for SyncSender<()> {
         fn send(&self, _: &[IoSlice<'_>]) -> std::io::Result<()> {
             self.send(()).unwrap();
+            Ok(())
+        }
+        async fn send_later(self, _: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()> {
             Ok(())
         }
     }

@@ -12,13 +12,14 @@ use crossbeam_channel::{Sender, Receiver};
 use fuser::{
     consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
     Filesystem, KernelConfig, MountOption, Open, Notification, RequestMeta,
+    Session
 };
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::fs::File;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
@@ -79,9 +80,9 @@ struct ClosedBackingId {
 struct PassthroughFs {
     root_attr: FileAttr,
     passthrough_file_attr: FileAttr,
-    backing_cache: HashMap<u64, BackingStatus>,
-    next_fh: u64,
-    notification_sender: Option<Sender<Notification>>,
+    backing_cache: Mutex<HashMap<u64, BackingStatus>>,
+    next_fh: AtomicU64,
+    notification_sender: Mutex<Option<Sender<Notification>>>,
 }
 
 static ROOT_DIRENTS: [Dirent; 3] = [
@@ -134,40 +135,53 @@ impl PassthroughFs {
         Self {
             root_attr,
             passthrough_file_attr,
-            backing_cache: HashMap::new(),
-            next_fh: 0,
-            notification_sender: None,
+            backing_cache: Mutex::new(HashMap::new()),
+            next_fh: AtomicU64::new(0),
+            notification_sender: Mutex::new(None),
         }
     }
 
-    fn next_fh(&mut self) -> u64 {
-        self.next_fh += 1;
-        self.next_fh
+    fn next_fh(&self) -> u64 {
+        self.next_fh.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn get_backing_id(&self, ino: u64) -> Option<u32> {
+        self.update_backing_status(ino);
+        if let Some(BackingStatus::Ready(ready_backing_id)) = self.backing_cache.lock().unwrap().get(&ino)
+        {
+            Some(ready_backing_id.backing_id)
+        } else {
+            None
+        }
+    }
+
+    fn any_backing_status(&self, ino: u64) -> bool {
+        self.update_backing_status(ino);
+        self.backing_cache.lock().unwrap().contains_key(&ino)
     }
 
     // Get the backing status for a given inode, after all available updates are applied.
     // This will advance the status as appropriate and remove it from the cache if it is stale.
     // The returning an immutable reference to the updated status (or None)
-    fn get_update_backing_status(&mut self, ino: u64) -> Option<&BackingStatus> {
+    fn update_backing_status(&self, ino: u64) {
+        let mut cache = self.backing_cache.lock().unwrap();
         let mut remove = false;
-        // using the "update, save a boolean, remove" pattern because we can't remove it while holding it as a mutable borrow.
-        if let Some(backing_status) = self.backing_cache.get_mut(&ino) {
-            if let Some(notifier) = self.notification_sender.clone() {
-                if !Self::update_backing_status(backing_status, &notifier, true) {
+        if let Some(backing_status) = cache.get_mut(&ino) {
+            if let Some(notifier) = self.notification_sender.lock().unwrap().as_ref().cloned() {
+                if !Self::backing_status_is_ok(backing_status, &notifier, true) {
                     remove = true;
                 }
             }
         }
         if remove {
-            self.backing_cache.remove(&ino);
+            cache.remove(&ino);
         }
-        self.backing_cache.get(&ino)
     }
 
-    // update_backing_status mutates a BackingStatus, advancing it to the next status as appropriate.
+    // backing_status_is_ok mutates a BackingStatus, advancing it to the next status as appropriate.
     // It returns a boolean indicating whether the item is still valid and should be retained in the cache.
     // The boolean return is so that it works with `HashMap::retain` for efficiently dropping stale cache entries.
-    fn update_backing_status(
+    fn backing_status_is_ok(
         backing_status: &mut BackingStatus,
         notifier: &Sender<Notification>,
         extend: bool,
@@ -243,9 +257,12 @@ impl PassthroughFs {
     }
 }
 
+use async_trait::async_trait;
+
+#[async_trait]
 impl Filesystem for PassthroughFs {
-    fn init(
-        &mut self,
+    async fn init(
+        &self,
         _req: RequestMeta,
         config: KernelConfig,
     ) -> Result<KernelConfig, Errno> {
@@ -257,12 +274,12 @@ impl Filesystem for PassthroughFs {
     }
 
     #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
+    async fn init_notification_sender(
+        &self,
         sender: Sender<Notification>,
     ) -> bool {
         log::info!("init_notification_sender");
-        self.notification_sender = Some(sender);
+        *self.notification_sender.lock().unwrap() = Some(sender);
         true
     }
 
@@ -270,12 +287,12 @@ impl Filesystem for PassthroughFs {
     // while the kernel is waiting for a response to an open operation in progress.
     // Therefore, this example requests the backing id on lookup instead of on open.
     #[allow(clippy::cast_sign_loss)]
-    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         log::info!("lookup(name={name:?})");
         if parent == 1 && name.to_str() == Some("passthrough") {
-            if self.get_update_backing_status(2).is_none() {
+            if !self.any_backing_status(2) {
                 log::info!("new pending backing id request");
-                if let Some(sender) = &self.notification_sender {
+                if let Some(sender) = self.notification_sender.lock().unwrap().as_ref().cloned() {
                     let (tx, rx) = crossbeam_channel::bounded(1);
                     let file = File::open("/etc/profile").unwrap();
                     let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
@@ -287,6 +304,7 @@ impl Filesystem for PassthroughFs {
                             _file: Arc::new(file),
                         };
                         self.backing_cache
+                            .lock().unwrap()
                             .insert(2, BackingStatus::Pending(backing_id));
                     }
                 } else {
@@ -305,7 +323,7 @@ impl Filesystem for PassthroughFs {
         }
     }
 
-    fn getattr(&mut self,
+    async fn getattr(&self,
         _req: RequestMeta,
         ino: u64,
         _fh: Option<u64>,
@@ -317,19 +335,13 @@ impl Filesystem for PassthroughFs {
         }
     }
 
-    fn open(&mut self, _req: RequestMeta, ino: u64, _flags: i32) -> Result<Open, Errno> {
+    async fn open(&self, _req: RequestMeta, ino: u64, _flags: i32) -> Result<Open, Errno> {
         if ino != 2 {
             return Err(Errno::ENOENT);
         }
         // Check if a backing id is ready for this file
-        let backing_id_option = if let Some(BackingStatus::Ready(ready_backing_id)) =
-            self.get_update_backing_status(ino)
-        {
-            Some(ready_backing_id.backing_id)
-        } else {
-            //TODO: return Err(Errno::EAGAIN);
-            None
-        };
+        let backing_id_option = self.get_backing_id(ino);
+        // TODO: if None, return Err
         let fh = self.next_fh();
         // TODO: track file handles
         log::info!("open: fh {fh}, backing_id_option {backing_id_option:?}");
@@ -342,18 +354,18 @@ impl Filesystem for PassthroughFs {
 
     // The heartbeat function is called periodically by the FUSE session.
     // We use it to ensure that the cache entries have accurate timestamps.
-    fn heartbeat(&mut self) -> Result<fuser::FsStatus, Errno> {
-        if let Some(notifier) = self.notification_sender.clone() {
-            self.backing_cache
-                .retain(|_, v| PassthroughFs::update_backing_status(v, &notifier, false));
+    async fn heartbeat(&self) -> Result<fuser::FsStatus, Errno> {
+        if let Some(notifier) = self.notification_sender.lock().unwrap().as_ref().cloned() {
+            let mut cache = self.backing_cache.lock().unwrap();
+            cache.retain(|_, v| PassthroughFs::backing_status_is_ok(v, &notifier, false));
         }
         Ok(fuser::FsStatus::Ready)
     }
 
     // This deliberately unimplemented read() function proves that the example demonstrates passthrough.
     // If a user is able to read the file, it could only have been via the kernel.
-    fn read(
-        &mut self,
+    async fn read(
+        &self,
         _req: RequestMeta,
         _ino: u64,
         _fh: u64,
@@ -366,8 +378,8 @@ impl Filesystem for PassthroughFs {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn readdir(
-        &mut self,
+    async fn readdir(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -389,8 +401,8 @@ impl Filesystem for PassthroughFs {
         }
     }
 
-    fn release(
-        &mut self,
+    async fn release(
+        &self,
         _req: RequestMeta,
         _ino: u64,
         _fh: u64,
@@ -439,10 +451,13 @@ fn main() {
     }
 
     let fs = PassthroughFs::new();
-    let mut session = fuser::Session::new(fs, Path::new(mountpoint), &options).unwrap();
-    if let Err(e) = session.run_with_notifications() {
-        // Since there is no graceful shutdown button, an error here is inevitable.
-        log::info!("Session ended with error: {e}");
+    let session = fuser::Session::new(fs, Path::new(mountpoint), &options).unwrap();
+
+    // Drive the async session loop with a Tokio runtime, matching ioctl.rs.
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    match rt.block_on(async { Session::run_with_notifications(Arc::new(session), 0).await}) {
+        Ok(()) => log::info!("Session ended safely"),
+        Err(e) => log::info!("Session ended with error: {e:?}"),
     }
 }
 
@@ -455,17 +470,24 @@ mod tests {
         RequestMeta { unique: 0, uid: 1000, gid: 1000, pid: 2000 }
     }
 
+    // Synchronous helper to call async init_notification_sender in tests.
+    fn init_sender_sync(fs: &PassthroughFs, tx: Sender<Notification>) -> bool {
+        futures::executor::block_on(fs.init_notification_sender(tx))
+    }
+
     #[test]
     fn test_lookup_heartbeat_cycle() {
-        let mut fs = PassthroughFs::new();
+        let fs = PassthroughFs::new();
         let (tx, rx) = crossbeam_channel::unbounded();
-        fs.init_notification_sender(tx);
+        assert!(init_sender_sync(&fs, tx));
 
         // Should react to lookup with a pending entry and a notification
-        fs.lookup(dummy_meta(), 1, &PathBuf::from("passthrough")).unwrap();
-        assert_eq!(fs.backing_cache.len(), 1);
+        futures::executor::block_on(
+            fs.lookup(dummy_meta(), 1, &PathBuf::from("passthrough"))
+        ).unwrap();
+        assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(
-            fs.backing_cache.get(&2).unwrap(),
+            fs.backing_cache.lock().unwrap().get(&2).unwrap(),
             BackingStatus::Pending(_)
         ));
         let notification = rx.try_recv().unwrap();
@@ -477,10 +499,10 @@ mod tests {
         let sender = sender.unwrap();
 
         // Heartbeat should not do anything yet
-        fs.heartbeat().unwrap();
-        assert_eq!(fs.backing_cache.len(), 1);
+        futures::executor::block_on(fs.heartbeat()).unwrap();
+        assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(
-            fs.backing_cache.get(&2).unwrap(),
+            fs.backing_cache.lock().unwrap().get(&2).unwrap(),
             BackingStatus::Pending(_)
         ));
 
@@ -488,15 +510,15 @@ mod tests {
         sender.send(Ok(123)).unwrap();
 
         // Heartbeat should now trigger the transition to ready
-        fs.heartbeat().unwrap();
-        assert_eq!(fs.backing_cache.len(), 1);
+        futures::executor::block_on(fs.heartbeat()).unwrap();
+        assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(
-            fs.backing_cache.get(&2).unwrap(),
+            fs.backing_cache.lock().unwrap().get(&2).unwrap(),
             BackingStatus::Ready(_)
         ));
 
         // Open the file
-        let open = fs.open(dummy_meta(), 2, 0).unwrap();
+        let open = futures::executor::block_on(fs.open(dummy_meta(), 2, 0)).unwrap();
         assert_eq!(open.flags, consts::FOPEN_PASSTHROUGH);
         assert_eq!(open.backing_id, Some(123));
 
@@ -504,10 +526,10 @@ mod tests {
         std::thread::sleep(BACKING_TIMEOUT);
 
         // Heartbeat should now trigger the transition to closed
-        fs.heartbeat().unwrap();
-        assert_eq!(fs.backing_cache.len(), 1);
+        futures::executor::block_on(fs.heartbeat()).unwrap();
+        assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(
-            fs.backing_cache.get(&2).unwrap(),
+            fs.backing_cache.lock().unwrap().get(&2).unwrap(),
             BackingStatus::Closed(_)
         ));
 
@@ -521,7 +543,7 @@ mod tests {
         sender.unwrap().send(Ok(0)).unwrap();
 
         // Heartbeat should now trigger dropping the entry
-        fs.heartbeat().unwrap();
-        assert_eq!(fs.backing_cache.len(), 0);
+        futures::executor::block_on(fs.heartbeat()).unwrap();
+        assert_eq!(fs.backing_cache.lock().unwrap().len(), 0);
     }
 }

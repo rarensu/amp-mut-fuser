@@ -13,7 +13,7 @@ use std::convert::{TryFrom, Into};
 use std::convert::TryInto;
 use std::sync::{Arc, Mutex};
 
-use crate::channel::ChannelSender;
+use crate::channel::Channel;
 use crate::ll::Request as _;
 use crate::reply::ReplyHandler;
 use crate::session::{SessionACL, SessionMeta};
@@ -23,13 +23,10 @@ use crate::{ll, Forget, KernelConfig};
 /// Request data structure
 #[derive(Debug)]
 pub struct RequestHandler {
-    /// Request raw data
-    #[allow(unused)]
-    // data: Vec<u8>,
     /// Parsed request
     request: ll::AnyRequest,
     /// Request metadata
-    meta: RequestMeta,
+    pub meta: RequestMeta,
     /// Closure-like object to guarantee a response is sent
     replyhandler: ReplyHandler,
 }
@@ -49,7 +46,7 @@ pub struct RequestMeta {
 
 impl RequestHandler {
     /// Create a new request from the given data
-    pub(crate) fn new(ch: ChannelSender, data: Vec<u8>) -> Option<RequestHandler> {
+    pub(crate) fn new(ch: Channel, data: Vec<u8>) -> Option<RequestHandler> {
         let request = match ll::AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
@@ -64,7 +61,7 @@ impl RequestHandler {
             gid: request.gid(),
             pid: request.pid()
         };
-        let replyhandler = ReplyHandler::new(request.unique().into(), ch.clone());
+        let replyhandler = ReplyHandler::new(request.unique().into(), ch);
         Some(Self { request, meta, replyhandler })
     }
 

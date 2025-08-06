@@ -1045,8 +1045,10 @@ pub fn mount2<FS: Filesystem + 'static, P: AsRef<Path>>(
 ) -> io::Result<()> {
     check_option_conflicts(options)?;
     Session::new(filesystem, mountpoint.as_ref(), options).and_then(
-        |mut se| 
-        futures::executor::block_on(se.run())
+        |se| 
+        futures::executor::block_on(
+            se.run()
+        )
     )
 }
 

@@ -24,5 +24,5 @@ fn unmount_no_send() {
         thread::sleep(Duration::from_secs(1));
         unmounter.unmount().unwrap();
     });
-    session.run().unwrap();
+    session.run().await.unwrap();
 }

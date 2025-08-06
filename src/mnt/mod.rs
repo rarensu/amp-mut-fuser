@@ -17,8 +17,7 @@ pub mod mount_options;
 
 #[cfg(any(test, feature = "libfuse"))]
 use fuse2_sys::fuse_args;
-#[cfg(any(test, not(feature = "libfuse")))]
-use std::fs::File;
+
 #[cfg(any(test, fuser_mount_impl = "pure-rust", fuser_mount_impl = "libfuse2"))]
 use std::io;
 
@@ -86,12 +85,11 @@ fn libc_umount(mnt: &CStr) -> io::Result<()> {
 /// Warning: This will return true if the filesystem has been detached (lazy unmounted), but not
 /// yet destroyed by the kernel.
 #[cfg(any(test, fuser_mount_impl = "pure-rust"))]
-fn is_mounted(fuse_device: &File) -> bool {
+fn is_mounted(fuse_device: i32) -> bool {
     use libc::{poll, pollfd};
-    use std::os::unix::prelude::AsRawFd;
 
     let mut poll_result = pollfd {
-        fd: fuse_device.as_raw_fd(),
+        fd: fuse_device,
         events: 0,
         revents: 0,
     };
@@ -159,11 +157,11 @@ mod test {
         // want to try and clean up the directory if it's a mountpoint otherwise we'll
         // deadlock.
         let tmp = ManuallyDrop::new(tempfile::tempdir().unwrap());
-        let (file, mount) = Mount::new(tmp.path(), &[]).unwrap();
+        let (channel, mount) = Mount::new(tmp.path(), &[]).unwrap();
         let mnt = cmd_mount();
         eprintln!("Our mountpoint: {:?}\nfuse mounts:\n{}", tmp.path(), mnt,);
         assert!(mnt.contains(&*tmp.path().to_string_lossy()));
-        assert!(is_mounted(&file));
+        assert!(is_mounted(channel.raw_fd));
         drop(mount);
         let mnt = cmd_mount();
         eprintln!("Our mountpoint: {:?}\nfuse mounts:\n{}", tmp.path(), mnt,);
