@@ -2,12 +2,6 @@
 // TODO: fix all these non camel case types
 #![allow(non_camel_case_types)]
 
-use std::fs::File;
-use std::os::fd::{AsRawFd, OwnedFd, FromRawFd};
-use std::sync::Arc;
-
-use log::info;
-
 #[cfg(feature = "abi-7-40")]
 // The `fuse_backing_map_out` struct is used to pass information about a backing file
 // descriptor to the kernel.

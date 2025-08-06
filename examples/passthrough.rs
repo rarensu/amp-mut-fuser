@@ -12,7 +12,6 @@ use crossbeam_channel::{Sender, Receiver};
 use fuser::{
     consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
     Filesystem, KernelConfig, MountOption, Open, Notification, RequestMeta,
-    Session
 };
 use bytes::Bytes;
 use std::collections::HashMap;

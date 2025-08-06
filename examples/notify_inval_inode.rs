@@ -23,7 +23,7 @@ use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType, Filesystem,
     Forget, FsStatus, InvalInode, MountOption, Notification, Open, Store, RequestMeta,
-    FUSE_ROOT_ID, Session
+    FUSE_ROOT_ID,
 };
 use bytes::Bytes;
 use log::{warn,info};

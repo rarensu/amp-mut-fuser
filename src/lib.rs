@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use std::convert::AsRef;
 #[cfg(feature = "threaded")]
 use std::io::ErrorKind;

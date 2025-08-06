@@ -13,7 +13,6 @@ use crate::{
     // What we're sending here aren't really replies, but they
     // move in the same direction (userspace->kernel), so we can
     // reuse ReplySender for it.
-    reply::ReplySender,
 };
 
 /// Poll event data to be sent to the kernel
@@ -312,8 +311,7 @@ impl Notifier {
         let vec = notification
             .to_vec(code)
             .map_err(Self::too_big_err)?;
-        let sacrificial_notifier = self.clone();
-        sacrificial_notifier.0.send_later(vec).await
+        self.0.send_later(vec).await
     }
 
     /// Create an error for indicating when a notification message

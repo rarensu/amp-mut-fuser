@@ -15,7 +15,6 @@ use std::{
     path::Path,
     os::unix::ffi::{OsStrExt, OsStringExt}, // for converting to and from
     time::{Duration, UNIX_EPOCH},
-    sync::Arc,
 };
 
 #[cfg(feature = "abi-7-11")]
@@ -29,7 +28,6 @@ use fuser::{
     Dirent, DirentList, Entry, Errno, FileAttr, Filesystem,
     FileType, MountOption, Notification, Open, RequestMeta,
     FUSE_ROOT_ID,
-    Session,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
