@@ -13,8 +13,7 @@ use std::{
     ffi::OsString,
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicU64, Ordering}, Mutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -27,7 +26,6 @@ use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FileAttr, FileType, Filesystem, Forget,
     FsStatus, InvalEntry, MountOption, Notification, RequestMeta, FUSE_ROOT_ID,
-    Session
 };
 struct ClockFS {
     file_name: Mutex<OsString>,

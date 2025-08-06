@@ -4,6 +4,7 @@
 //! Either the request logic will call the one of the reply handler's self-destructive methods, 
 //! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response. 
 
+use crate::channel::Channel;
 use crate::{Container, Errno, KernelConfig};
 use crate::ll::{self, reply::DirentBuf};
 #[cfg(feature = "abi-7-21")]
@@ -28,12 +29,22 @@ use async_trait::async_trait;
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
     /// Send data.
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()>;
-    async fn send_later(self, data: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()>;
+    async fn send_later(&self, data: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()>;
 }
 
 impl fmt::Debug for Box<dyn ReplySender> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         write!(f, "Box<ReplySender>")
+    }
+}
+
+#[async_trait]
+impl ReplySender for Channel {
+    fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
+        Channel::send(&self, data)
+    }
+    async fn send_later(&self, data: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()>{
+        Channel::send_later(&self, data).await
     }
 }
 
@@ -581,7 +592,7 @@ mod test {
             assert_eq!(self.expected, v);
             Ok(())
         }
-        async fn send_later(self, _: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()> {
+        async fn send_later(&self, _: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()> {
             Ok(())
         }
     }
@@ -1184,7 +1195,7 @@ mod test {
             self.send(()).unwrap();
             Ok(())
         }
-        async fn send_later(self, _: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()> {
+        async fn send_later(&self, _: SmallVec<[Vec<u8>; 4]>) -> std::io::Result<()> {
             Ok(())
         }
     }

@@ -18,7 +18,6 @@ use std::thread::{self, JoinHandle};
 #[cfg(feature = "threaded")]
 use std::fmt;
 
-use crate::ll::fuse_abi as abi;
 use crate::request::RequestHandler;
 use crate::{channel, Filesystem, FsStatus};
 use crate::MountOption;
@@ -212,13 +211,15 @@ impl<FS: Filesystem + 'static> Session<FS> {
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    fn notifier(&self) -> Notifier {
+    pub fn notifier(&self) -> Notifier {
+        // OLD notification method
         Notifier::new(self.chs[0].clone())
     }
 
     /// Returns an object that can be used to send poll event notifications
     #[cfg(feature = "abi-7-11")]
     pub fn get_notification_sender(&self) -> Sender<Notification> {
+        // NEW notification method
         self.ns.clone()
     }
 
@@ -314,8 +315,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
 
-        let sender = se.get_ch(channel_id);
-        info!("Starting request loop on channel {channel_id} with fd {}", &sender.raw_fd);
+        info!("Starting request loop on channel {channel_id} with fd {}", &se.chs[channel_id].raw_fd);
         loop {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
@@ -326,7 +326,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
                     let buf = channel::aligned_sub_buf(&mut buffer, channel::FUSE_HEADER_ALIGNMENT);
                     let data = Vec::from(&buf[..size]);
                     buf[..size].fill(0);
-                    match RequestHandler::new(sender.clone(), data) {
+                    match RequestHandler::new(se.chs[channel_id].clone(), data) {
                         // Dispatch request
                         Some(req) => {
                             debug!("Request {} on channel {channel_id}.", req.meta.unique);
@@ -470,7 +470,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
                 Ok(ready) => {
                     if ready {
                         // Read a FUSE request (blocks until read succeeds)
-                        let result = Channel::receive(se.chs[channel_id].raw_fd,buf);
+                        let result = se.chs[channel_id].receive(buf);
                         match result {
                             Ok(size) => {
                                 if size == 0 {
@@ -551,7 +551,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
         if notify {
             match se.nr.try_recv() {
                 Ok(notification) => {
-                    debug!("Notification {:?} on channel {channel_id}", &notification.kind());
+                    debug!("Notification {:?} on channel {channel_id}", &notification.label());
                     if let Notification::Stop = notification {
                         // Filesystem says no more notifications.
                         info!("Disabling notifications.");

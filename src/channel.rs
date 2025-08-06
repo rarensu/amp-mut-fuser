@@ -1,18 +1,13 @@
 use std::{
     fs::File,
     io::{self, IoSlice},
-    os::{
-        fd::{FromRawFd, IntoRawFd},
-        unix::prelude::AsRawFd,
-    },
+    os::unix::prelude::AsRawFd,
     sync::Arc,
 };
-use memchr::arch::all::rabinkarp;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, unix::AsyncFd};
 use smallvec::SmallVec;
 
 use libc::{c_int, c_void, size_t};
-use crate::{ll::fuse_abi, reply::ReplySender};
+use crate::ll::fuse_abi;
 use crate::ll::ioctl::ioctl_clone_fuse_fd;
 #[cfg(feature = "abi-7-40")]
 use crate::ll::ioctl::{ioctl_close_backing, ioctl_open_backing};
@@ -33,64 +28,42 @@ pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
 /// May be cloned and sent to other threads.
 #[derive(Clone, Debug)]
 pub(crate) struct Channel {
+    owned_fd: Arc<File>,
     pub raw_fd: i32,
-    owned_fd: Arc<futures::lock::Mutex<tokio::fs::File>>
 }
 
-/*
+
 use std::os::fd::{BorrowedFd, AsFd};
 impl AsFd for Channel {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.owned_fd // doesn't work
+        self.owned_fd.as_fd()
     }
 }
-*/
 
 impl Channel {
     // Create a new communication channel to the kernel driver. 
-    // The argument is a File opened on a fuse device. 
-    pub(crate) fn new(device: File) -> Self {
-        let raw_fd= device.into_raw_fd().as_raw_fd();
-        let owned_fd = Arc::new(
-            futures::lock::Mutex::new(
-            unsafe {
-               tokio::fs::File::from_raw_fd(raw_fd) 
-            }
-        ));
-        Self {raw_fd, owned_fd}
+    // The argument is a `File` opened on a fuse device. 
+    pub fn new(device: File) -> Self {
+        let owned_fd = Arc::new(device);
+        let raw_fd= owned_fd.as_raw_fd();
+        Self {owned_fd, raw_fd}
     }
-
-    pub(crate) fn from_shared(device: &Arc<File>) -> Self {
+    // Create a new communication channel to the kernel driver. 
+    // The argument is a `Arc<File>` opened on a fuse device.
+    #[allow(dead_code)] 
+    pub fn from_shared(device: &Arc<File>) -> Self {
         let raw_fd= device.as_raw_fd().as_raw_fd();
-        let owned_fd = Arc::new(
-            futures::lock::Mutex::new(
-                unsafe {
-                tokio::fs::File::from_raw_fd(raw_fd) 
-                }
-            )
-        );
-        Self {raw_fd, owned_fd}
-    }
-
-    pub(crate) fn as_borrowed(device: &Arc<File>) -> Self {
-        let raw_fd= device.as_raw_fd().as_raw_fd();
-        let owned_fd = Arc::new(
-            futures::lock::Mutex::new(
-                unsafe {
-                tokio::fs::File::from_raw_fd(raw_fd) 
-                }
-            )
-        );
+        let owned_fd = device.clone();
         Self {raw_fd, owned_fd}
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
-    pub(crate) fn receive(raw_fd: i32, buffer: &mut [u8]) -> io::Result<usize> {
-        log::debug!("about to try a blocking read on fd {:?}", raw_fd);
+    pub fn receive(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        log::debug!("about to try a blocking read on fd {:?}", self.raw_fd);
         log::debug!("about to try a blocking read on with buffer {:?}, {:?}", buffer.len(), buffer.get(0..20));
         let rc = unsafe {
             libc::read(
-                raw_fd,
+                self.raw_fd,
                 buffer.as_ptr() as *mut c_void,
                 buffer.len() as size_t,
             )
@@ -103,21 +76,21 @@ impl Channel {
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
-    pub(crate) async fn receive_later(&self, mut buffer: Vec<u8>) -> (io::Result<usize>, Vec<u8>) { 
-        let raw_fd = self.raw_fd;  
+    pub async fn receive_later(&self, mut buffer: Vec<u8>) -> (io::Result<usize>, Vec<u8>) { 
+        let thread_ch = self.clone();  
         tokio::task::spawn_blocking(move || {
             let mut buf = aligned_sub_buf(
                 &mut buffer,
                 FUSE_HEADER_ALIGNMENT,
             );
-            let res = Channel::receive(raw_fd, &mut buf);
+            let res = thread_ch.receive(&mut buf);
             (res, buffer)
         }).await.expect("Unable to recover worker i/o thread")
     }
 
     /// Polls the kernel to determine if a request is ready for reading (does not block).
     /// This method is used in the synchronous notifications execution model.
-    pub(crate) fn ready_read(&self) -> io::Result<bool> {
+    pub fn ready_read(&self) -> io::Result<bool> {
         let mut buf = [libc::pollfd {
             fd: self.raw_fd,
             events: libc::POLLIN,
@@ -158,7 +131,7 @@ impl Channel {
     }
     /// Polls the kernel to determine if channel is ready to accept a notification (does not block).
     /// This method is used in the synchronous notifications execution model.
-    pub(crate) fn ready_write(&self) -> io::Result<bool> {
+    pub fn ready_write(&self) -> io::Result<bool> {
         let mut buf = [libc::pollfd {
             fd: self.raw_fd,
             events: libc::POLLOUT,
@@ -197,14 +170,8 @@ impl Channel {
             }
         }
     }
-}
 
-
-use async_trait::async_trait;
-
-#[async_trait]
-impl ReplySender for Channel {
-    fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+    pub fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         log::debug!("about to try a blocking write on fd {}", self.raw_fd);
         for x in bufs { log::debug!("the buf has length {}", x.len()); }
         let rc = unsafe {
@@ -223,17 +190,14 @@ impl ReplySender for Channel {
         }
     }
 
-    async fn send_later(self, bufs: SmallVec<[Vec<u8>; 4]>) -> io::Result<()> {
-        let sender = self;
-        // ReplySender will be dropped at the end of the worker i/o thread.
+    pub async fn send_later(&self, bufs: SmallVec<[Vec<u8>; 4]>) -> io::Result<()> {
+        let thread_sender = self.clone();
         tokio::task::spawn_blocking(move || {
             let bufs = bufs.iter().map(|v| {IoSlice::new(v)}).collect::<Vec<IoSlice<'_>>>();
-            sender.send(&bufs)
+            thread_sender.send(&bufs)
         }).await.expect("Unable to recover worker i/o thread")
     }
-}
 
-impl Channel {
     /// ?
     pub fn new_fuse_worker(&self, main_fuse_fd: u32) -> std::io::Result<()> {
         ioctl_clone_fuse_fd(self.raw_fd, main_fuse_fd)

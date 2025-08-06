@@ -101,7 +101,8 @@ pub enum Notification {
 }
 
 impl Notification {
-    pub fn kind(&self) -> &'static str {
+    /// A string the describes a Notification, mainly for logging purposes.
+    pub fn label(&self) -> &'static str {
         match self {
             #[cfg(feature = "abi-7-11")]
             Notification::Poll(_) => "Poll",
@@ -136,7 +137,7 @@ impl From<Delete>     for Notification {fn from(notification: Delete)     -> Sel
 
 /// A handle by which the application can send notifications to the server
 #[derive(Clone, Debug)]
-pub(crate) struct Notifier(Channel);
+pub struct Notifier(Channel);
 
 impl Notifier {
     pub(crate) fn new(cs: Channel) -> Self {
