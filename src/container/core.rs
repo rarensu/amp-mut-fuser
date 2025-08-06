@@ -146,7 +146,7 @@ impl<T: Clone> Container<T> {
     /// Will attempt to safely gain access to a locking variant.
     /// # Errors
     /// Returns an error if the source data is held by locking variant and unavailable.
-    pub fn unlock(&self) -> Result<SafeBorrow<'_, T>, SafeBorrowError> {
+    pub fn lock(&self) -> Result<SafeBorrow<'_, T>, SafeBorrowError> {
         match self {
             // ----- Simple Variants -----
             Container::Empty => Ok(SafeBorrow::Empty),
@@ -186,7 +186,7 @@ impl<T: Clone> Container<T> {
 
     /// Returns a borrowed slice &[] from the container.
     /// Only available if locking variants are disabled.
-    /// Hint: use `unlock()` to handle locking variants.
+    /// Hint: use `lock()` to handle locking variants.
     #[cfg(not(feature = "locking"))]
     pub fn as_ref(&self) -> &[T] {
         match self {

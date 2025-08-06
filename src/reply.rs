@@ -420,7 +420,7 @@ impl ReplyHandler {
     ) {
         let mut buf = DirentBuf::new(size);
         // Alternatively, consider a panic if the borrow fails.
-        let entries_safe_borrow = match entries_list.unlock(){
+        let entries_safe_borrow = match entries_list.lock(){
             Ok(entries) => entries,
             Err(e) => {
                 log::error!("ReplyHandler::dir: Borrow Error: {e:?}");
@@ -460,7 +460,7 @@ impl ReplyHandler {
     ) {
         let mut buf = DirentPlusBuf::new(size);
         // Alternatively, consider a panic if the borrow fails.
-        let entries_safe_borrow = match entries_plus_list.unlock(){
+        let entries_safe_borrow = match entries_plus_list.lock(){
             Ok(entries) => entries,
             Err(e) => {
                 log::error!("ReplyHandler::dirplus: Borrow Error: {e:?}");

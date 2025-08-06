@@ -585,6 +585,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
         }
     }
 }
+
 #[derive(Debug)]
 /// A thread-safe object that can be used to unmount a Filesystem
 pub struct SessionUnmounter {

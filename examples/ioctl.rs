@@ -230,7 +230,7 @@ fn main() {
     let se = fuser::Session::new(fs, mountpoint, &options)
         .expect("Failed to create Session");
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    match rt.block_on(async { se.run_concurrently(1).await }) {
+    match rt.block_on(async { se.run_concurrently_sequential_full().await }) {
         Ok(_se) => info!("Session ended safely"),
         Err(e) => info!("Session ended with error {e:?}")
     }
