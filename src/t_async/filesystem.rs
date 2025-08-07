@@ -12,18 +12,15 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-#[allow(clippy::wildcard_imports)] // avoid duplicating feature gates
-use crate::ll::{Errno, TimeOrNow};
 #[cfg(feature = "abi-7-11")]
-use crate::notify::{Notification};
-#[cfg(feature = "abi-7-11")]
-use crate::reply::Ioctl;
+use crate::{Notification, Ioctl};
 #[cfg(target_os = "macos")]
-use crate::reply::XTimes;
-use crate::reply::{Entry, FileAttr, DirentList, DirentPlusList, Open, Statfs, Xattr, Lock};
-use crate::{Forget, FsStatus, KernelConfig};
-use crate::request::RequestMeta;
+use crate::XTimes;
+use crate::{Errno, TimeOrNow, RequestMeta, Entry, FileAttr, DirentList, Open, Statfs, Xattr, Lock, Forget, FsStatus, KernelConfig};
+#[cfg(feature = "abi-7-21")]
+use crate::DirentPlusList;
 use bytes::Bytes;
+use crossbeam_channel::Sender; 
 
 use async_trait::async_trait;
 
@@ -588,7 +585,7 @@ pub trait Filesystem: Send + Sync {
     #[cfg(feature = "abi-7-11")]
     async fn ioctl(
         &self,
-        _req: RequestMeta,
+        req: RequestMeta,
         ino: u64,
         fh: u64,
         flags: u32,
@@ -637,7 +634,7 @@ pub trait Filesystem: Send + Sync {
     #[cfg(feature = "abi-7-11")]
     async fn init_notification_sender(
         &self,
-        _sender: crossbeam_channel::Sender<Notification>,
+        sender: Sender<Notification>,
     ) -> bool {
         false // Default: not supported
     }

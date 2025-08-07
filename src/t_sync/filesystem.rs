@@ -523,7 +523,7 @@ pub trait Filesystem {
         mode: u32,
         umask: u32,
         flags: i32,
-    ) -> Result<(Entry,Open), Errno> {
+    ) -> Result<(Entry, Open), Errno> {
         warn!(
             "[Not Implemented] create(parent: {parent:#x?}, name: {name:?}, \
             mode: {mode}, umask: {umask:#x?}, flags: {flags:#x?})"

@@ -63,11 +63,13 @@ mod notify;
 mod reply;
 mod request;
 mod session;
+/// legacy code with callbacks
+pub mod t_legacy;
 /// middle ground. syncronous but no callbacks
 pub mod t_sync;
 /// asyncronous
 pub mod t_async;
-pub use t_async::Filesystem;
+pub use t_async::Filesystem; //default for testing
 
 /// We generally support async reads
 #[cfg(all(not(target_os = "macos"), not(feature = "abi-7-10")))]
