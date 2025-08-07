@@ -1,4 +1,34 @@
-use crate::RequestMeta;
+use super::{
+    Filesystem,
+    ReplyEmpty,
+    ReplyData,
+    ReplyEntry,
+    ReplyAttr,
+    ReplyOpen,
+    ReplyWrite,
+    ReplyStatfs,
+    ReplyCreate,
+    ReplyLock,
+    ReplyBmap,
+    ReplyIoctl,
+    ReplyPoll,
+    ReplyDirectory,
+    ReplyDirectoryPlus,
+    ReplyXattr,
+    ReplyLseek,
+    PollHandle
+};
+use super::reply::DirectoryHandler;
+#[cfg(feature = "abi-7-21")]
+use super::reply::DirectoryPlusHandler;
+use crate::{RequestMeta, Errno, KernelConfig};
+use crate::session::{SessionMeta, SessionACL};
+use crate::request::RequestHandler;
+use crate::ll::request::Request as RequestTrait;
+use crate::ll::{self, Operation};
+use std::sync::{Arc, Mutex};
+#[allow(unused_imports)]
+use log::{error, warn, info, debug};
 
 #[derive(Debug)]
 /// Userspace metadata for a given request
@@ -37,5 +67,678 @@ impl Request<'_> {
     #[inline]
     pub fn pid(&self) -> u32 {
         self.meta.pid
+    }
+}
+
+impl RequestHandler {
+    /// Dispatch request to the given filesystem.
+    /// This calls the appropriate filesystem operation method for the
+    /// request and sends back the returned reply to the kernel
+    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: Arc<Mutex<SessionMeta>>) {
+        debug!("{}", self.request);
+        let op_result = self.request.operation().map_err(|_| Errno::ENOSYS);
+
+        if let Err(err) = op_result {
+            self.replyhandler.error(err);
+            return;
+        }
+        let op = op_result.unwrap();
+
+        // Implement allow_root & access check for auto_unmount
+        let access_denied = false; 
+        {
+            match se_meta.lock() {
+                Ok(meta) => {
+                    if (meta.allowed == SessionACL::RootAndOwner
+                        && self.request.uid() != meta.session_owner
+                        && self.request.uid() != 0)
+                        || (meta.allowed == SessionACL::Owner && self.request.uid() != meta.session_owner)
+                    {
+                        match op {
+                            // Only allow operations that the kernel may issue without a uid set
+                            Operation::Init(_)
+                            | Operation::Destroy(_)
+                            | Operation::Read(_)
+                            | Operation::ReadDir(_)
+                            | Operation::Forget(_)
+                            | Operation::Write(_)
+                            | Operation::FSync(_)
+                            | Operation::FSyncDir(_)
+                            | Operation::Release(_)
+                            | Operation::ReleaseDir(_) => false,
+                            #[cfg(feature = "abi-7-16")]
+                            Operation::BatchForget(_) => false,
+                            #[cfg(feature = "abi-7-21")]
+                            Operation::ReadDirPlus(_) => false,
+                            _ => true,
+                        }
+                    } else {
+                        false
+                    };
+                }
+                Err(e) => {
+                    error!("{e:?}");
+                    self.replyhandler.error(Errno::EDEADLK);
+                    return;
+                }
+            }
+        }
+        if access_denied {
+            self.replyhandler.error(Errno::EACCES);
+            return;
+        }
+        // Gathering some additional info before matching the op code
+        let (initialized, destroyed) = match se_meta.lock() {
+            Ok(meta) => {
+                (meta.initialized, meta.destroyed)
+            }
+            Err(e) => {
+                error!("{e:?}");
+                self.replyhandler.error(Errno::EDEADLK);
+                return;
+            }
+        };
+        let req = Request::new(&self.meta);
+        match op {
+            // Filesystem initialization
+            Operation::Init(x) => {
+                // We don't support ABI versions before 7.6
+                let v = x.version();
+                if v < ll::Version(7, 6) {
+                    error!("Unsupported FUSE ABI version {v}");
+                    self.replyhandler.error(Errno::EPROTO);
+                    return;
+                }
+                // Remember ABI version supported by kernel
+                {
+                    match se_meta.lock() {
+                        Ok(mut meta) => {
+                            meta.proto_major = v.major();
+                            meta.proto_minor = v.minor();
+                        }
+                        Err(e) => {
+                            error!("{e:?}");
+                            self.replyhandler.error(Errno::EDEADLK);
+                            return;
+                        }
+                    }
+                }
+                let mut config = KernelConfig::new(x.capabilities(), x.max_readahead());
+                // Call filesystem init method and give it a chance to 
+                // propose a different config or return an error
+                match fs.init(&req, &mut config) {
+                    Ok(()) => {
+                        // Reply with our desired version and settings. If the kernel supports a
+                        // larger major version, it'll re-send a matching init message. If it
+                        // supports only lower major versions, we replied with an error above.
+                        debug!(
+                            "INIT response: ABI {}.{}, flags {:#x}, max readahead {}, max write {}",
+                            ll::fuse_abi::FUSE_KERNEL_VERSION,
+                            ll::fuse_abi::FUSE_KERNEL_MINOR_VERSION,
+                            x.capabilities() & config.requested,
+                            config.max_readahead,
+                            config.max_write
+                        );
+                        {
+                            match se_meta.lock() {
+                                Ok(mut meta) => {
+                                    meta.initialized = true;
+                                }
+                                Err(e) => {
+                                    error!("{e:?}");
+                                    self.replyhandler.error(Errno::EDEADLK);
+                                    return;
+                                }
+                            }
+                        }
+                        self.replyhandler.config(x.capabilities(), config);
+                    },
+                    Err(errno) => {
+                        // Filesystem refused the config.
+                        self.replyhandler.error(Errno::from_i32(errno));
+                    }
+                }
+            }
+            // Any operation is invalid before initialization
+            _ if !initialized => {
+                warn!("Ignoring FUSE operation before init: {}", self.request);
+                self.replyhandler.error(Errno::EIO);
+            }
+            // Filesystem destroyed
+            Operation::Destroy(_x) => {
+                fs.destroy();
+                {
+                    match se_meta.lock() {
+                        Ok(mut meta) => {
+                            meta.destroyed = true;
+                        }
+                        Err(e) => {
+                            error!("{e:?}");
+                            self.replyhandler.error(Errno::EDEADLK);
+                            return;
+                        }
+                    }
+                }
+                self.replyhandler.ok();
+            }
+            // Any operation is invalid after destroy
+            _ if destroyed => {
+                warn!("Ignoring FUSE operation after destroy: {}", self.request);
+                self.replyhandler.error(Errno::EIO);
+            }
+            Operation::Interrupt(_) => {
+                // TODO: handle FUSE_INTERRUPT
+                self.replyhandler.error(Errno::ENOSYS);
+            }
+
+            Operation::Lookup(x) => {
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.lookup(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name().as_os_str(),
+                    reply
+                );
+            }
+            Operation::Forget(x) => {
+                fs.forget(&req, self.request.nodeid().into(), x.nlookup()); // no response
+                self.replyhandler.disable(); // no reply
+            }
+            Operation::GetAttr(_attr) => {
+                let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
+                #[cfg(feature = "abi-7-9")]
+                fs.getattr(
+                    &req,
+                    self.request.nodeid().into(),
+                    _attr.file_handle().map(Into::into),
+                    reply
+                );
+                // Pre-abi-7-9 does not support providing a file handle.
+                #[cfg(not(feature = "abi-7-9"))]
+                fs.getattr(
+                    &req,
+                    self.request.nodeid().into(),
+                    None,
+                    reply
+                );
+            }
+            Operation::SetAttr(x) => {
+                let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
+                fs.setattr(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.mode(),
+                    x.uid(),
+                    x.gid(),
+                    x.size(),
+                    x.atime(),
+                    x.mtime(),
+                    x.ctime(),
+                    x.file_handle().map(Into::into),
+                    x.crtime(),
+                    x.chgtime(),
+                    x.bkuptime(),
+                    x.flags(),
+                    reply
+                );
+            }
+            Operation::ReadLink(_) => {
+                let reply = ReplyData::new(Box::new(Some(self.replyhandler)));
+                fs.readlink(
+                    &req,
+                    self.request.nodeid().into(),
+                    reply
+                );
+            }
+            Operation::MkNod(x) => {
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.mknod(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name().as_os_str(),
+                    x.mode(),
+                    x.umask(),
+                    x.rdev(),
+                    reply
+                );
+            }
+            Operation::MkDir(x) => {
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.mkdir(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name().as_os_str(),
+                    x.mode(),
+                    x.umask(),
+                    reply
+                );
+            }
+            Operation::Unlink(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.unlink(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name().as_os_str(),
+                    reply
+                );
+            }
+            Operation::RmDir(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.rmdir(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name().as_os_str(),
+                    reply
+                );
+            }
+            Operation::SymLink(x) => {
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.symlink(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.link_name().as_os_str(),
+                    x.target(),
+                    reply
+                );
+            }
+            Operation::Rename(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.rename(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.src().name.as_os_str(),
+                    x.dest().dir.into(),
+                    x.dest().name.as_os_str(),
+                    0,
+                    reply
+                );
+            }
+            Operation::Link(x) => {
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.link(
+                    &req,
+                    x.inode_no().into(),
+                    self.request.nodeid().into(),
+                    x.dest().name.as_os_str(),
+                    reply
+                );
+            }
+            Operation::Open(x) => {
+                let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
+                fs.open(
+                    &req,
+                    self.request.nodeid().into(), 
+                    x.flags(),
+                    reply
+                );
+            }
+            Operation::Read(x) => {
+                let reply = ReplyData::new(Box::new(Some(self.replyhandler)));
+                fs.read(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.offset(),
+                    x.size(),
+                    x.flags(),
+                    x.lock_owner().map(Into::into),
+                    reply
+                );
+            }
+            Operation::Write(x) => {
+                let reply = ReplyWrite::new(Box::new(Some(self.replyhandler)));
+                fs.write(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.offset(),
+                    x.data(),
+                    x.write_flags(),
+                    x.flags(),
+                    x.lock_owner().map(Into::into),
+                    reply
+                );
+            }
+            Operation::Flush(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.flush(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.lock_owner().into(),
+                    reply
+                );
+            }
+            Operation::Release(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.release(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.flags(),
+                    x.lock_owner().map(Into::into),
+                    x.flush(),
+                    reply
+                );
+            }
+            Operation::FSync(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.fsync(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.fdatasync(),
+                    reply
+                );
+            }
+            Operation::OpenDir(x) => {
+                let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
+                fs.opendir(
+                    &req,
+                    self.request.nodeid().into(), 
+                    x.flags(),
+                    reply
+                );
+            }
+            Operation::ReadDir(x) => {
+                let container = DirectoryHandler::new(x.size() as usize, self.replyhandler);
+                let reply = ReplyDirectory::new(Box::new(container));
+                fs.readdir(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.offset(),
+                    reply
+                );
+            }
+            Operation::ReleaseDir(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.releasedir(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.flags(),
+                    reply
+                );
+            }
+            Operation::FSyncDir(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.fsyncdir(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.fdatasync(),
+                    reply
+                );
+            }
+            Operation::StatFs(_) => {
+                let reply = ReplyStatfs::new(Box::new(Some(self.replyhandler)));
+                fs.statfs(
+                    &req,
+                    self.request.nodeid().into(),
+                    reply
+                );
+            }
+            Operation::SetXAttr(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.setxattr(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name(),
+                    x.value(),
+                    x.flags(),
+                    x.position(),
+                    reply
+                );
+            }
+            Operation::GetXAttr(x) => {
+                let reply = ReplyXattr::new(Box::new(Some(self.replyhandler)));
+                fs.getxattr(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name(),
+                    x.size_u32(),
+                    reply
+                );
+            }
+            Operation::ListXAttr(x) => {
+                let reply = ReplyXattr::new(Box::new(Some(self.replyhandler)));
+                fs.listxattr(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.size(),
+                    reply
+                );
+            }
+            Operation::RemoveXAttr(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.removexattr(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name(),
+                    reply
+                );
+            }
+            Operation::Access(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.access(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.mask(),
+                    reply
+                );
+            }
+            Operation::Create(x) => {
+                let reply = ReplyCreate::new(Box::new(Some(self.replyhandler)));
+                fs.create(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.name().as_os_str(),
+                    x.mode(),
+                    x.umask(),
+                    x.flags(),
+                    reply
+                );
+            }
+            Operation::GetLk(x) => {
+                let reply = ReplyLock::new(Box::new(Some(self.replyhandler)));
+                fs.getlk(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.lock_owner().into(),
+                    x.lock().range.0,
+                    x.lock().range.1,
+                    x.lock().typ,
+                    x.lock().pid,
+                    reply
+                );
+            }
+            Operation::SetLk(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.setlk(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.lock_owner().into(),
+                    x.lock().range.0,
+                    x.lock().range.1,
+                    x.lock().typ,
+                    x.lock().pid,
+                    false,
+                    reply
+                );
+            }
+            Operation::SetLkW(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.setlk(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.lock_owner().into(),
+                    x.lock().range.0,
+                    x.lock().range.1,
+                    x.lock().typ,
+                    x.lock().pid,
+                    true,
+                    reply
+                );
+            }
+            Operation::BMap(x) => {
+                let reply = ReplyBmap::new(Box::new(Some(self.replyhandler)));
+                fs.bmap(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.block_size(),
+                    x.block(),
+                    reply
+                );
+            }
+
+            #[cfg(feature = "abi-7-11")]
+            Operation::IoCtl(x) => {
+                if x.unrestricted() {
+                    self.replyhandler.error(Errno::ENOSYS);
+                } else {
+                    let reply = ReplyIoctl::new(Box::new(Some(self.replyhandler)));
+                    fs.ioctl(
+                        &req,
+                        self.request.nodeid().into(),
+                        x.file_handle().into(),
+                        x.flags(),
+                        x.command(),
+                        x.in_data(),
+                        x.out_size(),
+                        reply
+                    );
+                }
+            }
+            #[cfg(feature = "abi-7-11")]
+            Operation::Poll(x) => {
+                let reply = ReplyPoll::new(Box::new(Some(self.replyhandler)));
+                fs.poll(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    PollHandle(x.kernel_handle()),
+                    x.events(),
+                    x.flags(),
+                    reply
+                );
+            }
+            #[cfg(feature = "abi-7-15")]
+            Operation::NotifyReply(_) => {
+                // TODO: handle FUSE_NOTIFY_REPLY
+                self.replyhandler.error(Errno::ENOSYS);
+            }
+            #[cfg(feature = "abi-7-16")]
+            Operation::BatchForget(x) => {
+                fs.batch_forget(&req, x.nodes()); // no response
+                self.replyhandler.disable(); // no reply
+            }
+            #[cfg(feature = "abi-7-19")]
+            Operation::FAllocate(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.fallocate(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.offset(),
+                    x.len(),
+                    x.mode(),
+                    reply
+                );
+            }
+            #[cfg(feature = "abi-7-21")]
+            Operation::ReadDirPlus(x) => {
+                let container = DirectoryPlusHandler::new(x.size() as usize, self.replyhandler);
+                let reply = ReplyDirectoryPlus::new(Box::new(container));
+                fs.readdirplus(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.offset(),
+                    reply
+                );
+            }
+            #[cfg(feature = "abi-7-23")]
+            Operation::Rename2(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.rename(
+                    &req,
+                    x.from().dir.into(),
+                    x.from().name.as_os_str(),
+                    x.to().dir.into(),
+                    x.to().name.as_os_str(),
+                    x.flags(),
+                    reply
+                );
+            }
+            #[cfg(feature = "abi-7-24")]
+            Operation::Lseek(x) => {
+                let reply = ReplyLseek::new(Box::new(Some(self.replyhandler)));
+                fs.lseek(
+                    &req,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.offset(),
+                    x.whence(),
+                    reply
+                );
+            }
+            #[cfg(feature = "abi-7-28")]
+            Operation::CopyFileRange(x) => {
+                let (i, o) = (x.src(), x.dest());
+                let reply = ReplyWrite::new(Box::new(Some(self.replyhandler)));
+                fs.copy_file_range(
+                    &req,
+                    i.inode.into(),
+                    i.file_handle.into(),
+                    i.offset,
+                    o.inode.into(),
+                    o.file_handle.into(),
+                    o.offset,
+                    x.len(),
+                    x.flags().try_into().unwrap(),
+                    reply
+                );
+            }
+            #[cfg(target_os = "macos")]
+            Operation::SetVolName(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.setvolname(
+                    &req,
+                    x.name(),
+                    reply
+                );
+            }
+            #[cfg(target_os = "macos")]
+            Operation::GetXTimes(x) => {
+                let reply = ReplyXTimes::new(Box::new(Some(self.replyhandler)));
+                fs.getxtimes(
+                    &req,
+                    x.nodeid().into(),
+                    reply
+                );
+            }
+            #[cfg(target_os = "macos")]
+            Operation::Exchange(x) => {
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.exchange(
+                    &req,
+                    x.from().dir.into(),
+                    x.from().name.as_os_str(),
+                    x.to().dir.into(),
+                    x.to().name.as_os_str(),
+                    x.options(),
+                    reply
+                );
+            }
+            #[cfg(feature = "abi-7-12")]
+            Operation::CuseInit(_) => {
+                // TODO: handle CUSE_INIT
+                self.replyhandler.error(Errno::ENOSYS);
+            }
+        }
     }
 }

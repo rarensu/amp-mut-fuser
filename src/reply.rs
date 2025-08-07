@@ -1,8 +1,8 @@
 //! Filesystem operation reply
 //!
 //! A reply handler object is created to guarantee that each fuse request receives a reponse exactly once.
-//! Either the request logic will call the one of the reply handler's self-destructive methods, 
-//! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response. 
+//! Either the request logic will call the one of the reply handler's self-destructive methods,
+//! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
 
 use crate::channel::Channel;
 use crate::{Container, Errno, KernelConfig};
@@ -50,14 +50,14 @@ impl ReplySender for Channel {
 
 /// `ReplyHander` is a struct which holds the unique identifiers needed to reply
 /// to a specific request. Traits are implemented on the struct so that ownership
-/// of the struct determines whether the identifiers have ever been used. 
+/// of the struct determines whether the identifiers have ever been used.
 /// This guarantees that a reply is send at most once per request.
 #[derive(Debug)]
 pub(crate) struct ReplyHandler {
     /// Unique id of the request to reply to
-    unique: ll::RequestId,
+    pub unique: ll::RequestId,
     /// Closure to call for sending the reply
-    sender: Option<Box<dyn ReplySender>>,
+    pub sender: Option<Box<dyn ReplySender>>,
 }
 
 impl ReplyHandler {
@@ -73,7 +73,7 @@ impl ReplyHandler {
     /// Reply to a request with a formatted reponse. Can be called
     /// more than once (the `&mut self` argument does not consume `self`)
     /// Avoid using this variant unless you know what you are doing!
-    fn send_ll_mut(&mut self, response: &ll::Response<'_>) {
+    pub(crate) fn send_ll_mut(&mut self, response: &ll::Response<'_>) {
         assert!(self.sender.is_some());
         let sender = self.sender.take().unwrap();
         let res = response.with_iovec(self.unique, |iov| sender.send(iov));
@@ -83,14 +83,14 @@ impl ReplyHandler {
     }
     /// Reply to a request with a formatted reponse. May be called
     /// only once (the `mut self` argument consumes `self`).
-    /// Use this variant for general replies. 
-    fn send_ll(mut self, response: &ll::Response<'_>) {
+    /// Use this variant for general replies.
+    pub(crate) fn send_ll(mut self, response: &ll::Response<'_>) {
         self.send_ll_mut(response);
     }
 
 }
 
-/// Drop is implemented on `ReplyHandler` so that if the program logic fails 
+/// Drop is implemented on `ReplyHandler` so that if the program logic fails
 /// (for example, due to an interrupt or a panic),
 /// a reply will be sent when the Reply Handler falls out of scope.
 impl Drop for ReplyHandler {
@@ -285,19 +285,35 @@ pub struct Ioctl {
 
 impl ReplyHandler {
 
-    /// Reply to a general request with Ok
-    pub fn ok(self) {
-        self.send_ll(&ll::Response::new_empty());
-    }
-
     /// Reply to a general request with an error code
     pub fn error(self, err: Errno) {
         self.send_ll(&ll::Response::new_error(err));
     }
 
+    /// Reply to a general request with no data
+    pub fn ok(self) {
+        self.send_ll(&ll::Response::new_empty());
+    }
+
+    /// Reply to a general request with no data or an error
+    pub fn ok_or_err(self, result: Result<(), Errno>) {
+        match result {
+            Ok(()) => self.ok(),
+            Err(err) => self.error(err),
+        }
+    }
+
     /// Reply to a general request with data
-    pub fn data(self, data: Bytes) {
-        self.send_ll(&ll::Response::new_slice(data.as_ref()));
+    pub fn data(self, data: &[u8]) {
+        self.send_ll(&ll::Response::new_slice(data));
+    }
+
+    /// Reply to a general request with data or an error
+    pub fn data_or_err(self, result: Result<Bytes, Errno>) {
+        match result {
+            Ok(data) => self.data(&data),
+            Err(err) => self.error(err),
+        }
     }
 
     // Reply to an init request with available features
@@ -342,7 +358,7 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with a file entry
-    pub fn entry(self, entry: Entry) {
+    pub fn entry(self, entry: &Entry) {
         self.send_ll(&ll::Response::new_entry(
             ll::INodeNo(entry.ino),
             ll::Generation(entry.generation.unwrap_or(1)),
@@ -352,9 +368,25 @@ impl ReplyHandler {
         ));
     }
 
-    /// Reply to a request with a file attributes
-    pub fn attr(self, attr: FileAttr, ttl: Duration) {
+    /// Reply to a request with a file entry or an error
+    pub fn entry_or_err(self, result: Result<Entry, Errno>) {
+        match result {
+            Ok(entry) => self.entry(&entry),
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Reply to a request with file attributes
+    pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
         self.send_ll(&ll::Response::new_attr(&ttl, &attr.into()));
+    }
+
+    /// Reply to a request with file attributes or an error
+    pub fn attr_or_err(self, result: Result<(FileAttr, Duration), Errno>) {
+        match result {
+            Ok((attr,ttl)) => self.attr(&attr, &ttl),
+            Err(err) => self.error(err),
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -363,8 +395,17 @@ impl ReplyHandler {
         self.send_ll(&ll::Response::new_xtimes(xtimes.bkuptime, xtimes.crtime))
     }
 
+    #[cfg(target_os = "macos")]
+    /// Reply to a request with xtimes attributes or an error
+    pub fn xtimes_or_err(self, result: Result<XTimes, Errno>) {
+        match result {
+            Ok(xtimes) => self.xtimes(xtimes),
+            Err(err) => self.error(err),
+        }
+    }
+
     /// Reply to a request with a newly opened file handle
-    pub fn opened(self, open: Open) {
+    pub fn opened(self, open: &Open) {
         self.send_ll(&ll::Response::new_open(
             ll::FileHandle(open.fh),
             open.flags,
@@ -372,20 +413,44 @@ impl ReplyHandler {
         ));
     }
 
+    /// Reply to a request with a newly opened file handle or an error
+    pub fn opened_or_err(self, result: Result<Open, Errno>) {
+        match result {
+            Ok(open) => self.opened(&open),
+            Err(err) => self.error(err),
+        }
+    }
+
     /// Reply to a request with the number of bytes written
     pub fn written(self, size: u32) {
         self.send_ll(&ll::Response::new_write(size));
     }
 
-    /// Reply to a statfs request
-    pub fn statfs(self, statfs: Statfs) {
+    /// Reply to a request with the number of bytes written or an error
+    pub fn written_or_err(self, result: Result<u32, Errno>) {
+        match result {
+            Ok(size) => self.written(size),
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Reply to a statfs request with filesystem information
+    pub fn statfs(self, statfs: &Statfs) {
         self.send_ll(&ll::Response::new_statfs(
             statfs.blocks, statfs.bfree, statfs.bavail, statfs.files, statfs.ffree, statfs.bsize, statfs.namelen, statfs.frsize,
         ));
     }
 
-    /// Reply to a request with a newle created file entry and its newly open file handle
-    pub fn created(self, entry: Entry, open: Open) {
+    /// Reply to a statfs request with filesystem information or an error
+    pub fn statfs_or_err(self, result: Result<Statfs, Errno>) {
+        match result {
+            Ok(statfs) => self.statfs(&statfs),
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Reply to a request with a newly created file entry and its newly open file handle
+    pub fn created(self, entry: &Entry, open: &Open) {
         self.send_ll(&ll::Response::new_create(
             &entry.file_ttl,
             &entry.attr.into(),
@@ -396,8 +461,16 @@ impl ReplyHandler {
         ));
     }
 
+    /// Reply to a request with a newly created file entry and its newly open file handle or an error
+    pub fn created_or_err(self, result: Result<(Entry, Open), Errno>) {
+        match result {
+            Ok((entry, open)) => self.created(&entry, &open),
+            Err(err) => self.error(err),
+        }
+    }
+
     /// Reply to a request with a file lock
-    pub fn locked(self, lock: Lock) {
+    pub fn locked(self, lock: &Lock) {
         self.send_ll(&ll::Response::new_lock(&ll::Lock{
             range: (lock.start, lock.end),
             typ: lock.typ,
@@ -405,21 +478,55 @@ impl ReplyHandler {
         }));
     }
 
+    /// Reply to a request with a file lock or an error
+    pub fn locked_or_err(self, result: Result<Lock, Errno>) {
+        match result {
+            Ok(lock) => self.locked(&lock),
+            Err(err) => self.error(err),
+        }
+    }
+
     /// Reply to a request with a bmap
     pub fn bmap(self, block: u64) {
         self.send_ll(&ll::Response::new_bmap(block));
     }
 
-    #[cfg(feature = "abi-7-11")]
-    /// Reply to a request with an ioctl
-    pub fn ioctl(self, ioctl: Ioctl) {
-        self.send_ll(&ll::Response::new_ioctl(ioctl.result, ioctl.data.as_ref()));
+    /// Reply to a request with a bmap or an error
+    pub fn bmap_or_err(self, result: Result<u64, Errno>) {
+        match result {
+            Ok(block) => self.bmap(block),
+            Err(err) => self.error(err),
+        }
     }
 
     #[cfg(feature = "abi-7-11")]
-    /// Reply to a request with a poll result
+    /// Reply to a request with an ioctl
+    pub fn ioctl(self, result: i32, data: &[u8]) {
+        self.send_ll(&ll::Response::new_ioctl(result, data));
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with an ioctl or an error
+    pub fn ioctl_or_err(self, result: Result<Ioctl, Errno>) {
+        match result {
+            Ok(ioctl) => self.ioctl(ioctl.result, &ioctl.data),
+            Err(err) => self.error(err),
+        }
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with a poll events
     pub fn poll(self, revents: u32) {
         self.send_ll(&ll::Response::new_poll(revents));
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with a poll events or an error
+    pub fn poll_or_err(self, result: Result<u32, Errno>) {
+        match result {
+            Ok(revents) => self.poll(revents),
+            Err(err) => self.error(err),
+        }
     }
 
     /// Reply to a request with a filled directory buffer
@@ -430,11 +537,11 @@ impl ReplyHandler {
         min_offset: i64,
     ) {
         let mut buf = DirentBuf::new(size);
-        // Alternatively, consider a panic if the borrow fails.
         let entries_safe_borrow = match entries_list.lock(){
             Ok(entries) => entries,
             Err(e) => {
                 log::error!("ReplyHandler::dir: Borrow Error: {e:?}");
+                // Alternatively, consider a panic if the borrow fails.
                 self.error(Errno::EIO);
                 return;
             }
@@ -461,6 +568,19 @@ impl ReplyHandler {
         self.send_ll(&buf.into());
     }
 
+    /// Reply to a request with a filled directory buffer or an error
+    pub fn dir_or_err(
+        self,
+        result: Result<DirentList, Errno>,
+        size: usize,
+        min_offset: i64,
+    ) {
+        match result {
+            Ok(entries) => self.dir(&entries, size, min_offset),
+            Err(err) => self.error(err),
+        }
+    }
+
     #[cfg(feature = "abi-7-21")]
     // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
@@ -470,11 +590,11 @@ impl ReplyHandler {
         min_offset: i64,
     ) {
         let mut buf = DirentPlusBuf::new(size);
-        // Alternatively, consider a panic if the borrow fails.
         let entries_safe_borrow = match entries_plus_list.lock(){
             Ok(entries) => entries,
             Err(e) => {
                 log::error!("ReplyHandler::dirplus: Borrow Error: {e:?}");
+                // Alternatively, consider a panic if the borrow fails.
                 self.error(Errno::EIO);
                 return;
             }
@@ -501,22 +621,44 @@ impl ReplyHandler {
         self.send_ll(&buf.into());
     }
 
-    /// Reply to a request with extended attributes.
-    pub fn xattr(self, reply: Xattr) {
-        match reply {
-            Xattr::Size(s) => self.xattr_size(s),
-            Xattr::Data(d) => self.xattr_data(d),
+    #[cfg(feature = "abi-7-21")]
+    // Reply to a request with a filled directory plus buffer or an error
+    pub fn dirplus_or_err(
+        self,
+        result: Result<DirentPlusList, Errno>,
+        size: usize,
+        min_offset: i64,
+    ) {
+        match result {
+            Ok(entries) => self.dirplus(&entries, size, min_offset),
+            Err(err) => self.error(err),
         }
     }
 
-    /// Reply to a request with the size of an xattr result.
+    /// Reply to a request with extended attribute information
+    pub fn xattr(self, reply: Xattr) {
+        match reply {
+            Xattr::Size(s) => self.xattr_size(s),
+            Xattr::Data(d) => self.xattr_data(&d),
+        }
+    }
+
+    /// Reply to a request with the size of an extended attribute
     pub fn xattr_size(self, size: u32) {
         self.send_ll(&ll::Response::new_xattr_size(size));
     }
 
-    /// Reply to a request with the data in an xattr result.
-    pub fn xattr_data(self, data: Bytes) {
-        self.send_ll(&ll::Response::new_slice(data.as_ref()));
+    /// Reply to a request with the data of an extended attribute
+    pub fn xattr_data(self, data: &[u8]) {
+        self.send_ll(&ll::Response::new_slice(data));
+    }
+
+    /// Reply to a request with extended attribute information or an error
+    pub fn xattr_or_err(self, result: Result<Xattr, Errno>) {
+        match result {
+            Ok(xattr) => self.xattr(xattr),
+            Err(err) => self.error(err),
+        }
     }
 
     #[cfg(feature = "abi-7-24")]
@@ -525,8 +667,16 @@ impl ReplyHandler {
         self.send_ll(&ll::Response::new_lseek(offset));
     }
 
+    /// Reply to a request with a seeked offset or an error
+    pub fn offset_or_err(self, result: Result<i64, Errno>) {
+        match result {
+            Ok(offset) => self.offset(offset),
+            Err(err) => self.error(err),
+        }
+    }
+
     /// Disable this replyhandler. No reply will be sent.
-    pub fn no_reply(mut self) {
+    pub fn disable(mut self) {
         self.sender = None;
     }
 }
@@ -647,7 +797,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.data(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+        replyhandler.data(&[0xde, 0xad, 0xbe, 0xef]);
     }
 
     #[test]
@@ -735,7 +885,7 @@ mod test {
         };
         // send the test reply
         replyhandler.entry(
-            Entry {
+            &Entry {
                 ino: attr.ino,
                 generation: Some(0xaa),
                 file_ttl: ttl,
@@ -799,7 +949,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        replyhandler.attr(attr, ttl);
+        replyhandler.attr(&attr, &ttl);
     }
 
     #[test]
@@ -836,7 +986,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.opened(Open {
+        replyhandler.opened(&Open {
             fh: 0x1122,
             flags: 0x33,
             backing_id: Some(u32::from(backing_byte)),
@@ -870,7 +1020,7 @@ mod test {
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.statfs(
-            Statfs{
+            &Statfs{
                 blocks: 0x11,
                 bfree: 0x22,
                 bavail: 0x33,
@@ -953,14 +1103,14 @@ mod test {
             blksize: 0xdd,
         };
         replyhandler.created(
-            Entry {
+            &Entry {
                 ino: attr.ino,
                 generation: Some(0xaa),
                 file_ttl: ttl,
                 attr,
                 attr_ttl: ttl,
             },
-            Open {
+            &Open {
                 fh: 0xbb,
                 flags: 0x0f,
                 backing_id: Some(u32::from(backing_byte)),
@@ -978,7 +1128,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.locked(Lock {
+        replyhandler.locked(&Lock {
             start: 0x11,
             end: 0x22,
             typ: 0x33,
@@ -1027,7 +1177,7 @@ mod test {
         );
         replyhandler.dir(&entries.into(), std::mem::size_of::<u8>()*128, 0);
     }
-    
+
     #[test]
     #[cfg(feature = "abi-7-24")]
     fn reply_directory_plus() {

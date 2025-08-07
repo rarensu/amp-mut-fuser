@@ -1,5 +1,7 @@
+use bytes::Bytes;
 use libc::c_int;
 use std::convert::AsRef;
+use zerocopy::IntoBytes;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 #[cfg(feature = "abi-7-40")]
@@ -8,9 +10,13 @@ use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
-
-use crate::{FileAttr, FileType};
-
+#[cfg(target_os = "macos")]
+use crate::XTimes;
+use crate::{
+    ll::reply::{fuse_attr_from_attr, mode_from_kind_and_perm, EntListBuf, Response}, reply::ReplyHandler,
+    Entry, Errno, FileAttr, FileType, Open, Ioctl, Statfs, Lock
+};
+#[cfg(feature = "abi-7-40")]
 use super::BackingId;
 
 /* ------ Err ------ */
@@ -19,6 +25,15 @@ use super::BackingId;
 pub trait CallbackErr: Debug {
     /// Reply to a request with the given error code
     fn error(&mut self, err: c_int);
+}
+
+/// Legacy callback handler for any Reply
+impl CallbackErr for Option<ReplyHandler> {
+    fn error(&mut self, err: c_int){
+        if let Some(handler) = self.take() {
+            handler.error(Errno::from_i32(err));
+        }
+    }
 }
 
 macro_rules! default_error {
@@ -38,7 +53,16 @@ pub trait CallbackOk: CallbackErr {
     fn ok(&mut self);
 }
 
-/// Callback for operations that respond Ok
+/// Legacy callback handler for ReplyEmpty
+impl CallbackOk for Option<ReplyHandler> {
+    fn ok(&mut self) {
+        if let Some(handler) = self.take() {
+            handler.ok();
+        }        
+    }
+}
+
+/// Callback container for operations that respond Ok
 #[derive(Debug)]
 pub struct ReplyEmpty {
     handler: Box<dyn CallbackOk>
@@ -64,7 +88,16 @@ pub trait CallbackData: CallbackErr {
     fn data(&mut self, data: &[u8]);
 }
 
-/// Callback for operations that respond with Bytes
+/// Legacy callback handler for ReplyData
+impl CallbackData for Option<ReplyHandler> {
+    fn data(&mut self, data: &[u8]) {
+        if let Some(handler) = self.take() {
+            handler.data(data);
+        }        
+    }
+}
+
+/// Callback container for operations that respond with Bytes
 #[derive(Debug)]
 pub struct ReplyData {
     handler: Box<dyn CallbackData>
@@ -89,7 +122,22 @@ pub trait CallbackEntry: CallbackErr {
     fn entry(&mut self, ttl: &Duration, attr: &FileAttr, generation: u64);
 }
 
-/// Callback for operations that respond with file information
+/// Legacy callback handler for ReplyEntry
+impl CallbackEntry for Option<ReplyHandler> {
+    fn entry(&mut self, ttl: &Duration, attr: &FileAttr, generation: u64) {
+        if let Some(handler) = self.take() {
+            handler.entry(&Entry{
+                ino: attr.ino,
+                generation: Some(generation),
+                file_ttl: *ttl,
+                attr: *attr,
+                attr_ttl: *ttl,
+            });
+        }        
+    }
+}
+
+/// Callback container for operations that respond with file information
 #[derive(Debug)]
 pub struct ReplyEntry {
     handler: Box<dyn CallbackEntry>
@@ -115,7 +163,16 @@ pub trait CallbackAttr: CallbackErr {
     fn attr(&mut self, ttl: &Duration, attr: &FileAttr);
 }
 
-/// Callback for operations that respond with file attributes
+/// Legacy callback handler for ReplyAttr
+impl CallbackAttr for Option<ReplyHandler> {
+    fn attr(&mut self, ttl: &Duration, attr: &FileAttr) {
+        if let Some(handler) = self.take() {
+            handler.attr(attr, ttl);
+        }        
+    }
+}
+
+/// Callback container for operations that respond with file attributes
 #[derive(Debug)]
 pub struct ReplyAttr {
     handler: Box<dyn CallbackAttr>
@@ -142,8 +199,17 @@ pub trait CallbackXTimes: CallbackErr {
     /// Reply to a request with the given xtimes
     fn xtimes(&mut self, bkuptime: SystemTime, crtime: SystemTime);
 }
+#[cfg(target_os = "macos")]
+/// Legacy callback handler for ReplyZ
+impl CallbackXTimes for Option<ReplyHandler> {
+    fn xtimes(&mut self, bkuptime: SystemTime, crtime: SystemTime) {
+        if let Some(handler) = self.take() {
+            handler.xtimes(XTimes{bkuptime, crtime});
+        }        
+    }
+}
 
-/// Callback for operations that respond with xtimes
+/// Callback container for operations that respond with xtimes
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub struct ReplyXTimes {
@@ -182,7 +248,26 @@ pub trait CallbackOpen: CallbackErr {
     fn open_backing(&mut self, fd: File) -> std::io::Result<BackingId>;
 }
 
-/// Callback for operations that respond with file handles
+/// Legacy callback handler for ReplyOpen
+impl CallbackOpen for Option<ReplyHandler> {
+    fn opened(&mut self, fh: u64, flags: u32) {
+        if let Some(handler) = self.take() {
+            handler.opened(&Open { fh, flags, backing_id: None });
+        }        
+    }
+    #[cfg(feature = "abi-7-40")]
+    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &BackingId){
+        if let Some(handler) = self.take() {
+            handler.opened(&Open { fh, flags, backing_id: Some(backing_id.backing_id) });
+        }       
+    }
+    #[cfg(feature = "abi-7-40")]
+    fn open_backing(&mut self, _fd: File) -> std::io::Result<BackingId>{
+        unimplemented!("this method is not how you're meant to obtain a backing_id");
+    }
+}
+
+/// Callback container for operations that respond with file handles
 #[derive(Debug)]
 pub struct ReplyOpen {
     handler: Box<dyn CallbackOpen>
@@ -223,7 +308,16 @@ pub trait CallbackWrite: CallbackErr {
     fn written(&mut self, size: u32);
 }
 
-/// Callback for operations that respond with size of data written
+/// Legacy callback handler for ReplyZ
+impl CallbackWrite for Option<ReplyHandler> {
+    fn written(&mut self, size: u32) {
+        if let Some(handler) = self.take() {
+            handler.written(size);
+        }        
+    }
+}
+
+/// Callback container for operations that respond with size of data written
 #[derive(Debug)]
 pub struct ReplyWrite {
     handler: Box<dyn CallbackWrite>
@@ -260,7 +354,35 @@ pub trait CallbackStatfs: CallbackErr {
     );
 }
 
-/// Callback for operations that respond with filesystem information
+/// Legacy callback handler for ReplyStatfs
+impl CallbackStatfs for Option<ReplyHandler> {
+    fn statfs(
+        &mut self,
+        blocks: u64,
+        bfree: u64,
+        bavail: u64,
+        files: u64,
+        ffree: u64,
+        bsize: u32,
+        namelen: u32,
+        frsize: u32,
+    ) {
+        if let Some(handler) = self.take() {
+            handler.statfs(&Statfs{
+                blocks,
+                bfree,
+                bavail,
+                files,
+                ffree,
+                bsize,
+                namelen,
+                frsize,
+            });
+        }        
+    }
+}
+
+/// Callback container for operations that respond with filesystem information
 #[derive(Debug)]
 pub struct ReplyStatfs {
     handler: Box<dyn CallbackStatfs>
@@ -297,7 +419,25 @@ pub trait CallbackCreate: CallbackErr {
     fn created(&mut self, ttl: &Duration, attr: &FileAttr, generation: u64, fh: u64, flags: u32);
 }
 
-/// Callback for operations that respond with file handles and file information
+/// Legacy callback handler for ReplyCreate
+impl CallbackCreate for Option<ReplyHandler> {
+    fn created(&mut self, ttl: &Duration, attr: &FileAttr, generation: u64, fh: u64, flags: u32) {
+        if let Some(handler) = self.take() {
+            handler.created(
+                &Entry{
+                    ino: attr.ino,
+                    generation: Some(generation),
+                    file_ttl: *ttl,
+                    attr: *attr,
+                    attr_ttl: *ttl,
+                },
+                &Open { fh, flags, backing_id: None }
+            );
+        }        
+    }
+}
+
+/// Callback container for operations that respond with file handles and file information
 #[derive(Debug)]
 pub struct ReplyCreate {
     handler: Box<dyn CallbackCreate>
@@ -323,7 +463,16 @@ pub trait CallbackLock: CallbackErr {
     fn locked(&mut self, start: u64, end: u64, typ: i32, pid: u32);
 }
 
-/// Callback for operations that respond with file locks
+/// Legacy callback handler for ReplyLock
+impl CallbackLock for Option<ReplyHandler> {
+    fn locked(&mut self, start: u64, end: u64, typ: i32, pid: u32) {
+        if let Some(handler) = self.take() {
+            handler.locked(&Lock{start, end, typ, pid});
+        }        
+    }
+}
+
+/// Callback container for operations that respond with file locks
 #[derive(Debug)]
 pub struct ReplyLock {
     handler: Box<dyn CallbackLock>
@@ -349,7 +498,16 @@ pub trait CallbackBmap: CallbackErr {
     fn bmap(&mut self, block: u64);
 }
 
-/// Callback for operations that respond with bmap blocks
+/// Legacy callback handler for ReplyBmap
+impl CallbackBmap for Option<ReplyHandler> {
+    fn bmap(&mut self, block: u64) {
+        if let Some(handler) = self.take() {
+            handler.bmap(block);
+        }        
+    }
+}
+
+/// Callback container for operations that respond with bmap blocks
 #[derive(Debug)]
 pub struct ReplyBmap {
     handler: Box<dyn CallbackBmap>
@@ -375,7 +533,19 @@ pub trait CallbackIoctl: CallbackErr {
     fn ioctl(&mut self, result: i32, data: &[u8]);
 }
 
-/// Callback for operations that respond with ioctl data
+/// Legacy callback handler for ReplyIoctl
+impl CallbackIoctl for Option<ReplyHandler> {
+    fn ioctl(&mut self, result: i32, data: &[u8]) {
+        if let Some(handler) = self.take() {
+            handler.ioctl(
+                result,
+                data,
+            );
+        }        
+    }
+}
+
+/// Callback container for operations that respond with ioctl data
 #[derive(Debug)]
 pub struct ReplyIoctl {
     handler: Box<dyn CallbackIoctl>
@@ -401,7 +571,16 @@ pub trait CallbackPoll: CallbackErr {
     fn poll(&mut self, revents: u32);
 }
 
-/// Callback for operations that respond with poll events
+/// Legacy callback handler for ReplyPoll
+impl CallbackPoll for Option<ReplyHandler> {
+    fn poll(&mut self, revents: u32) {
+        if let Some(handler) = self.take() {
+            handler.poll(revents);
+        }        
+    }
+}
+
+/// Callback container for operations that respond with poll events
 #[derive(Debug)]
 pub struct ReplyPoll {
     handler: Box<dyn CallbackPoll>
@@ -433,7 +612,61 @@ pub trait CallbackDirectory: CallbackErr {
     fn ok(&mut self);
 }
 
-/// Callback for operations that respond with directory entries
+/// Legacy callback handler for ReplyDirectory
+#[derive(Debug)]
+pub(crate) struct DirectoryHandler {
+    buf: Option<EntListBuf>,
+    handler: Option<ReplyHandler>,
+}
+impl DirectoryHandler {
+    pub fn new(max_size: usize, handler: ReplyHandler) -> Self {
+        DirectoryHandler {
+            buf: Some(EntListBuf::new(max_size)),
+            handler: Some(handler),
+        }
+    }
+}
+impl CallbackErr for DirectoryHandler {
+    fn error(&mut self, err: c_int) {
+        if let Some(handler) = self.handler.take() {
+            handler.error(Errno::from_i32(err));
+        }
+    }
+}
+impl CallbackDirectory for DirectoryHandler {
+    fn add(&mut self, ino: u64, offset: i64, kind: FileType, name: &OsStr) -> bool {
+        if let Some(mut buf) = self.buf.take() {
+            let namelen = match name.len().try_into() {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!("Directory entry name too long or {e:?}");
+                    log::error!("{:?}", name);
+                    return true;
+                }
+            };
+            let header = crate::ll::fuse_abi::fuse_dirent {
+                ino,
+                off: offset,
+                namelen,
+                typ: mode_from_kind_and_perm(kind, 0) >> 12,
+            };
+            let res = buf.push([header.as_bytes(), name.as_encoded_bytes()]);
+            self.buf = Some(buf);
+            res
+        } else {
+            true
+        }
+    }
+    fn ok(&mut self){
+        if let Some(handler) = self.handler.take() {
+            if let Some(buf) = self.buf.take() {
+                handler.send_ll(&Response::new_directory(buf));
+            }
+        }
+    }
+}
+
+/// Callback container for operations that respond with directory entries
 #[derive(Debug)]
 pub struct ReplyDirectory {
     handler: Box<dyn CallbackDirectory>
@@ -461,6 +694,7 @@ impl ReplyDirectory {
 /* ------ DirentPlusList ------ */
 
 /// Custom callback handler for ReplyDirectoryPlus
+#[cfg(feature = "abi-7-21")]
 pub trait CallbackDirectoryPlus: CallbackErr {
     /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
     /// A transparent offset value can be provided for each entry. The kernel uses these
@@ -479,12 +713,90 @@ pub trait CallbackDirectoryPlus: CallbackErr {
     fn ok(&mut self);
 }
 
-/// Callback for operations that respond with director entries and file information
+/// Legacy callback handler for ReplyDirectory
+#[derive(Debug)]
+#[cfg(feature = "abi-7-21")]
+pub(crate) struct DirectoryPlusHandler {
+    buf: Option<EntListBuf>,
+    handler: Option<ReplyHandler>,
+}
+#[cfg(feature = "abi-7-21")]
+impl DirectoryPlusHandler {
+    pub fn new(max_size: usize, handler: ReplyHandler) -> Self {
+        DirectoryPlusHandler {
+            buf: Some(EntListBuf::new(max_size)),
+            handler: Some(handler),
+        }
+    }
+}
+#[cfg(feature = "abi-7-21")]
+impl CallbackErr for DirectoryPlusHandler {
+    fn error(&mut self, err: c_int) {
+        if let Some(handler) = self.handler.take() {
+            handler.error(Errno::from_i32(err));
+        }
+    }
+}
+#[cfg(feature = "abi-7-21")]
+impl CallbackDirectoryPlus for DirectoryPlusHandler {
+    fn add(
+        &mut self,
+        ino: u64,
+        offset: i64,
+        name: &OsStr,
+        ttl: &Duration,
+        attr: &FileAttr,
+        generation: u64,
+    ) -> bool {
+        if let Some(mut buf) = self.buf.take() {
+            let namelen = match name.len().try_into() {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!("Directory entry name too long or {e:?}");
+                    log::error!("{:?}", name);
+                    return true;
+                }
+            };
+            let header = crate::ll::fuse_abi::fuse_direntplus {
+                entry_out: crate::ll::fuse_abi::fuse_entry_out {
+                    nodeid: ino,
+                    generation,
+                    entry_valid: ttl.as_secs(),
+                    attr_valid: ttl.as_secs(),
+                    entry_valid_nsec: ttl.subsec_nanos(),
+                    attr_valid_nsec: ttl.subsec_nanos(),
+                    attr: fuse_attr_from_attr(attr)
+                },
+                dirent: crate::ll::fuse_abi::fuse_dirent {
+                    ino,
+                    off: offset,
+                    namelen,
+                    typ: mode_from_kind_and_perm(attr.kind, 0) >> 12,
+                }
+            };
+            let res = buf.push([header.as_bytes(), name.as_encoded_bytes()]);
+            self.buf = Some(buf);
+            res
+        } else {
+            true
+        }
+    }
+    fn ok(&mut self){
+        if let Some(handler) = self.handler.take() {
+            if let Some(buf) = self.buf.take() {
+                handler.send_ll(&Response::new_directory(buf));
+            }
+        }
+    }
+}
+
+/// Callback container for operations that respond with director entries and file information
+#[cfg(feature = "abi-7-21")]
 #[derive(Debug)]
 pub struct ReplyDirectoryPlus {
     handler: Box<dyn CallbackDirectoryPlus>
 }
-
+#[cfg(feature = "abi-7-21")]
 impl ReplyDirectoryPlus {
     /// Create a ReplyDirectoryPlus from the given boxed CallbackDirectoryPlus.
     pub fn new(handler: Box<dyn CallbackDirectoryPlus>) -> Self {
@@ -522,7 +834,21 @@ pub trait CallbackXattr: CallbackErr {
     fn data(&mut self, data: &[u8]);
 }
 
-/// Callback for operations that respond with extended file attributes
+/// Legacy callback handler for ReplyXattr
+impl CallbackXattr for Option<ReplyHandler> {
+    fn size(&mut self, size: u32) {
+        if let Some(handler) = self.take() {
+            handler.xattr_size(size);
+        }
+    }
+    fn data(&mut self, data: &[u8]) {
+        if let Some(handler) = self.take() {
+            handler.xattr_data(data);
+        }
+    }
+}
+
+/// Callback container for operations that respond with extended file attributes
 #[derive(Debug)]
 pub struct ReplyXattr {
     handler: Box<dyn CallbackXattr>
@@ -546,18 +872,32 @@ impl ReplyXattr {
 
 /* ------ Lseek ------ */
 
+
 /// Custom callback handler for ReplyLseek
+#[cfg(feature = "abi-7-24")]
 pub trait CallbackLseek: CallbackErr {
     /// Reply to a request with the given offset
     fn offset(&mut self, offset: i64);
 }
 
-/// Callback for operations that respond with file offsets
+/// Legacy callback handler for ReplyLseek
+#[cfg(feature = "abi-7-24")]
+impl CallbackLseek for Option<ReplyHandler> {
+    fn offset(&mut self, offset: i64) {
+        if let Some(handler) = self.take() {
+            handler.offset(offset);
+        }
+    }
+}
+
+/// Callback container for operations that respond with file offsets
 #[derive(Debug)]
+#[cfg(feature = "abi-7-24")]
 pub struct ReplyLseek {
     handler: Box<dyn CallbackLseek>
 }
 
+#[cfg(feature = "abi-7-24")]
 impl ReplyLseek {
     /// Create a ReplyLseek from the given boxed CallbackLseek.
     pub fn new(handler: Box<dyn CallbackLseek>) -> Self {

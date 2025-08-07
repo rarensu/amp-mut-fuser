@@ -22,13 +22,13 @@ use crate::{ll, Forget, KernelConfig};
 
 /// Request data structure
 #[derive(Debug)]
-pub struct RequestHandler {
+pub(crate) struct RequestHandler {
     /// Parsed request
-    request: ll::AnyRequest,
+    pub request: ll::AnyRequest,
     /// Request metadata
     pub meta: RequestMeta,
     /// Closure-like object to guarantee a response is sent
-    replyhandler: ReplyHandler,
+    pub replyhandler: ReplyHandler,
 }
 
 /// Request metadata structure
@@ -226,19 +226,12 @@ impl RequestHandler {
             }
 
             ll::Operation::Lookup(x) => {
-                let response = fs.lookup(
+                let result = fs.lookup(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name()
                 ).await;
-                match response {
-                    Ok(entry) => {
-                        self.replyhandler.entry(entry);
-                    },
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.entry_or_err(result);
             }
             ll::Operation::Forget(x) => {
                 let target = Forget {
@@ -246,33 +239,26 @@ impl RequestHandler {
                     nlookup: x.nlookup(),
                 };
                 fs.forget(self.meta, target).await; // no response
-                self.replyhandler.no_reply(); // no reply
+                self.replyhandler.disable(); // no reply
             }
             ll::Operation::GetAttr(_attr) => {
                 #[cfg(feature = "abi-7-9")]
-                let response = fs.getattr(
+                let result = fs.getattr(
                     self.meta,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into)
                 ).await;
                 // Pre-abi-7-9 does not support providing a file handle.
                 #[cfg(not(feature = "abi-7-9"))]
-                let response = fs.getattr(
+                let result = fs.getattr(
                     self.meta,
                     self.request.nodeid().into(),
                     None,
                 ).await;
-                match response {
-                    Ok((attr,ttl))=> {
-                        self.replyhandler.attr(attr, ttl);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.attr_or_err(result);
             }
             ll::Operation::SetAttr(x) => {
-                let response = fs.setattr(
+                let result = fs.setattr(
                     self.meta,
                     self.request.nodeid().into(),
                     x.mode(),
@@ -288,31 +274,17 @@ impl RequestHandler {
                     x.bkuptime(),
                     x.flags()
                 ).await;
-                match response {
-                    Ok((attr, ttl))=> {
-                        self.replyhandler.attr(attr, ttl);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.attr_or_err(result);
             }
             ll::Operation::ReadLink(_) => {
-                let response = fs.readlink(
+                let result = fs.readlink(
                     self.meta,
-                     self.request.nodeid().into()
+                    self.request.nodeid().into()
                 ).await;
-                match response {
-                    Ok(data)=> {
-                        self.replyhandler.data(data);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.data_or_err(result);
             }
             ll::Operation::MkNod(x) => {
-                let response = fs.mknod(
+                let result = fs.mknod(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
@@ -320,80 +292,45 @@ impl RequestHandler {
                     x.umask(),
                     x.rdev()
                 ).await;
-                match response {
-                    Ok(entry)=> {
-                        self.replyhandler.entry(entry);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.entry_or_err(result);
             }
             ll::Operation::MkDir(x) => {
-                let response = fs.mkdir(
+                let result = fs.mkdir(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
                     x.mode(),
                     x.umask()
                 ).await;
-                match response {
-                    Ok(entry)=> {
-                        self.replyhandler.entry(entry);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.entry_or_err(result);
             }
             ll::Operation::Unlink(x) => {
-                let response = fs.unlink(
+                let result = fs.unlink(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::RmDir(x) => {
-                let response = fs.rmdir(
+                let result = fs.rmdir(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::SymLink(x) => {
-                let response = fs.symlink(
+                let result = fs.symlink(
                     self.meta,
                     self.request.nodeid().into(),
                     x.link_name(),
                     x.target()
                 ).await;
-                match response {
-                    Ok(entry)=> {
-                        self.replyhandler.entry(entry);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.entry_or_err(result);
             }
             ll::Operation::Rename(x) => {
-                let response = fs.rename(
+                let result = fs.rename(
                     self.meta,
                     self.request.nodeid().into(),
                     x.src().name,
@@ -401,48 +338,27 @@ impl RequestHandler {
                     x.dest().name,
                     0
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::Link(x) => {
-                let response = fs.link(
+                let result = fs.link(
                     self.meta,
                     x.inode_no().into(),
                     self.request.nodeid().into(),
                     x.dest().name
                 ).await;
-                match response {
-                    Ok(entry)=> {
-                        self.replyhandler.entry(entry);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.entry_or_err(result);
             }
             ll::Operation::Open(x) => {
-                let response = fs.open(
+                let result = fs.open(
                     self.meta,
                     self.request.nodeid().into(), 
                     x.flags()
                 ).await;
-                match response {
-                    Ok(open)=> {
-                        self.replyhandler.opened(open);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.opened_or_err(result);
             }
             ll::Operation::Read(x) => {
-                let response = fs.read(
+                let result = fs.read(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -451,17 +367,10 @@ impl RequestHandler {
                     x.flags(),
                     x.lock_owner().map(Into::into)
                 ).await;
-                match response {
-                    Ok(data)=> {
-                        self.replyhandler.data(data);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.data_or_err(result);
             }
             ll::Operation::Write(x) => {
-                let response = fs.write(
+                let result = fs.write(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -471,33 +380,19 @@ impl RequestHandler {
                     x.flags(),
                     x.lock_owner().map(Into::into)
                 ).await;
-                match response {
-                    Ok(size)=> {
-                        self.replyhandler.written(size);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.written_or_err(result);
             }
             ll::Operation::Flush(x) => {
-                let response = fs.flush(
+                let result = fs.flush(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.lock_owner().into()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::Release(x) => {
-                let response = fs.release(
+                let result = fs.release(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -505,115 +400,66 @@ impl RequestHandler {
                     x.lock_owner().map(Into::into),
                     x.flush()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::FSync(x) => {
-                let response = fs.fsync(
+                let result = fs.fsync(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::OpenDir(x) => {
-                let response = fs.opendir(
+                let result = fs.opendir(
                     self.meta,
                     self.request.nodeid().into(), 
                     x.flags()
                 ).await;
-                match response {
-                    Ok(open)=> {
-                        self.replyhandler.opened(open);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.opened_or_err(result);
             }
             ll::Operation::ReadDir(x) => {
-                let response = fs.readdir(
+                let result = fs.readdir(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
                     x.size()
                 ).await;
-                match response {
-                    Ok(dirent_list)=> {
-                        self.replyhandler.dir(
-                            &dirent_list,
-                            x.size() as usize,
-                            x.offset(),
-                        );
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.dir_or_err(
+                    result,
+                    x.size() as usize,
+                    x.offset(),
+                );
             }
             ll::Operation::ReleaseDir(x) => {
-                let response = fs.releasedir(
+                let result = fs.releasedir(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.flags()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::FSyncDir(x) => {
-                let response = fs.fsyncdir(
+                let result = fs.fsyncdir(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::StatFs(_) => {
-                let response = fs.statfs(
+                let result = fs.statfs(
                     self.meta,
                     self.request.nodeid().into()
                 ).await;
-                match response {
-                    Ok(statfs)=> {
-                        self.replyhandler.statfs(statfs);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.statfs_or_err(result);
             }
             ll::Operation::SetXAttr(x) => {
-                let response = fs.setxattr(
+                let result = fs.setxattr(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
@@ -621,78 +467,43 @@ impl RequestHandler {
                     x.flags(),
                     x.position()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::GetXAttr(x) => {
-                let response = fs.getxattr(
+                let result = fs.getxattr(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
                     x.size_u32()
                 ).await;
-                match response {
-                    Ok(xattr)=> {
-                        self.replyhandler.xattr(xattr);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.xattr_or_err(result);
             }
             ll::Operation::ListXAttr(x) => {
-                let response = fs.listxattr(
+                let result = fs.listxattr(
                     self.meta,
                     self.request.nodeid().into(),
                     x.size()
                 ).await;
-                match response {
-                    Ok(xattr)=> {
-                        self.replyhandler.xattr(xattr);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.xattr_or_err(result);
             }
             ll::Operation::RemoveXAttr(x) => {
-                let response = fs.removexattr(
+                let result = fs.removexattr(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::Access(x) => {
-                let response = fs.access(
+                let result = fs.access(
                     self.meta,
                     self.request.nodeid().into(),
                     x.mask()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::Create(x) => {
-                let response = fs.create(
+                let result = fs.create(
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
@@ -700,17 +511,10 @@ impl RequestHandler {
                     x.umask(),
                     x.flags()
                 ).await;
-                match response {
-                    Ok((entry, open))=> {
-                        self.replyhandler.created(entry, open);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.created_or_err(result);
             }
             ll::Operation::GetLk(x) => {
-                let response = fs.getlk(
+                let result = fs.getlk(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -720,17 +524,10 @@ impl RequestHandler {
                     x.lock().typ,
                     x.lock().pid
                 ).await;
-                match response {
-                    Ok(lock)=> {
-                        self.replyhandler.locked(lock);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.locked_or_err(result);
             }
             ll::Operation::SetLk(x) => {
-                let response = fs.setlk(
+                let result = fs.setlk(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -741,17 +538,10 @@ impl RequestHandler {
                     x.lock().pid,
                     false
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::SetLkW(x) => {
-                let response = fs.setlk(
+                let result = fs.setlk(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -762,30 +552,16 @@ impl RequestHandler {
                     x.lock().pid,
                     true
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             ll::Operation::BMap(x) => {
-                let response = fs.bmap(
+                let result = fs.bmap(
                     self.meta,
                     self.request.nodeid().into(),
                     x.block_size(),
                     x.block()
                 ).await;
-                match response {
-                    Ok(block)=> {
-                        self.replyhandler.bmap(block);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.bmap_or_err(result);
             }
 
             #[cfg(feature = "abi-7-11")]
@@ -793,7 +569,7 @@ impl RequestHandler {
                 if x.unrestricted() {
                     self.replyhandler.error(Errno::ENOSYS);
                 } else {
-                    let response = fs.ioctl(
+                    let result = fs.ioctl(
                         self.meta,
                         self.request.nodeid().into(),
                         x.file_handle().into(),
@@ -802,19 +578,12 @@ impl RequestHandler {
                         x.in_data(),
                         x.out_size()
                     ).await;
-                    match response {
-                        Ok(ioctl)=> {
-                            self.replyhandler.ioctl(ioctl);
-                        }
-                        Err(err)=> {
-                            self.replyhandler.error(err);
-                        }
-                    }
+                    self.replyhandler.ioctl_or_err(result);
                 }
             }
             #[cfg(feature = "abi-7-11")]
             ll::Operation::Poll(x) => {
-                let response = fs.poll(
+                let result = fs.poll(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -822,14 +591,7 @@ impl RequestHandler {
                     x.events(),
                     x.flags()
                 ).await;
-                match response {
-                    Ok(ready_events)=> {
-                        self.replyhandler.poll(ready_events);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.poll_or_err(result);
             }
             #[cfg(feature = "abi-7-15")]
             ll::Operation::NotifyReply(_) => {
@@ -839,11 +601,11 @@ impl RequestHandler {
             #[cfg(feature = "abi-7-16")]
             ll::Operation::BatchForget(x) => {
                 fs.batch_forget(self.meta, x.into()).await; // no response
-                self.replyhandler.no_reply(); // no reply
+                self.replyhandler.disable(); // no reply
             }
             #[cfg(feature = "abi-7-19")]
             ll::Operation::FAllocate(x) => {
-                let response = fs.fallocate(
+                let result = fs.fallocate(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
@@ -851,40 +613,26 @@ impl RequestHandler {
                     x.len(),
                     x.mode()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             #[cfg(feature = "abi-7-21")]
             ll::Operation::ReadDirPlus(x) => {
-                let response = fs.readdirplus(
+                let result = fs.readdirplus(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
                     x.size()
                 ).await;
-                match response {
-                    Ok(dirent_plus_list)=> {
-                        self.replyhandler.dirplus(
-                            &dirent_plus_list,
-                            x.size() as usize,
-                            x.offset()
-                        );
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.dirplus_or_err(
+                    result,
+                    x.size() as usize,
+                    x.offset()
+                );
             }
             #[cfg(feature = "abi-7-23")]
             ll::Operation::Rename2(x) => {
-                let response = fs.rename(
+                let result = fs.rename(
                     self.meta,
                     x.from().dir.into(),
                     x.from().name,
@@ -892,37 +640,23 @@ impl RequestHandler {
                     x.to().name,
                     x.flags()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok();
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             #[cfg(feature = "abi-7-24")]
             ll::Operation::Lseek(x) => {
-                let response = fs.lseek(
+                let result = fs.lseek(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
                     x.whence()
                 ).await;
-                match response {
-                    Ok(offset)=> {
-                        self.replyhandler.offset(offset);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.offset_or_err(result);
             }
             #[cfg(feature = "abi-7-28")]
             ll::Operation::CopyFileRange(x) => {
                 let (i, o) = (x.src(), x.dest());
-                let response = fs.copy_file_range(
+                let result = fs.copy_file_range(
                     self.meta,
                     i.inode.into(),
                     i.file_handle.into(),
@@ -933,48 +667,27 @@ impl RequestHandler {
                     x.len(),
                     x.flags().try_into().unwrap()
                 ).await;
-                match response {
-                    Ok(written)=> {
-                        self.replyhandler.written(written);
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err);
-                    }
-                }
+                self.replyhandler.written_or_err(result);
             }
             #[cfg(target_os = "macos")]
             ll::Operation::SetVolName(x) => {
-                let response = fs.setvolname(
+                let result = fs.setvolname(
                     self.meta,
                     x.name()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok()
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err)
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
             #[cfg(target_os = "macos")]
             ll::Operation::GetXTimes(x) => {
-                let response = fs.getxtimes(
+                let result = fs.getxtimes(
                     self.meta,
                     x.nodeid().into()
                 ).await;
-                match response {
-                    Ok(xtimes)=> {
-                        self.replyhandler.xtimes(xtimes)
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err)
-                    }
-                }
+                self.replyhandler.xtimes_or_err(result);
             }
             #[cfg(target_os = "macos")]
             ll::Operation::Exchange(x) => {
-                let response = fs.exchange(
+                let result = fs.exchange(
                     self.meta,
                     x.from().dir.into(),
                     x.from().name,
@@ -982,14 +695,7 @@ impl RequestHandler {
                     x.to().name,
                     x.options()
                 ).await;
-                match response {
-                    Ok(())=> {
-                        self.replyhandler.ok()
-                    }
-                    Err(err)=> {
-                        self.replyhandler.error(err)
-                    }
-                }
+                self.replyhandler.ok_or_err(result);
             }
 
             #[cfg(feature = "abi-7-12")]
