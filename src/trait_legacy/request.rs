@@ -26,7 +26,6 @@ use crate::session::{SessionMeta, SessionACL};
 use crate::request::RequestHandler;
 use crate::ll::request::Request as RequestTrait;
 use crate::ll::{self, Operation};
-use std::sync::{Arc, Mutex};
 #[allow(unused_imports)]
 use log::{error, warn, info, debug};
 
@@ -74,7 +73,7 @@ impl RequestHandler {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: Arc<Mutex<SessionMeta>>) {
+    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &mut SessionMeta) {
         debug!("{}", self.request);
         let op_result = self.request.operation().map_err(|_| Errno::ENOSYS);
 
@@ -85,59 +84,36 @@ impl RequestHandler {
         let op = op_result.unwrap();
 
         // Implement allow_root & access check for auto_unmount
-        let access_denied = false; 
+        let access_denied = if (se_meta.allowed == SessionACL::RootAndOwner
+            && self.request.uid() != se_meta.session_owner
+            && self.request.uid() != 0)
+            || (se_meta.allowed == SessionACL::Owner && self.request.uid() != se_meta.session_owner)
         {
-            match se_meta.lock() {
-                Ok(meta) => {
-                    if (meta.allowed == SessionACL::RootAndOwner
-                        && self.request.uid() != meta.session_owner
-                        && self.request.uid() != 0)
-                        || (meta.allowed == SessionACL::Owner && self.request.uid() != meta.session_owner)
-                    {
-                        match op {
-                            // Only allow operations that the kernel may issue without a uid set
-                            Operation::Init(_)
-                            | Operation::Destroy(_)
-                            | Operation::Read(_)
-                            | Operation::ReadDir(_)
-                            | Operation::Forget(_)
-                            | Operation::Write(_)
-                            | Operation::FSync(_)
-                            | Operation::FSyncDir(_)
-                            | Operation::Release(_)
-                            | Operation::ReleaseDir(_) => false,
-                            #[cfg(feature = "abi-7-16")]
-                            Operation::BatchForget(_) => false,
-                            #[cfg(feature = "abi-7-21")]
-                            Operation::ReadDirPlus(_) => false,
-                            _ => true,
-                        }
-                    } else {
-                        false
-                    };
-                }
-                Err(e) => {
-                    error!("{e:?}");
-                    self.replyhandler.error(Errno::EDEADLK);
-                    return;
-                }
+            match op {
+                // Only allow operations that the kernel may issue without a uid set
+                Operation::Init(_)
+                | Operation::Destroy(_)
+                | Operation::Read(_)
+                | Operation::ReadDir(_)
+                | Operation::Forget(_)
+                | Operation::Write(_)
+                | Operation::FSync(_)
+                | Operation::FSyncDir(_)
+                | Operation::Release(_)
+                | Operation::ReleaseDir(_) => false,
+                #[cfg(feature = "abi-7-16")]
+                Operation::BatchForget(_) => false,
+                #[cfg(feature = "abi-7-21")]
+                Operation::ReadDirPlus(_) => false,
+                _ => true,
             }
-        }
+        } else {
+            false
+        };
         if access_denied {
             self.replyhandler.error(Errno::EACCES);
             return;
         }
-        // Gathering some additional info before matching the op code
-        let (initialized, destroyed) = match se_meta.lock() {
-            Ok(meta) => {
-                (meta.initialized, meta.destroyed)
-            }
-            Err(e) => {
-                error!("{e:?}");
-                self.replyhandler.error(Errno::EDEADLK);
-                return;
-            }
-        };
         let req = Request::new(&self.meta);
         match op {
             // Filesystem initialization
@@ -150,19 +126,8 @@ impl RequestHandler {
                     return;
                 }
                 // Remember ABI version supported by kernel
-                {
-                    match se_meta.lock() {
-                        Ok(mut meta) => {
-                            meta.proto_major = v.major();
-                            meta.proto_minor = v.minor();
-                        }
-                        Err(e) => {
-                            error!("{e:?}");
-                            self.replyhandler.error(Errno::EDEADLK);
-                            return;
-                        }
-                    }
-                }
+                se_meta.proto_major = v.major();
+                se_meta.proto_minor = v.minor();
                 let mut config = KernelConfig::new(x.capabilities(), x.max_readahead());
                 // Call filesystem init method and give it a chance to 
                 // propose a different config or return an error
@@ -179,18 +144,7 @@ impl RequestHandler {
                             config.max_readahead,
                             config.max_write
                         );
-                        {
-                            match se_meta.lock() {
-                                Ok(mut meta) => {
-                                    meta.initialized = true;
-                                }
-                                Err(e) => {
-                                    error!("{e:?}");
-                                    self.replyhandler.error(Errno::EDEADLK);
-                                    return;
-                                }
-                            }
-                        }
+                        se_meta.initialized = true;
                         self.replyhandler.config(x.capabilities(), config);
                     },
                     Err(errno) => {
@@ -200,29 +154,18 @@ impl RequestHandler {
                 }
             }
             // Any operation is invalid before initialization
-            _ if !initialized => {
+            _ if !se_meta.initialized => {
                 warn!("Ignoring FUSE operation before init: {}", self.request);
                 self.replyhandler.error(Errno::EIO);
             }
             // Filesystem destroyed
             Operation::Destroy(_x) => {
                 fs.destroy();
-                {
-                    match se_meta.lock() {
-                        Ok(mut meta) => {
-                            meta.destroyed = true;
-                        }
-                        Err(e) => {
-                            error!("{e:?}");
-                            self.replyhandler.error(Errno::EDEADLK);
-                            return;
-                        }
-                    }
-                }
+                se_meta.destroyed = true;
                 self.replyhandler.ok();
             }
             // Any operation is invalid after destroy
-            _ if destroyed => {
+            _ if se_meta.destroyed => {
                 warn!("Ignoring FUSE operation after destroy: {}", self.request);
                 self.replyhandler.error(Errno::EIO);
             }
