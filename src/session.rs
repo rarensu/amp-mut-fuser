@@ -76,7 +76,7 @@ pub(crate) struct SessionMeta {
 pub struct Session<FS: Filesystem> {
     /// Filesystem operation implementations
     pub(crate) filesystem: Arc<FS>,
-    /// Communication channel to the kernel driver
+    /// Communication channels to the kernel fuse driver
     pub(crate) chs: Vec<Channel>,
     /// Handle to the mount.  Dropping this unmounts.
     mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
