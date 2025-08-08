@@ -11,6 +11,7 @@ use log::{debug, info, warn, error};
 use nix::unistd::geteuid;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::io;
 #[cfg(feature = "threaded")]
@@ -59,30 +60,30 @@ pub(crate) struct SessionMeta {
     /// User that launched the fuser process
     pub(crate) session_owner: u32,
     /// FUSE protocol major version
-    pub(crate) proto_major: u32,
+    pub(crate) proto_major: AtomicU32,
     /// FUSE protocol minor version
-    pub(crate) proto_minor: u32,
+    pub(crate) proto_minor: AtomicU32,
     /// True if the filesystem is initialized (init operation done)
-    pub(crate) initialized: bool,
+    pub(crate) initialized: AtomicBool,
     /// True if the filesystem was destroyed (destroy operation done)
-    pub(crate) destroyed: bool,
+    pub(crate) destroyed: AtomicBool,
     #[cfg(feature = "abi-7-11")]
     /// Whether this session currently has notification support
-    pub(crate) notify: bool,
+    pub(crate) notify: AtomicBool,
 }
 
 /// The session data structure
 #[derive(Debug)]
 pub struct Session<FS: Filesystem> {
     /// Filesystem operation implementations
-    pub(crate) filesystem: Arc<FS>,
+    pub(crate) filesystem: FS,
     /// Communication channels to the kernel fuse driver
     pub(crate) chs: Vec<Channel>,
     /// Handle to the mount.  Dropping this unmounts.
     mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Whether to restrict access to owner, root + owner, or unrestricted
     /// Used to implement `allow_root` and `auto_unmount`
-    meta: Arc<Mutex<SessionMeta>>,
+    meta: SessionMeta,
     #[cfg(feature = "abi-7-11")]
     /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
     pub(crate) ns: Sender<Notification>,
@@ -142,18 +143,18 @@ impl<FS: Filesystem + 'static> Session<FS> {
         let meta = SessionMeta {
             allowed,
             session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
+            proto_major: AtomicU32::new(0),
+            proto_minor: AtomicU32::new(0),
+            initialized: AtomicBool::new(false),
+            destroyed: AtomicBool::new(false),
             #[cfg(feature = "abi-7-11")]
-            notify,
+            notify: AtomicBool::new(notify),
         };
         let new_session = Session {
-            filesystem: Arc::new(filesystem),
+            filesystem,
             chs: vec![ch],
             mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
-            meta: Arc::new(Mutex::new(meta)),
+            meta,
             #[cfg(feature = "abi-7-11")]
             ns,
             #[cfg(feature = "abi-7-11")]
@@ -178,18 +179,18 @@ impl<FS: Filesystem + 'static> Session<FS> {
         let meta = SessionMeta {
             allowed: acl,
             session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
+            proto_major: AtomicU32::new(0),
+            proto_minor: AtomicU32::new(0),
+            initialized: AtomicBool::new(false),
+            destroyed: AtomicBool::new(false),
             #[cfg(feature = "abi-7-11")]
-            notify,
+            notify: AtomicBool::new(notify),
         };
         Session {
-            filesystem: Arc::new(filesystem),
+            filesystem,
             chs: vec![ch],
             mount: Arc::new(Mutex::new(None)),
-            meta: Arc::new(Mutex::new(meta)),
+            meta,
             #[cfg(feature = "abi-7-11")]
             ns,
             #[cfg(feature = "abi-7-11")]
@@ -330,7 +331,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
                         // Dispatch request
                         Some(req) => {
                             debug!("Request {} on channel {channel_id}.", req.meta.unique);
-                            req.dispatch(se.filesystem.clone(), se.meta.clone()).await
+                            req.dispatch_async(&se.filesystem, &se.meta).await
                         },
                         // Quit loop on illegal request
                         None => break,
@@ -362,14 +363,9 @@ impl<FS: Filesystem + 'static> Session<FS> {
         info!("Starting notification loop on channel {channel_id} with fd {}", &sender.raw_fd);
         let notifier = Notifier::new(sender);
         loop {
-            let notify = match se.meta.lock() {
-                Ok(meta) => meta.notify,
-                Err(e) => {
-                    error!("Notification loop on channel {channel_id}: {e:?}");
-                    break;
-                }
-            };
-            if notify {
+            if se.meta.destroyed.load(Relaxed) {
+                break;
+            } else if se.meta.notify.load(Relaxed) {
                 if !Session::handle_one_notification(&se, &notifier, channel_id).await? {
                     // If no more notifications, 
                     // sleep to make sure that other tasks get attention.
@@ -423,15 +419,8 @@ impl<FS: Filesystem + 'static> Session<FS> {
             let mut work_done = false;
             // Check for outgoing Notifications (non-blocking)
             #[cfg(feature = "abi-7-11")]
-            let notify = match se.meta.lock() {
-                Ok(meta) => meta.notify,
-                Err(_) => {
-                    // TODO: something smarter than this
-                    false
-                }
-            };
-            #[cfg(feature = "abi-7-11")]
-            if notify {
+            if se.meta.notify.load(Relaxed) {
+                // Note: this seems useless
                 match se.chs[channel_id].ready_write() {
                     Err(err) => {
                         if err.raw_os_error() == Some(EINTR) {
@@ -480,10 +469,8 @@ impl<FS: Filesystem + 'static> Session<FS> {
                                 }
                                 let data = Vec::from(&buf[..size]);
                                 if let Some(req) = RequestHandler::new(sender.clone(), data) {
-                                    let fs = se.filesystem.clone();
-                                    let meta = se.meta.clone();
                                     debug!("Request {} on channel {channel_id}.", req.meta.unique);
-                                    req.dispatch(fs, meta).await;
+                                    req.dispatch_async(&se.filesystem, &se.meta).await;
                                 } else {
                                     // Illegal request, quit loop
                                     warn!("Failed to parse FUSE request, session ending.");
@@ -540,48 +527,33 @@ impl<FS: Filesystem + 'static> Session<FS> {
     }
 
     #[cfg(feature = "abi-7-11")]
-    async fn handle_one_notification(se: &Arc<Session<FS>>, notifier: &Notifier, channel_id: usize) -> io::Result<bool> {
-        let notify = match se.meta.lock() {
-            Ok(meta) => meta.notify,
-            Err(_) => {
-                // TODO: something smarter than this
-                return Ok(false);
+    async fn handle_one_notification(se: &Session<FS>, notifier: &Notifier, channel_id: usize) -> io::Result<bool> {
+        match se.nr.try_recv() {
+            Ok(notification) => {
+                debug!("Notification {:?} on channel {channel_id}", &notification.label());
+                if let Notification::Stop = notification {
+                    // Filesystem says no more notifications.
+                    info!("Disabling notifications.");
+                    se.meta.notify.store(false, Relaxed);
+                }
+                if let Err(_e) = notifier.notify(notification).await {
+                    error!("Failed to send notification.");
+                    // TODO. Decide if error is fatal. ENODEV might mean unmounted.
+                }
+                Ok(true)
             }
-        };
-        if notify {
-            match se.nr.try_recv() {
-                Ok(notification) => {
-                    debug!("Notification {:?} on channel {channel_id}", &notification.label());
-                    if let Notification::Stop = notification {
-                        // Filesystem says no more notifications.
-                        info!("Disabling notifications.");
-                        if let Ok(mut meta) = se.meta.lock() {
-                            meta.notify = false;
-                        }
-                    }
-                    if let Err(_e) = notifier.notify(notification).await {
-                        error!("Failed to send notification.");
-                        // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-                    }
-                    Ok(true)
-                }
-                Err(crossbeam_channel::TryRecvError::Empty) => {
-                    // No poll events pending, proceed to check FUSE FD
-                    Ok(false)
-                }
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    // Filesystem's Notification Sender disconnected.
-                    // This is not necessarily a fatal error for the session itself,
-                    // as FUSE requests can still be processed.
-                    warn!("Notification channel disconnected.");
-                    if let Ok(mut meta) = se.meta.lock() {
-                        meta.notify = false;
-                    }                    
-                    Ok(false)
-                }
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                // No poll events pending, proceed to check FUSE FD
+                Ok(false)
             }
-        } else {
-            Ok(false)
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                // Filesystem's Notification Sender disconnected.
+                // This is not necessarily a fatal error for the session itself,
+                // as FUSE requests can still be processed.
+                warn!("Notification channel disconnected.");
+                se.meta.notify.store(false, Relaxed);  
+                Ok(false)
+            }
         }
     }
 }
@@ -612,12 +584,11 @@ impl<FS: 'static + Filesystem + Send> Session<FS> {
 
 impl<FS: Filesystem> Drop for Session<FS> {
     fn drop(&mut self) {
-        let mut meta = self.meta.lock().unwrap();
-        if !meta.destroyed {
+        if !self.meta.destroyed.load(std::sync::atomic::Ordering::Acquire) {
             futures::executor::block_on(
                 self.filesystem.destroy()
             );
-            meta.destroyed = true;
+            self.meta.destroyed.store(true, Relaxed);
         }
 
         if let Some((mountpoint, _mount)) = std::mem::take(&mut *self.mount.lock().unwrap()) {
