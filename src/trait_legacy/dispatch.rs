@@ -8,9 +8,9 @@ use crate::request::RequestHandler;
 use crate::ll::{self, Operation, request::Request as AnyRequest};
 
 use super::{Filesystem, PollHandle};
-use super::reply::DirectoryHandler;
+use super::callback::DirectoryHandler;
 #[cfg(feature = "abi-7-21")]
-use super::reply::DirectoryPlusHandler;
+use super::callback::DirectoryPlusHandler;
 use super::{
     ReplyEmpty,
     ReplyData,

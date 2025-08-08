@@ -2,12 +2,14 @@ mod filesystem;
 pub use filesystem::Filesystem;
 pub use filesystem::fuse_forget_one;
 
-mod request;
-pub use request::Request;
+mod dispatch;
+pub use dispatch::Request;
 
-mod reply;
-pub use reply::{
-    // Structs
+mod run;
+
+mod callback;
+// Structs
+pub use callback::{
     ReplyEmpty,
     ReplyData,
     ReplyEntry,
@@ -24,7 +26,11 @@ pub use reply::{
     ReplyDirectoryPlus,
     ReplyXattr,
     ReplyLseek,
-    // Traits
+};
+#[cfg(target_os = "macos")]
+pub use callback::ReplyXTimes;
+// Traits
+pub use callback::{
     CallbackErr,
     CallbackOk,
     CallbackData,
@@ -44,7 +50,7 @@ pub use reply::{
     CallbackLseek,
 };
 #[cfg(target_os = "macos")]
-pub use reply::{ReplyXTimes, CallbackXTimes};
+pub use callback::CallbackXTimes;
 
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

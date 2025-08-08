@@ -5,13 +5,12 @@
 //! filesystem is mounted, the session loop receives, dispatches and replies to kernel requests
 //! for filesystem operations under its mount point.
 
-use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
 use nix::unistd::geteuid;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::{Relaxed, Acquire}};
 use std::sync::{Arc, Mutex};
 use std::io;
 #[cfg(feature = "threaded")]
@@ -19,15 +18,16 @@ use std::thread::{self, JoinHandle};
 #[cfg(feature = "threaded")]
 use std::fmt;
 
-use crate::request::RequestHandler;
-use crate::{channel, Filesystem};
-use crate::MountOption;
+use crate::{MountOption, AnyFS};
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{Sender, Receiver};
 
+use crate::trait_legacy::Filesystem as LegacyFS;
+use crate::trait_sync::Filesystem as SyncFS;
+use crate::trait_async::Filesystem as AsyncFS;
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
@@ -36,10 +36,7 @@ pub const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Size of the buffer for reading a request from the kernel. Since the kernel may send
 /// up to `MAX_WRITE_SIZE` bytes in a write request, we use that value plus some extra space.
-const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
-
-/// This value is used to prevent a busy loop in the synchronous run with notification
-use crate::channel::SYNC_SLEEP_INTERVAL;
+pub const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
 
 #[derive(Default, Eq, PartialEq, Debug)]
 /// How requests should be filtered based on the calling UID.
@@ -74,16 +71,20 @@ pub(crate) struct SessionMeta {
 
 /// The session data structure
 #[derive(Debug)]
-pub struct Session<FS: Filesystem> {
+pub struct Session<L, S, A> where 
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS
+{
     /// Filesystem operation implementations
-    pub(crate) filesystem: FS,
+    pub(crate) filesystem: AnyFS<L, S, A>,
     /// Communication channels to the kernel fuse driver
     pub(crate) chs: Vec<Channel>,
     /// Handle to the mount.  Dropping this unmounts.
     mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Whether to restrict access to owner, root + owner, or unrestricted
     /// Used to implement `allow_root` and `auto_unmount`
-    meta: SessionMeta,
+    pub(crate) meta: SessionMeta,
     #[cfg(feature = "abi-7-11")]
     /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
     pub(crate) ns: Sender<Notification>,
@@ -92,35 +93,17 @@ pub struct Session<FS: Filesystem> {
     pub(crate) nr: Receiver<Notification>,
 }
 
-/*
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
-impl<FS: Filesystem> AsFd for Session<FS> {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.chs[0].as_borrowed() // doesn't work
-    }
-}
-*/
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-/// This enum is an optional way for the Filesystem to report its status to a Session thread.
-pub enum FsStatus {
-    /// Default may be used when the Filesystem does not implement a status
-    Default,
-    /// Ready indicates the Filesystem has no actions in progress
-    Ready,
-    /// Busy indicates the Filesytem has one or more actions in progress
-    Busy,
-    /// Stopped indicates that the Filesystem will not accept new requests
-    Stopped
-}
-
-impl<FS: Filesystem + 'static> Session<FS> {
+impl<L, S, A> Session<L, S, A> where 
+    L: LegacyFS + FilesystemExt,
+    S: SyncFS + FilesystemExt,
+    A: AsyncFS + FilesystemExt 
+{
     /// Create a new session by mounting the given filesystem to the given mountpoint
-    pub fn new<P: AsRef<Path>>(
-        filesystem: FS,
+    pub fn new_mounted<P: AsRef<Path>>(
+        filesystem: AnyFS<L, S, A>,
         mountpoint: P,
         options: &[MountOption],
-    ) -> io::Result<Session<FS>> {
+    ) -> io::Result<Session<L, S, A>> {
         let mountpoint = mountpoint.as_ref();
         info!("Mounting {}", mountpoint.display());
         // Create the channel for fuse messages
@@ -145,52 +128,28 @@ impl<FS: Filesystem + 'static> Session<FS> {
         } else {
             SessionACL::Owner
         };
-        #[cfg(feature = "abi-7-11")]
-        // Create the channel for poll events.
-        let (ns, nr) = crossbeam_channel::unbounded();
-        #[cfg(feature = "abi-7-11")]
-        // Pass the sender to the filesystem.
-        let notify = futures::executor::block_on(
-            filesystem.init_notification_sender(ns.clone())
-        );
-        let meta = SessionMeta {
-            allowed,
-            session_owner: geteuid().as_raw(),
-            proto_major: AtomicU32::new(0),
-            proto_minor: AtomicU32::new(0),
-            initialized: AtomicBool::new(false),
-            destroyed: AtomicBool::new(false),
-            #[cfg(feature = "abi-7-11")]
-            notify: AtomicBool::new(notify),
-        };
-        let new_session = Session {
-            filesystem,
-            chs: vec![ch],
-            mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
-            meta,
-            #[cfg(feature = "abi-7-11")]
-            ns,
-            #[cfg(feature = "abi-7-11")]
-            nr,
-        };
-        Ok(new_session)
+        let mount = Some((mountpoint.to_owned(), mount));
+        Ok(Session::new(filesystem, ch, allowed, mount))
     }
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
-    pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
+    pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, allowed: SessionACL) -> Self {
         // Create the channel for fuse messages
         let ch = Channel::new(fd.into());
+        Session::new(filesystem, ch, allowed, None)
+    }
+
+    /// Assemble a Session from raw parts. Not recommended for regular users. 
+    pub(crate) fn new(mut filesystem: AnyFS<L, S, A>, ch: Channel, allowed: SessionACL, mount: Option<(PathBuf, Mount)>) -> Self {
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (ns, nr) = crossbeam_channel::unbounded();
         #[cfg(feature = "abi-7-11")]
         // Pass the sender to the filesystem.
-        let notify = futures::executor::block_on(
-            filesystem.init_notification_sender(ns.clone())
-        );
+        let notify = filesystem.init_notification_sender(ns.clone());
         let meta = SessionMeta {
-            allowed: acl,
+            allowed,
             session_owner: geteuid().as_raw(),
             proto_major: AtomicU32::new(0),
             proto_minor: AtomicU32::new(0),
@@ -202,7 +161,7 @@ impl<FS: Filesystem + 'static> Session<FS> {
         Session {
             filesystem,
             chs: vec![ch],
-            mount: Arc::new(Mutex::new(None)),
+            mount: Arc::new(Mutex::new(mount)),
             meta,
             #[cfg(feature = "abi-7-11")]
             ns,
@@ -211,35 +170,18 @@ impl<FS: Filesystem + 'static> Session<FS> {
         }
     }
 
-    /// Unmount the filesystem
-    pub fn unmount(&mut self) {
-        drop(std::mem::take(&mut *self.mount.lock().unwrap()));
-    }
-
-    /// Returns a thread-safe object that can be used to unmount the Filesystem
-    pub fn unmount_callable(&mut self) -> SessionUnmounter {
-        SessionUnmounter {
-            mount: self.mount.clone(),
-        }
-    }
-
-    /// Returns an object that can be used to send notifications to the kernel
+    /// Returns an object that can be used to send notifications directly to the kernel
     #[cfg(feature = "abi-7-11")]
     pub fn notifier(&self) -> Notifier {
-        // OLD notification method
+        // Legacy notification method
         Notifier::new(self.chs[0].clone())
     }
 
-    /// Returns an object that can be used to send poll event notifications
+    /// Returns an object that can be used to queue notifications for the Session to process
     #[cfg(feature = "abi-7-11")]
     pub fn get_notification_sender(&self) -> Sender<Notification> {
-        // NEW notification method
+        // Sync/Async notification method
         self.ns.clone()
-    }
-
-    /// returns a copy of the channel associated with a specific channel id.
-    fn get_ch(&self, channel_id: usize) -> Channel {
-        self.chs[channel_id].clone()
     }
 
     /// Creates additional worker fuse file descriptors until the
@@ -264,309 +206,20 @@ impl<FS: Filesystem + 'static> Session<FS> {
         Ok(new_channels)
     }
 
-    /// Run the session loop that receives kernel requests and dispatches them to method
-    /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
-    /// having multiple buffers (which take up much memory), but the filesystem methods
-    /// may run concurrent by spawning threads.
-    pub async fn run(self) -> io::Result<()> {
-        let se = Arc::new(self);
-        Session::do_all_events(se.clone(), 0).await
+    /// returns a copy of the channel associated with a specific channel index.
+    pub(crate) fn get_ch(&self, ch_idx: usize) -> Channel {
+        self.chs[ch_idx].clone()
     }
 
-    /// Starts a number of tokio tasks each of which is an independant sequential full event and notification loop.
-    pub async fn run_concurrently_sequential_full(self) -> io::Result<()> {
-        let channel_count = self.chs.len();
-        let se = Arc::new(self);
-        let mut futures = Vec::new();
-        for channel_id in 0..(channel_count) {
-            futures.push(
-                tokio::spawn(Session::do_all_events(se.clone(), channel_id))
-            )
-        }
-        for future in futures {
-            if let Err(e) = future.await.expect("Unable to await task?") {
-                return Err(e);
-            }
-        }
-        Ok(())
+    /// Unmount the filesystem
+    pub fn unmount(&mut self) {
+        drop(std::mem::take(&mut *self.mount.lock().unwrap()));
     }
 
-    /// Starts a number of tokio tasks each of which is an independant sequential event, heartbeat, or notification loop.
-    pub async fn run_concurrently_sequential_parts(self) -> io::Result<()> {
-        let channel_count = self.chs.len();
-        let se = Arc::new(self);
-        let mut futures = Vec::new();
-        #[cfg(feature = "abi-7-11")]
-        for channel_id in (0..(channel_count)).filter(|i| i%2==0) {
-            futures.push(
-                tokio::spawn(Session::do_requests(se.clone(), channel_id))
-            );
-        }
-        for channel_id in (0..(channel_count)).filter(|i| i%2==1) {
-            #[cfg(feature = "abi-7-11")]
-            futures.push(
-                tokio::spawn(Session::do_notifications(se.clone(), channel_id))
-            );
-            #[cfg(not(feature = "abi-7-11"))]
-            futures.push(
-                tokio::spawn(Session::do_requests(se.clone(), channel_id))
-            );
-        }
-        futures.push(
-            tokio::spawn(Session::do_heartbeats(se.clone()))
-        );
-        for future in futures {
-            if let Err(e) = future.await.expect("Unable to await task?") {
-                return Err(e);
-            }
-        }
-        Ok(())
-    }
-
-
-    async fn do_requests(se: Arc<Session<FS>>, channel_id: usize) -> io::Result<()> {
-        // Buffer for receiving requests from the kernel. Only one is allocated and
-        // it is reused immediately after dispatching to conserve memory and allocations.
-        let mut buffer = vec![0; BUFFER_SIZE];
-
-        info!("Starting request loop on channel {channel_id} with fd {}", &se.chs[channel_id].raw_fd);
-        loop {
-            // Read the next request from the given channel to kernel driver
-            // The kernel driver makes sure that we get exactly one request per read
-            let (result, new_buffer) = se.chs[channel_id].receive_later(buffer).await;
-            buffer = new_buffer;
-            match result {
-                Ok(size) => {
-                    let buf = channel::aligned_sub_buf(&mut buffer, channel::FUSE_HEADER_ALIGNMENT);
-                    let data = Vec::from(&buf[..size]);
-                    buf[..size].fill(0);
-                    match RequestHandler::new(se.chs[channel_id].clone(), data) {
-                        // Dispatch request
-                        Some(req) => {
-                            debug!("Request {} on channel {channel_id}.", req.meta.unique);
-                            req.dispatch_async(&se.filesystem, &se.meta).await
-                        },
-                        // Quit loop on illegal request
-                        None => break,
-                    }
-                },
-                Err(err) => match err.raw_os_error() {
-                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                    Some(ENOENT) => continue,
-                    // Interrupted system call, retry
-                    Some(EINTR) => continue,
-                    // Explicitly try again
-                    Some(EAGAIN) => continue,
-                    // Filesystem was unmounted, quit the loop
-                    Some(ENODEV) => break,
-                    // Unhandled error
-                    _ => return Err(err),
-                },
-            }
-            // TODO: maybe add a heartbeat?
-        }
-        Ok(())
-    }
-
-    /// Run the session loop in a single thread, same as `run()`, but additionally
-    /// processing both FUSE requests and poll events without blocking.
-    #[cfg(feature = "abi-7-11")]
-    async fn do_notifications(se: Arc<Session<FS>>, channel_id: usize) -> io::Result<()> {
-        let sender = se.get_ch(channel_id);
-        info!("Starting notification loop on channel {channel_id} with fd {}", &sender.raw_fd);
-        let notifier = Notifier::new(sender);
-        loop {
-            if se.meta.destroyed.load(Relaxed) {
-                break;
-            } else if se.meta.notify.load(Relaxed) {
-                if !Session::handle_one_notification(&se, &notifier, channel_id).await? {
-                    // If no more notifications, 
-                    // sleep to make sure that other tasks get attention.
-                    tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
-                }
-            } else {
-                // TODO: await on notify instead of sleeping
-                tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
-            }
-        }
-        Ok(())
-    }
-
-    /// Run the session loop in a single thread, same as `run()`, but additionally
-    /// processing both FUSE requests and poll events without blocking.
-    async fn do_heartbeats(se: Arc<Session<FS>>) -> io::Result<()> {
-        info!("Starting heartbeat loop");
-        loop {
-            tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
-            // Do a heartbeat to let the Filesystem know that some time has passed.
-            match FS::heartbeat(&se.filesystem).await {
-                Ok(status) => {
-                    if let FsStatus::Stopped = status {
-                        break;
-                    }
-                    // TODO: handle other cases
-                }
-                Err(e) => {
-                    warn!("Heartbeat error: {e:?}");
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Run the session loop in a single thread, same as `run()`, but additionally
-    /// processing both FUSE requests and poll events without blocking.
-    async fn do_all_events(se: Arc<Session<FS>>, channel_id: usize) -> io::Result<()> {
-        // Buffer for receiving requests from the kernel
-        let mut buffer = vec![0; BUFFER_SIZE];
-        let buf = channel::aligned_sub_buf(
-            &mut buffer,
-            channel::FUSE_HEADER_ALIGNMENT,
-        );
-        let sender = se.get_ch(channel_id);
-        #[cfg(feature = "abi-7-11")]
-        let notifier = Notifier::new(se.get_ch(channel_id));
-
-        info!("Starting full task loop on channel {channel_id}");
-        loop {
-            let mut work_done = false;
-            // Check for outgoing Notifications (non-blocking)
-            #[cfg(feature = "abi-7-11")]
-            if se.meta.notify.load(Relaxed) {
-                // Note: this seems useless
-                match se.chs[channel_id].ready_write() {
-                    Err(err) => {
-                        if err.raw_os_error() == Some(EINTR) {
-                            debug!("FUSE fd connection interrupted, will retry.");
-                        } else {
-                            warn!("FUSE fd connection: {err}");
-                            // Assume very bad. Stop the run. TODO: maybe some handling.
-                            return Err(err);
-                        }
-                    }
-                    Ok(ready) => {
-                        if ready {    
-                            if Session::handle_one_notification(&se, &notifier, channel_id).await? {
-                                work_done = true;
-                            }
-                        }
-                    }
-                }
-            }
-            if work_done {
-                // skip checking for incoming FUSE requests,
-                // to prioritize checking for additional outgoing messages
-                continue;
-            }
-            // Check for incoming FUSE requests (non-blocking)
-            match se.chs[channel_id].ready_read() {
-                Err(err) => {
-                    if err.raw_os_error() == Some(EINTR) {
-                        debug!("FUSE fd connection interrupted, will retry.");
-                    } else {
-                        warn!("FUSE fd connection: {err}");
-                        // Assume very bad. Stop the run. TODO: maybe some handling.
-                        return Err(err);
-                    }
-                }
-                Ok(ready) => {
-                    if ready {
-                        // Read a FUSE request (blocks until read succeeds)
-                        let result = se.chs[channel_id].receive(buf);
-                        match result {
-                            Ok(size) => {
-                                if size == 0 {
-                                    // Read of 0 bytes on FUSE FD typically means it was closed (unmounted)
-                                    info!("FUSE channel read 0 bytes, session ending.");
-                                    break;
-                                }
-                                let data = Vec::from(&buf[..size]);
-                                if let Some(req) = RequestHandler::new(sender.clone(), data) {
-                                    debug!("Request {} on channel {channel_id}.", req.meta.unique);
-                                    req.dispatch_async(&se.filesystem, &se.meta).await;
-                                } else {
-                                    // Illegal request, quit loop
-                                    warn!("Failed to parse FUSE request, session ending.");
-                                    break;
-                                }
-                                work_done = true;
-                            }
-                            Err(err) => match err.raw_os_error() {
-                                Some(ENOENT) => {
-                                    debug!("FUSE channel receive ENOENT, retrying.");
-                                    continue;
-                                }
-                                Some(EINTR) => {
-                                    debug!("FUSE channel receive EINTR, retrying.");
-                                    continue;
-                                }
-                                Some(EAGAIN) => {
-                                    debug!("FUSE channel receive EAGAIN, retrying.");
-                                    continue;
-                                }
-                                Some(ENODEV) => {
-                                    info!("FUSE device not available (ENODEV), session ending.");
-                                    break; // Filesystem was unmounted
-                                }
-                                _ => {
-                                    error!("Error receiving FUSE request: {err}");
-                                    return Err(err); // Unhandled error
-                                }
-                            },
-                        }
-                    }
-                    // if not ready, do nothing.
-                }
-            }
-            if !work_done {
-                // No actions taken this loop iteration.
-                // Sleep briefly to yield CPU.
-                tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
-                // Do a heartbeat to let the Filesystem know that some time has passed.
-                match FS::heartbeat(&se.filesystem).await {
-                    Ok(status) => {
-                        if let FsStatus::Stopped = status {
-                            break;
-                        }
-                        // TODO: handle other cases
-                    }
-                    Err(e) => {
-                        warn!("Heartbeat error: {e:?}");
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "abi-7-11")]
-    async fn handle_one_notification(se: &Session<FS>, notifier: &Notifier, channel_id: usize) -> io::Result<bool> {
-        match se.nr.try_recv() {
-            Ok(notification) => {
-                debug!("Notification {:?} on channel {channel_id}", &notification.label());
-                if let Notification::Stop = notification {
-                    // Filesystem says no more notifications.
-                    info!("Disabling notifications.");
-                    se.meta.notify.store(false, Relaxed);
-                }
-                if let Err(_e) = notifier.notify(notification).await {
-                    error!("Failed to send notification.");
-                    // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-                }
-                Ok(true)
-            }
-            Err(crossbeam_channel::TryRecvError::Empty) => {
-                // No poll events pending, proceed to check FUSE FD
-                Ok(false)
-            }
-            Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                // Filesystem's Notification Sender disconnected.
-                // This is not necessarily a fatal error for the session itself,
-                // as FUSE requests can still be processed.
-                warn!("Notification channel disconnected.");
-                se.meta.notify.store(false, Relaxed);  
-                Ok(false)
-            }
+    /// Returns a thread-safe object that can be used to unmount the Filesystem
+    pub fn unmount_callable(&mut self) -> SessionUnmounter {
+        SessionUnmounter {
+            mount: self.mount.clone(),
         }
     }
 }
@@ -588,19 +241,31 @@ impl SessionUnmounter {
 /// A session can be run synchronously in the current thread using `run()` or spawned into a
 /// background thread using `spawn()`.
 #[cfg(feature = "threaded")]
-impl<FS: 'static + Filesystem + Send> Session<FS> {
+impl<L, S, A> Session<L, S, A> where 
+    L: LegacyFS + Send + 'static,
+    S: SyncFS + Send + 'static,
+    A: AsyncFS + Send + 'static
+{
     /// Run the session loop in a background thread
     pub fn spawn(self) -> io::Result<BackgroundSession> {
         BackgroundSession::new(self)
     }
 }
 
-impl<FS: Filesystem> Drop for Session<FS> {
+impl<L, S, A> Drop for Session<L, S, A> where 
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS,
+{    
     fn drop(&mut self) {
-        if !self.meta.destroyed.load(std::sync::atomic::Ordering::Acquire) {
-            futures::executor::block_on(
-                self.filesystem.destroy()
-            );
+        if !self.meta.destroyed.load(Acquire) {
+            match &mut self.filesystem {
+                AnyFS::Legacy(fs) => fs.destroy(),
+                AnyFS::Sync(fs) => fs.destroy(),
+                AnyFS::Async(fs) => {
+                    futures::executor::block_on(fs.destroy())
+                }
+            }
             self.meta.destroyed.store(true, Relaxed);
         }
 
@@ -624,10 +289,15 @@ pub struct BackgroundSession {
 
 #[cfg(feature = "threaded")]
 impl BackgroundSession {
+
     /// Create a new background session for the given session by running its
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
-    pub fn new<FS: Filesystem + Send + 'static>(se: Session<FS>) -> io::Result<BackgroundSession> {
+    pub fn new<L, S, A>(se: Session<L, S, A>) -> io::Result<BackgroundSession>where 
+        L: LegacyFS + Send + 'static,
+        S: SyncFS + Send + 'static,
+        A: AsyncFS + Send + 'static
+    {
         #[cfg(feature = "abi-7-11")]
         let extra_notification_sender = se.ns.clone();
 
@@ -690,3 +360,74 @@ impl fmt::Debug for BackgroundSession {
         builder.finish()
     }
 }
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+/// This enum is an optional way for the Filesystem to report its status to a Session thread.
+pub enum FsStatus {
+    /// Default may be used when the Filesystem does not implement a status
+    Default,
+    /// Ready indicates the Filesystem has no actions in progress
+    Ready,
+    /// Busy indicates the Filesytem has one or more actions in progress
+    Busy,
+    /// Stopped indicates that the Filesystem will not accept new requests
+    Stopped
+    // This list is a work in progress and I'm still trying to figure out what values would be useful
+}
+
+#[allow(unused_variables)]
+pub trait FilesystemExt {
+    /// Final warning before the Session Drops the Filesystem
+    fn cleanup(&mut self) {
+        // Default: do nothing
+    }
+
+    /// Initializes the notification event sender for the filesystem.
+    /// The boolean indicates whether the filesystem supports it.
+    #[cfg(feature = "abi-7-11")]
+    fn init_notification_sender(
+        &mut self,
+        sender: Sender<Notification>,
+    ) -> bool {
+        false // Default: not supported
+    }
+
+    /// In a syncronous execution model where a sleep may happen,
+    /// the heartbeat may be used to alert the Filesystem that time has passed.
+    fn heartbeat(&self) -> FsStatus {
+        FsStatus::Default
+    }
+}
+
+impl<L, S, A> FilesystemExt for AnyFS<L, S, A> where 
+    L: LegacyFS + FilesystemExt,
+    S: SyncFS + FilesystemExt,
+    A: AsyncFS + FilesystemExt 
+{
+    #[cfg(feature = "abi-7-11")]
+    fn init_notification_sender(
+        &mut self,
+        sender: Sender<Notification>,
+    ) -> bool {
+        match self {
+            AnyFS::Legacy(lfs) => lfs.init_notification_sender(sender),
+            AnyFS::Sync(sfs) => sfs.init_notification_sender(sender),
+            AnyFS::Async(afs) => afs.init_notification_sender(sender)
+        }
+    }
+    fn cleanup(&mut self) {
+        match self {
+            AnyFS::Legacy(lfs) => lfs.cleanup(),
+            AnyFS::Sync(sfs) => sfs.cleanup(),
+            AnyFS::Async(afs) => afs.cleanup()
+        }
+    }
+    fn heartbeat(&self) -> FsStatus {
+        match self {
+            AnyFS::Legacy(lfs) => lfs.heartbeat(),
+            AnyFS::Sync(sfs) => sfs.heartbeat(),
+            AnyFS::Async(afs) => afs.heartbeat()
+        }
+    }
+}
+

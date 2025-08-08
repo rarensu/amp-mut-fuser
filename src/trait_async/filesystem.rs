@@ -13,14 +13,16 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 #[cfg(feature = "abi-7-11")]
-use crate::{Notification, Ioctl};
+use crate::Ioctl;
 #[cfg(target_os = "macos")]
 use crate::XTimes;
-use crate::{Errno, TimeOrNow, RequestMeta, Entry, FileAttr, DirentList, Open, Statfs, Xattr, Lock, Forget, FsStatus, KernelConfig};
+use crate::{
+    Errno, TimeOrNow, RequestMeta, Entry, FileAttr,
+    DirentList, Open, Statfs, Xattr, Lock, Forget, KernelConfig
+};
 #[cfg(feature = "abi-7-21")]
 use crate::DirentPlusList;
 use bytes::Bytes;
-use crossbeam_channel::Sender; 
 
 use async_trait::async_trait;
 
@@ -627,22 +629,6 @@ pub trait Filesystem: Send + Sync {
             ph: {ph:?}, events: {events}, flags: {flags})"
         );
         Err(Errno::ENOSYS)
-    }
-
-    /// Initializes the notification event sender for the filesystem.
-    /// The boolean indicates whether the filesystem supports it.
-    #[cfg(feature = "abi-7-11")]
-    async fn init_notification_sender(
-        &self,
-        sender: Sender<Notification>,
-    ) -> bool {
-        false // Default: not supported
-    }
-
-    /// In a syncronous execution model where a sleep may happen,
-    /// the heartbeat may be used to alert the Filesystem that time has passed.
-    async fn heartbeat(&self) -> Result<FsStatus, Errno> {
-        Ok(FsStatus::Default)
     }
 
     /// Preallocate or deallocate space to a file.

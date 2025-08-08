@@ -3,8 +3,25 @@
 //! This is an improved rewrite of the FUSE userspace library (lowlevel interface) to fully take
 //! advantage of Rust's architecture. The only thing we rely on in the real libfuse are mount
 //! and unmount calls which are needed to establish a fd to talk to the kernel driver.
-
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
+
+mod channel;
+mod container;
+mod ll;
+mod mnt;
+#[cfg(feature = "abi-7-11")]
+mod notify;
+mod reply;
+mod request;
+mod session;
+mod any;
+
+/// Legacy Filesystem trait with callbacks
+pub mod trait_legacy;
+/// Synchronous Filesystem trait
+pub mod trait_sync;
+/// Asynchronous Filesystem trait
+pub mod trait_async;
 
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
@@ -49,27 +66,17 @@ pub use session::{Session, SessionACL, SessionUnmounter, FsStatus};
 #[cfg(feature = "threaded")]
 pub use session::BackgroundSession;
 pub use container::{Container, SafeBorrow};
+pub use any::AnyFS;
+use crate::session::FilesystemExt;
+use crate::trait_legacy::Filesystem as LegacyFS;
+use crate::trait_sync::Filesystem as SyncFS;
+use crate::trait_async::Filesystem as AsyncFS;
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
 #[cfg(feature = "abi-7-13")]
 use std::cmp::min;
 
-mod channel;
-mod container;
-mod ll;
-mod mnt;
-#[cfg(feature = "abi-7-11")]
-mod notify;
-mod reply;
-mod request;
-mod session;
-/// legacy code with callbacks
-pub mod trait_legacy;
-/// middle ground. syncronous but no callbacks
-pub mod trait_sync;
-/// asyncronous
-pub mod trait_async;
-pub use trait_async::Filesystem; //default for testing
+
 
 /// We generally support async reads
 #[cfg(all(not(target_os = "macos"), not(feature = "abi-7-10")))]
@@ -286,11 +293,16 @@ impl KernelConfig {
 /// # Errors
 /// Error if the mount does not succeed.
 #[deprecated(note = "Use `mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity.")]
-pub fn mount<FS: Filesystem + 'static, P: AsRef<Path>>(
-    filesystem: FS,
+pub fn mount<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
     mountpoint: P,
     options: &[&OsStr],
-) -> io::Result<()> {
+) -> io::Result<()> where 
+    L: crate::trait_legacy::Filesystem + 'static,
+    S: crate::trait_sync::Filesystem + 'static,
+    A: crate::trait_async::Filesystem + 'static,
+    P: AsRef<Path>
+{
     let options = parse_options_from_args(options)?;
     mount2(filesystem, mountpoint, options.as_ref())
 }
@@ -305,13 +317,18 @@ pub fn mount<FS: Filesystem + 'static, P: AsRef<Path>>(
 /// This is the recommended way to mount a FUSE filesystem.
 /// # Errors
 /// Error if the mount does not succeed.
-pub fn mount2<FS: Filesystem + 'static, P: AsRef<Path>>(
-    filesystem: FS,
+pub fn mount2<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
     mountpoint: P,
     options: &[MountOption],
-) -> io::Result<()> {
+) -> io::Result<()> where 
+    L: LegacyFS + FilesystemExt + 'static,
+    S: SyncFS + FilesystemExt + 'static,
+    A: AsyncFS + FilesystemExt + 'static,
+    P: AsRef<Path>
+{
     check_option_conflicts(options)?;
-    Session::new(filesystem, mountpoint.as_ref(), options).and_then(
+    Session::new_mounted(filesystem, mountpoint.as_ref(), options).and_then(
         |se| 
         futures::executor::block_on(
             se.run()
@@ -333,17 +350,22 @@ pub fn mount2<FS: Filesystem + 'static, P: AsRef<Path>>(
 /// Error if the session is not started.
 #[cfg(feature = "threaded")]
 #[deprecated(note = "Use `spawn_mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity.")]
-pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
-    filesystem: FS,
+pub fn spawn_mount<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
     mountpoint: P,
     options: &[&OsStr],
-) -> io::Result<BackgroundSession> {
+) -> io::Result<BackgroundSession> where 
+    L: LegacyFS + FilesystemExt + Send + 'static,
+    S: SyncFS + FilesystemExt + Send + 'static,
+    A: AsyncFS + FilesystemExt + Send + 'static,
+    P: AsRef<Path>
+{
     let options: Option<Vec<_>> = options
         .iter()
         .map(|x| Some(MountOption::from_str(x.to_str()?)))
         .collect();
     let options = options.ok_or(ErrorKind::InvalidData)?;
-    Session::new(filesystem, mountpoint.as_ref(), options.as_ref()).and_then(session::Session::spawn)
+    Session::new_mounted(filesystem, mountpoint.as_ref(), options.as_ref()).and_then(session::Session::spawn)
 }
 
 /// Mount the given filesystem to the given mountpoint in a background thread.
@@ -360,11 +382,16 @@ pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
 /// # Errors
 /// Error if the session is not started.
 #[cfg(feature = "threaded")]
-pub fn spawn_mount2<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
-    filesystem: FS,
+pub fn spawn_mount2<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
     mountpoint: P,
     options: &[MountOption],
-) -> io::Result<BackgroundSession> {
+) -> io::Result<BackgroundSession> where 
+    L: LegacyFS + FilesystemExt + Send + 'static,
+    S: SyncFS + FilesystemExt + Send + 'static,
+    A: AsyncFS + FilesystemExt + Send + 'static,
+    P: AsRef<Path>
+{
     check_option_conflicts(options)?;
-    Session::new(filesystem, mountpoint.as_ref(), options).and_then(session::Session::spawn)
+    Session::new_mounted(filesystem, mountpoint.as_ref(), options).and_then(session::Session::spawn)
 }
