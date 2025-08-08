@@ -20,7 +20,7 @@ use std::thread::{self, JoinHandle};
 use std::fmt;
 
 use crate::request::RequestHandler;
-use crate::{channel, Filesystem, FsStatus};
+use crate::{channel, Filesystem};
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
@@ -100,6 +100,19 @@ impl<FS: Filesystem> AsFd for Session<FS> {
     }
 }
 */
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+/// This enum is an optional way for the Filesystem to report its status to a Session thread.
+pub enum FsStatus {
+    /// Default may be used when the Filesystem does not implement a status
+    Default,
+    /// Ready indicates the Filesystem has no actions in progress
+    Ready,
+    /// Busy indicates the Filesytem has one or more actions in progress
+    Busy,
+    /// Stopped indicates that the Filesystem will not accept new requests
+    Stopped
+}
 
 impl<FS: Filesystem + 'static> Session<FS> {
     /// Create a new session by mounting the given filesystem to the given mountpoint

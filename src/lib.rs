@@ -44,8 +44,8 @@ pub use reply::Ioctl;
 pub use reply::XTimes;
 pub use bytes::Bytes;
 pub use reply::{Dirent, DirentList, DirentPlusList, Entry, FileAttr, FileType, Open, Statfs, Xattr, Lock};
-pub use request::RequestMeta;
-pub use session::{Session, SessionACL, SessionUnmounter};
+pub use request::{Forget, RequestMeta};
+pub use session::{Session, SessionACL, SessionUnmounter, FsStatus};
 #[cfg(feature = "threaded")]
 pub use session::BackgroundSession;
 pub use container::{Container, SafeBorrow};
@@ -99,17 +99,6 @@ const fn default_init_flags(capabilities: u64) -> u64 {
         }
         flags
     }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-/// Target of a `forget` or `batch_forget` operation.
-pub struct Forget {
-    /// Inode of the file to be forgotten.
-    pub ino: u64,
-    /// The number of times the file has been looked up (and not yet forgotten).
-    /// When a `forget` operation is received, the filesystem should typically
-    /// decrement its internal reference count for the inode by `nlookup`.
-    pub nlookup: u64
 }
 
 /// Configuration of the fuse kernel module connection
@@ -285,19 +274,6 @@ impl KernelConfig {
     fn max_pages(&self) -> u16 {
         ((max(self.max_write, self.max_readahead) - 1) / page_size::get() as u32) as u16 + 1
     }
-}
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-/// This enum is an optional way for the Filesystem to report its status to a Session thread.
-pub enum FsStatus {
-    /// Default may be used when the Filesystem does not implement a status
-    Default,
-    /// Ready indicates the Filesystem has no actions in progress
-    Ready,
-    /// Busy indicates the Filesytem has one or more actions in progress
-    Busy,
-    /// Stopped indicates that the Filesystem will not accept new requests
-    Stopped
 }
 
 /// Mount the given filesystem to the given mountpoint. This function will

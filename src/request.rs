@@ -38,6 +38,17 @@ pub struct RequestMeta {
     pub pid: u32
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+/// Target of a `forget` or `batch_forget` operation.
+pub struct Forget {
+    /// Inode of the file to be forgotten.
+    pub ino: u64,
+    /// The number of times the file has been looked up (and not yet forgotten).
+    /// When a `forget` operation is received, the filesystem should typically
+    /// decrement its internal reference count for the inode by `nlookup`.
+    pub nlookup: u64
+}
+
 impl RequestHandler {
     /// Create a new request from the given data
     pub(crate) fn new(ch: Channel, data: Vec<u8>) -> Option<RequestHandler> {
