@@ -1,25 +1,14 @@
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
-use nix::unistd::geteuid;
-use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 use std::io;
-#[cfg(feature = "threaded")]
-use std::thread::{self, JoinHandle};
-#[cfg(feature = "threaded")]
-use std::fmt;
 
-use crate::session::{BackgroundSession, Session, BUFFER_SIZE};
-// This value is used to prevent a busy loop in the synchronous run with notification
-use crate::channel::SYNC_SLEEP_INTERVAL;
+
+use crate::session::{Session, BUFFER_SIZE, SYNC_SLEEP_INTERVAL};
 use crate::request::RequestHandler;
 use crate::FsStatus;
-use crate::{channel};
-use crate::MountOption;
-use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
 #[cfg(feature = "abi-7-11")]
@@ -127,11 +116,7 @@ impl<L, S, A> Session<L, S, A> where
         let (result, mut updated_buffer) = se.chs[ch_idx].receive_later(buffer).await;
         match result {
             // Kernel sent data
-            Ok(size) => {
-                // Prepare data
-                let buf = channel::aligned_sub_buf(&mut updated_buffer, channel::FUSE_HEADER_ALIGNMENT);
-                let data = Vec::from(&buf[..size]);
-                buf[..size].fill(0);
+            Ok(data) => {
                 // Parse data
                 match RequestHandler::new(se.chs[ch_idx].clone(), data) {
                     // Request is valid
@@ -254,17 +239,10 @@ impl<L, S, A> Session<L, S, A> where
     async fn do_all_events(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
-        let buf = channel::aligned_sub_buf(
-            &mut buffer,
-            channel::FUSE_HEADER_ALIGNMENT,
-        );
-        let sender = se.get_ch(ch_idx);
         #[cfg(feature = "abi-7-11")]
         let notifier = Notifier::new(se.get_ch(ch_idx));
-
         info!("Starting full task loop on channel {ch_idx}");
         loop {
-            let mut work_done = false;
             // Check for outgoing Notifications (non-blocking)
             #[cfg(feature = "abi-7-11")]
             if se.meta.notify.load(Relaxed) {
@@ -282,16 +260,13 @@ impl<L, S, A> Session<L, S, A> where
                     Ok(ready) => {
                         if ready {    
                             if Session::handle_one_notification_async(&se, &notifier, ch_idx).await? {
-                                work_done = true;
+                                // skip checking for incoming FUSE requests,
+                                // to prioritize checking for additional outgoing messages
+                                continue;
                             }
                         }
                     }
                 }
-            }
-            if work_done {
-                // skip checking for incoming FUSE requests,
-                // to prioritize checking for additional outgoing messages
-                continue;
             }
             // Check for incoming FUSE requests (non-blocking)
             #[cfg(not(feature = "tokio"))]
@@ -320,7 +295,6 @@ impl<L, S, A> Session<L, S, A> where
                         } else {
                             break;
                         }
-                        work_done = true;
                     }
                     // if not ready, do nothing.
                 }

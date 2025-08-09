@@ -1,20 +1,11 @@
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
-use nix::unistd::geteuid;
-use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering::Relaxed;
 use std::io;
-#[cfg(feature = "threaded")]
-use std::thread::{self, JoinHandle};
-#[cfg(feature = "threaded")]
-use std::fmt;
 
 use crate::FsStatus;
-use crate::session::{Session, BUFFER_SIZE};
-use crate::channel::{aligned_sub_buf, SYNC_SLEEP_INTERVAL, FUSE_HEADER_ALIGNMENT};
+use crate::session::{Session, BUFFER_SIZE, SYNC_SLEEP_INTERVAL};
 use crate::request::RequestHandler;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
@@ -59,47 +50,59 @@ impl<L, S, A> Session<L, S, A> where
 
         info!("Starting request loop on channel {ch_idx} with fd {}", &self.chs[ch_idx].raw_fd);
         loop {
-            // Read the next request from the given channel to kernel driver
-            // The kernel driver makes sure that we get exactly one request per read
-            let result = self.chs[ch_idx].receive(&mut buffer);
-            match result {
-                Ok(size) => {
-                    let buf = aligned_sub_buf(&mut buffer, FUSE_HEADER_ALIGNMENT);
-                    let data = Vec::from(&buf[..size]);
-                    buf[..size].fill(0);
-                    match RequestHandler::new(self.chs[ch_idx].clone(), data) {
-                        // Dispatch request
-                        Some(req) => {
-                            debug!("Request {} on channel {ch_idx}.", req.meta.unique);
-                            match &mut self.filesystem {
-                                AnyFS::Sync(fs) => {
-                                    req.dispatch_sync(fs, &self.meta);
-                                } 
-                                _ => {
-                                    panic!("tried to execute a SyncFS function on a non-SyncFS filestem")
-                                }
-                            }
-                        },
-                        // Quit loop on illegal request
-                        None => break,
-                    }
-                },
-                Err(err) => match err.raw_os_error() {
-                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                    Some(ENOENT) => continue,
-                    // Interrupted system call, retry
-                    Some(EINTR) => continue,
-                    // Explicitly try again
-                    Some(EAGAIN) => continue,
-                    // Filesystem was unmounted, quit the loop
-                    Some(ENODEV) => break,
-                    // Unhandled error
-                    _ => return Err(err),
-                },
+            if !self.handle_one_request_sync(ch_idx, &mut buffer)? {
+                break;
             }
             // TODO: maybe add a heartbeat?
         }
         Ok(())
+    }
+
+    fn handle_one_request_sync(self: &mut Session<L, S, A>, ch_idx: usize, buffer: &mut Vec<u8>) -> io::Result<bool> {
+        // Read the next request from the given channel to kernel driver
+        // The kernel driver makes sure that we get exactly one request per read
+        // Read a FUSE request (blocks until read succeeds)
+        let result = self.chs[ch_idx].receive(buffer);
+        match result {
+            // Kernel sent data
+            Ok(data) => {
+                // Parse data
+                match RequestHandler::new(self.chs[ch_idx].clone(), data) {
+                    // Request is valid
+                    Some(req) => {
+                        debug!("Request {} on channel {ch_idx}.", req.meta.unique);
+                        match  &mut self.filesystem {
+                            AnyFS::Sync(fs) => {
+                                // Dispatch request
+                                req.dispatch_sync(fs, &self.meta);
+                                // Return signal to continue
+                                Ok(true)
+                            },
+                            _ => panic!("Attempted to call Sync run method on non-Sync Filesystem")
+                        }
+                    },
+                    // Illegal request
+                    // Return the signal to break
+                    None => Ok(false)
+                }
+            },
+            Err(err) => match err.raw_os_error() {
+                // Operation interrupted. Accordingly to FUSE, this is safe to retry
+                // Return signal to continue
+                Some(ENOENT) => Ok(true),
+                // Interrupted system call, retry
+                // Return signal to continue
+                Some(EINTR) => Ok(true),
+                // Explicitly try again
+                // Return signal to continue
+                Some(EAGAIN) => Ok(true),
+                // Filesystem was unmounted,
+                // Return the signal to break
+                Some(ENODEV) => Ok(false),
+                // Unhandled error
+                _ => return Err(err),
+            },
+        }
     }
 
     /// Run the session loop in a single thread, same as `run()`, but additionally
@@ -187,11 +190,7 @@ impl<L, S, A> Session<L, S, A> where
     fn do_all_events_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
-        let buf = aligned_sub_buf(
-            &mut buffer,
-            FUSE_HEADER_ALIGNMENT,
-        );
-        let sender = self.get_ch(ch_idx);
+
         #[cfg(all(feature = "abi-7-11", ))]
         let notifier = Notifier::new(self.get_ch(ch_idx));
 
@@ -239,55 +238,8 @@ impl<L, S, A> Session<L, S, A> where
                 }
                 Ok(ready) => {
                     if ready {
-                        // Read a FUSE request (blocks until read succeeds)
-                        let result = self.chs[ch_idx].receive(buf);
-                        match result {
-                            Ok(size) => {
-                                if size == 0 {
-                                    // Read of 0 bytes on FUSE FD typically means it was closed (unmounted)
-                                    info!("FUSE channel read 0 bytes, session ending.");
-                                    break;
-                                }
-                                let data = Vec::from(&buf[..size]);
-                                if let Some(req) = RequestHandler::new(sender.clone(), data) {
-                                    debug!("Request {} on channel {ch_idx}.", req.meta.unique);
-                                    match &mut self.filesystem {
-                                        AnyFS::Sync(fs) => {
-                                            req.dispatch_sync(fs, &self.meta);
-                                        } 
-                                        _ => {
-                                            panic!("tried to execute a SyncFS function on a non-SyncFS filestem")
-                                        }
-                                    }
-                                } else {
-                                    // Illegal request, quit loop
-                                    warn!("Failed to parse FUSE request, session ending.");
-                                    break;
-                                }
-                                work_done = true;
-                            }
-                            Err(err) => match err.raw_os_error() {
-                                Some(ENOENT) => {
-                                    debug!("FUSE channel receive ENOENT, retrying.");
-                                    continue;
-                                }
-                                Some(EINTR) => {
-                                    debug!("FUSE channel receive EINTR, retrying.");
-                                    continue;
-                                }
-                                Some(EAGAIN) => {
-                                    debug!("FUSE channel receive EAGAIN, retrying.");
-                                    continue;
-                                }
-                                Some(ENODEV) => {
-                                    info!("FUSE device not available (ENODEV), session ending.");
-                                    break; // Filesystem was unmounted
-                                }
-                                _ => {
-                                    error!("Error receiving FUSE request: {err}");
-                                    return Err(err); // Unhandled error
-                                }
-                            },
+                        if !self.handle_one_request_sync(ch_idx, &mut buffer)? {
+                            break;
                         }
                     }
                     // if not ready, do nothing.

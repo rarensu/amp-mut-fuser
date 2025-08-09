@@ -4,6 +4,7 @@ use std::{
     os::unix::prelude::AsRawFd,
     sync::Arc,
 };
+#[cfg(feature = "tokio")]
 use smallvec::SmallVec;
 
 use libc::{c_int, c_void, size_t};
@@ -12,7 +13,6 @@ use crate::ll::ioctl::ioctl_clone_fuse_fd;
 #[cfg(feature = "abi-7-40")]
 use crate::ll::ioctl::{ioctl_close_backing, ioctl_open_backing};
 
-pub const SYNC_SLEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<fuse_abi::fuse_in_header>();
 
 pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
@@ -58,32 +58,35 @@ impl Channel {
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
-    pub fn receive(&self, buffer: &mut [u8]) -> io::Result<usize> {
+    /// Populates data into the buffer starting from the point of alignment
+    pub fn receive(&self, buffer: &mut [u8]) -> io::Result<Vec<u8>> {
         log::debug!("about to try a blocking read on fd {:?}", self.raw_fd);
         log::debug!("about to try a blocking read on with buffer {:?}, {:?}", buffer.len(), buffer.get(0..20));
+        let buf_aligned = aligned_sub_buf(buffer, FUSE_HEADER_ALIGNMENT);
         let rc = unsafe {
             libc::read(
                 self.raw_fd,
-                buffer.as_ptr() as *mut c_void,
-                buffer.len() as size_t,
+                buf_aligned.as_ptr() as *mut c_void,
+                buf_aligned.len() as size_t,
             )
         };
         if rc < 0 {
             Err(io::Error::last_os_error())
         } else {
-            Ok(rc as usize)
+            let data = Vec::from(&buf_aligned[..rc as usize]);
+            buf_aligned[..rc as usize].fill(0);
+            Ok(data)
         }
     }
 
-    /// Receives data up to the capacity of the given buffer (can block).
-    pub async fn receive_later(&self, mut buffer: Vec<u8>) -> (io::Result<usize>, Vec<u8>) { 
+    /// Receives data up to the capacity of the given buffer.
+    /// Can be awaited: blocks on a dedicated thread.
+    /// Populates data into the buffer starting from the point of alignment
+    //#[cfg(feature = "tokio")]
+    pub async fn receive_later(&self, mut buffer: Vec<u8>) -> (io::Result<Vec<u8>>, Vec<u8>) { 
         let thread_ch = self.clone();  
         tokio::task::spawn_blocking(move || {
-            let mut buf = aligned_sub_buf(
-                &mut buffer,
-                FUSE_HEADER_ALIGNMENT,
-            );
-            let res = thread_ch.receive(&mut buf);
+            let res = thread_ch.receive(&mut buffer);
             (res, buffer)
         }).await.expect("Unable to recover worker i/o thread")
     }
@@ -170,8 +173,9 @@ impl Channel {
             }
         }
     }
-
-    pub fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+    /// Writes data from the owned buffer.
+    /// Blocks the current thread.
+    pub fn send(&self, bufs: &[IoSlice<'_>]) -> io::Result<()> {
         log::debug!("about to try a blocking write on fd {}", self.raw_fd);
         for x in bufs { log::debug!("the buf has length {}", x.len()); }
         let rc = unsafe {
@@ -189,7 +193,10 @@ impl Channel {
             Ok(())
         }
     }
-
+    
+    #[cfg(feature = "tokio")]
+    /// Writes data from the owned buffer.
+    /// Can be awaited: blocks on a dedicated thread.
     pub async fn send_later(&self, bufs: SmallVec<[Vec<u8>; 4]>) -> io::Result<()> {
         let thread_sender = self.clone();
         tokio::task::spawn_blocking(move || {

@@ -29,6 +29,8 @@ use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
 use crate::trait_async::Filesystem as AsyncFS;
 
+pub const SYNC_SLEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
 /// and 128k on other systems.
