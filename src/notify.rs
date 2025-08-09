@@ -143,7 +143,7 @@ impl Notifier {
         Self(cs)
     }
 
-    pub(crate) async fn notify(&self, notification: Notification) -> io::Result<()> {
+    pub(crate) fn notify(&self, notification: Notification) -> io::Result<()> {
         // These branches follow a pattern:
         // 1: Attempt to deliver the notification to the Kernel.
         // 2: Attempt to deliver the result of 1 to the Filesystem.
@@ -157,7 +157,7 @@ impl Notifier {
         match notification {
             #[cfg(feature = "abi-7-11")]
             Notification::Poll((data, sender)) => {
-                let res = self.poll(data).await;
+                let res = self.poll(data);
                 if let Some(sender) = sender {
                     if let Err(SendError(res)) = sender.send(res) {
                         log::warn!("Poll notification reply {res:?} could not be delivered.");
@@ -169,7 +169,7 @@ impl Notifier {
             },
             #[cfg(feature = "abi-7-12")]
             Notification::InvalEntry((data, sender)) => {
-                let res = self.inval_entry(data).await;
+                let res = self.inval_entry(data);
                 if let Some(sender) = sender {
                     if let Err(SendError(res)) = sender.send(res) {
                         log::warn!("InvalEntry notification reply {res:?} could not be delivered.");
@@ -181,7 +181,7 @@ impl Notifier {
             },
             #[cfg(feature = "abi-7-12")]
             Notification::InvalInode((data, sender)) => {
-                let res = self.inval_inode(data).await;
+                let res = self.inval_inode(data);
                 if let Some(sender) = sender {
                     if let Err(SendError(res)) = sender.send(res) {
                         log::warn!("InvalInode notification reply {res:?} could not be delivered.");
@@ -193,7 +193,7 @@ impl Notifier {
             },
             #[cfg(feature = "abi-7-15")]
             Notification::Store((data, sender)) => {
-                let res = self.store(data).await;
+                let res = self.store(data);
                 if let Some(sender) = sender {
                     if let Err(SendError(res)) = sender.send(res) {
                         log::warn!("Store notification reply {res:?} could not be delivered.");
@@ -205,7 +205,7 @@ impl Notifier {
             },
             #[cfg(feature = "abi-7-18")]
             Notification::Delete((data, sender)) => {
-                let res = self.delete(data).await;
+                let res = self.delete(data);
                 if let Some(sender) = sender {
                     if let Err(SendError(res)) = sender.send(res) {
                         log::warn!("Delete notification reply {res:?} could not be delivered.");
@@ -246,46 +246,46 @@ impl Notifier {
 
     /// Notify poll clients of I/O readiness
     #[cfg(feature = "abi-7-11")]
-    pub async fn poll(&self, notification: Poll) -> io::Result<()> {
+    pub fn poll(&self, notification: Poll) -> io::Result<()> {
         let notif = NotificationBuf::new_poll(notification.ph);
-        self.send(notify_code::FUSE_POLL, &notif).await
+        self.send(notify_code::FUSE_POLL, &notif)
     }
 
     /// Invalidate the kernel cache for a given directory entry
     #[cfg(feature = "abi-7-12")]
-    pub async fn inval_entry(&self, notification: InvalEntry) -> io::Result<()> {
+    pub fn inval_entry(&self, notification: InvalEntry) -> io::Result<()> {
         let notif = NotificationBuf::new_inval_entry(notification.parent, notification.name.as_ref()).map_err(Self::too_big_err)?;
-        self.send_inval(notify_code::FUSE_NOTIFY_INVAL_ENTRY, &notif).await
+        self.send_inval(notify_code::FUSE_NOTIFY_INVAL_ENTRY, &notif)
     }
 
     /// Invalidate the kernel cache for a given inode (metadata and
     /// data in the given range)
     #[cfg(feature = "abi-7-12")]
-    pub async fn inval_inode(&self, notification: InvalInode ) -> io::Result<()> {
+    pub fn inval_inode(&self, notification: InvalInode ) -> io::Result<()> {
         let notif = NotificationBuf::new_inval_inode(notification.ino, notification.offset, notification.len);
-        self.send_inval(notify_code::FUSE_NOTIFY_INVAL_INODE, &notif).await
+        self.send_inval(notify_code::FUSE_NOTIFY_INVAL_INODE, &notif)
     }
 
     /// Update the kernel's cached copy of a given inode's data
     #[cfg(feature = "abi-7-15")]
-    pub async fn store(&self, notification: Store) -> io::Result<()> {
+    pub fn store(&self, notification: Store) -> io::Result<()> {
         let notif = NotificationBuf::new_store(notification.ino, notification.offset, notification.data.as_ref()).map_err(Self::too_big_err)?;
         // Not strictly an invalidate, but the inode we're operating
         // on may have been evicted anyway, so treat is as such
-        self.send_inval(notify_code::FUSE_NOTIFY_STORE, &notif).await
+        self.send_inval(notify_code::FUSE_NOTIFY_STORE, &notif)
     }
 
     /// Invalidate the kernel cache for a given directory entry and inform
     /// inotify watchers of a file deletion.
     #[cfg(feature = "abi-7-18")]
-    pub async fn delete(&self, notification: Delete) -> io::Result<()> {
+    pub fn delete(&self, notification: Delete) -> io::Result<()> {
         let notif = NotificationBuf::new_delete(notification.parent, notification.ino, &notification.name).map_err(Self::too_big_err)?;
-        self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif).await
+        self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif)
     }
 
     #[cfg(feature = "abi-7-12")]
-    async fn send_inval(&self, code: notify_code, notification: &NotificationBuf<'_>) -> io::Result<()> {
-        match self.send(code, notification).await {
+    fn send_inval(&self, code: notify_code, notification: &NotificationBuf<'_>) -> io::Result<()> {
+        match self.send(code, notification) {
             // ENOENT is harmless for an invalidation (the
             // kernel may have already dropped the cached
             // entry on its own anyway), so ignore it.
@@ -307,11 +307,19 @@ impl Notifier {
         self.0.close_backing(backing_id)
     }
 
-    async fn send(&self, code: notify_code, notification: &NotificationBuf<'_>) -> io::Result<()> {
+    /*
+    async fn send_async(&self, code: notify_code, notification: &NotificationBuf<'_>) -> io::Result<()> {
         let vec = notification
             .to_vec(code)
             .map_err(Self::too_big_err)?;
-        self.0.send_later(vec).await
+        self.0.send_async(vec).await
+    }
+    */
+
+    fn send(&self, code: notify_code, notification: &NotificationBuf<'_>) -> io::Result<()> {
+        notification
+            .with_iovec(code, |iov| self.0.send(iov))
+            .map_err(Self::too_big_err)?
     }
 
     /// Create an error for indicating when a notification message

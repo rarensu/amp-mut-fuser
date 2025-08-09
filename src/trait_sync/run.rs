@@ -10,7 +10,7 @@ use crate::request::RequestHandler;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
 #[cfg(feature = "abi-7-11")]
-use crossbeam_channel::TryRecvError;
+use crossbeam_channel::{TryRecvError, RecvError};
 use crate::any::{AnyFS};
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
@@ -21,21 +21,33 @@ impl<L, S, A> Session<L, S, A> where
     S: SyncFS,
     A: AsyncFS
 {
-    /// Run the session loop that receives kernel requests and dispatches them to method
-    /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
-    /// having multiple buffers (which take up much memory), but the filesystem methods
-    /// may run concurrent by spawning threads.
+    /// Run the session in a single thread. TODO: multithreaded.
+    /// Handles requests, and also sends notifications and/or heartbeats (if enabled). 
     pub fn run_sync(mut self) -> io::Result<()> {
-        // TODO: future multi-threaded feature
-        /*
-            for ch_idx in 0..self.chs.len() {
-            } 
-        */
-        // ch_idx=0 for the single-threaded case
         let init_fs_status = match &mut self.filesystem {
             AnyFS::Sync(fs) => fs.heartbeat(),
             _ => FsStatus::Default
         };
+        /*
+        // a sketch of a possible multithreaded implementation
+        #cfg[(feature = "threaded")]
+        {
+            // TODO: empty join handles
+            for ch_idx in 0..self.chs.len() {
+                // TODO: join_handle = std::?::spawn(
+                    if init_fs_status != FsStatus::Default || self.meta.notify.load(Relaxed) {
+                        self.do_all_events_sync(ch_idx)
+                    } else {
+                        self.do_requests_sync(ch_idx)
+                    }
+                )
+                // TODO: add the join handle
+            }
+            // TODO: gather the join handles
+        }
+        #cfg[not((feature = "threaded"))]
+        */
+        // ch_idx=0 for the single-threaded case
         if init_fs_status != FsStatus::Default || self.meta.notify.load(Relaxed) {
             self.do_all_events_sync(0)
         } else {
@@ -43,6 +55,7 @@ impl<L, S, A> Session<L, S, A> where
         }
     }
 
+    /// Process requests, blocking a single thread. 
     fn do_requests_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
@@ -50,63 +63,58 @@ impl<L, S, A> Session<L, S, A> where
 
         info!("Starting request loop on channel {ch_idx} with fd {}", &self.chs[ch_idx].raw_fd);
         loop {
-            if !self.handle_one_request_sync(ch_idx, &mut buffer)? {
-                break;
+            // Read the next request from the given channel to kernel driver
+            // The kernel driver makes sure that we get exactly one request per read
+            // Read a FUSE request (blocks until read succeeds)
+            match self.chs[ch_idx].receive(&mut buffer) {
+                Ok(data) => {
+                    // Kernel sent data
+                    if !self.handle_one_request_sync(ch_idx, data) {
+                        // false means invalid data; stop the loop
+                        break;
+                    }
+                },
+                Err(err) => match err.raw_os_error() {
+                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
+                    Some(ENOENT) => continue,
+                    // Interrupted system call, retry
+                    Some(EINTR) => continue,
+                    // Explicitly try again
+                    Some(EAGAIN) => continue,
+                    // Filesystem was unmounted,
+                    // Stop the loop.
+                    Some(ENODEV) => break,
+                    // Unhandled error
+                    _ => return Err(err),
+                },
             }
-            // TODO: maybe add a heartbeat?
         }
         Ok(())
     }
 
-    fn handle_one_request_sync(self: &mut Session<L, S, A>, ch_idx: usize, buffer: &mut Vec<u8>) -> io::Result<bool> {
-        // Read the next request from the given channel to kernel driver
-        // The kernel driver makes sure that we get exactly one request per read
-        // Read a FUSE request (blocks until read succeeds)
-        let result = self.chs[ch_idx].receive(buffer);
-        match result {
-            // Kernel sent data
-            Ok(data) => {
-                // Parse data
-                match RequestHandler::new(self.chs[ch_idx].clone(), data) {
-                    // Request is valid
-                    Some(req) => {
-                        debug!("Request {} on channel {ch_idx}.", req.meta.unique);
-                        match  &mut self.filesystem {
-                            AnyFS::Sync(fs) => {
-                                // Dispatch request
-                                req.dispatch_sync(fs, &self.meta);
-                                // Return signal to continue
-                                Ok(true)
-                            },
-                            _ => panic!("Attempted to call Sync run method on non-Sync Filesystem")
-                        }
+    fn handle_one_request_sync(self: &mut Session<L, S, A>, ch_idx: usize, data: Vec<u8>) -> bool {
+        // Parse data
+        match RequestHandler::new(self.chs[ch_idx].clone(), data) {
+            // Request is valid
+            Some(req) => {
+                debug!("Request {} on channel {ch_idx}.", req.meta.unique);
+                match  &mut self.filesystem {
+                    AnyFS::Sync(fs) => {
+                        // Dispatch request
+                        req.dispatch_sync(fs, &self.meta);
+                        // Return signal to continue
+                        true
                     },
-                    // Illegal request
-                    // Return the signal to break
-                    None => Ok(false)
+                    _ => panic!("Attempted to call Sync run method on non-Sync Filesystem")
                 }
             },
-            Err(err) => match err.raw_os_error() {
-                // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                // Return signal to continue
-                Some(ENOENT) => Ok(true),
-                // Interrupted system call, retry
-                // Return signal to continue
-                Some(EINTR) => Ok(true),
-                // Explicitly try again
-                // Return signal to continue
-                Some(EAGAIN) => Ok(true),
-                // Filesystem was unmounted,
-                // Return the signal to break
-                Some(ENODEV) => Ok(false),
-                // Unhandled error
-                _ => return Err(err),
-            },
+            // Illegal request
+            // Return the signal to break
+            None => false
         }
     }
-
-    /// Run the session loop in a single thread, same as `run()`, but additionally
-    /// processing both FUSE requests and poll events without blocking.
+    
+    /// Process notifications, blocking a single thread.
     #[cfg(all(feature = "abi-7-11", ))]
     fn do_notifications_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
         let sender = self.get_ch(ch_idx);
@@ -116,13 +124,22 @@ impl<L, S, A> Session<L, S, A> where
             if self.meta.destroyed.load(Relaxed) {
                 break;
             } else if self.meta.notify.load(Relaxed) {
-                if !self.handle_one_notification_sync(&notifier, ch_idx)? {
-                    // If no more notifications, 
-                    // sleep to make sure that other tasks get attention.
-                    std::thread::sleep(SYNC_SLEEP_INTERVAL);
+                // Fetch one notification; recv() blocks until one is available
+                match self.nr.recv() {
+                    Ok(notification) => {
+                        // Process the notification; blocks until sent
+                        self.handle_one_notification_sync(notification, &notifier, ch_idx)?
+                    }
+                    Err(RecvError) => {
+                        // Filesystem's Notification Sender disconnected.
+                        // This is not necessarily a fatal error for the session itself,
+                        // as FUSE requests can still be processed.
+                        warn!("Notification channel disconnected.");
+                        self.meta.notify.store(false, Relaxed);  
+                    }
                 }
             } else {
-                // TODO: await on notify instead of sleeping
+                // Maybe break; instead of sleeping this thread?
                 std::thread::sleep(SYNC_SLEEP_INTERVAL);
             }
         }
@@ -130,36 +147,18 @@ impl<L, S, A> Session<L, S, A> where
     }
 
     #[cfg(all(feature = "abi-7-11", ))]
-    fn handle_one_notification_sync(self: &mut Session<L, S, A>, notifier: &Notifier, ch_idx: usize) -> io::Result<bool> {
-        match self.nr.try_recv() {
-            Ok(notification) => {
-                debug!("Notification {:?} on channel {ch_idx}", &notification.label());
-                if let Notification::Stop = notification {
-                    // Filesystem says no more notifications.
-                    info!("Disabling notifications.");
-                    self.meta.notify.store(false, Relaxed);
-                }
-                if let Err(_e) = futures::executor::block_on(
-                    notifier.notify(notification)
-                ) {
-                    error!("Failed to send notification.");
-                    // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-                }
-                Ok(true)
-            }
-            Err(TryRecvError::Empty) => {
-                // No poll events pending, proceed to check FUSE FD
-                Ok(false)
-            }
-            Err(TryRecvError::Disconnected) => {
-                // Filesystem's Notification Sender disconnected.
-                // This is not necessarily a fatal error for the session itself,
-                // as FUSE requests can still be processed.
-                warn!("Notification channel disconnected.");
-                self.meta.notify.store(false, Relaxed);  
-                Ok(false)
-            }
-        }
+    fn handle_one_notification_sync(self: &mut Session<L, S, A>, notification: Notification, notifier: &Notifier, ch_idx: usize) -> io::Result<()> {
+        debug!("Notification {:?} on channel {ch_idx}", &notification.label());
+        if let Notification::Stop = notification {
+            // Filesystem says no more notifications.
+            info!("Disabling notifications.");
+            self.meta.notify.store(false, Relaxed);
+            Ok(())
+        } else if let Err(e) = notifier.notify(notification) {
+            error!("Failed to send notification.");
+            // TODO. Decide if error is fatal. ENODEV might mean unmounted.
+            Err(e)
+        } else {Ok(()) }
     }
 
     /// Run the session loop in a single thread, same as `run()`, but additionally
@@ -185,10 +184,12 @@ impl<L, S, A> Session<L, S, A> where
         Ok(())
     }
 
-    /// Run the session loop in a single thread, same as `run()`, but additionally
-    /// processing both FUSE requests and poll events without blocking.
+    /// Run the session loop in a single thread.
+    /// Alternates between processing requests, notifications, and heartbeats, without blocking.
+    /// This variant executes sleep() to prevent busy loops.
     fn do_all_events_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
-        // Buffer for receiving requests from the kernel
+        // Buffer for receiving requests from the kernel. Only one is allocated and
+        // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
 
         #[cfg(all(feature = "abi-7-11", ))]
@@ -196,71 +197,69 @@ impl<L, S, A> Session<L, S, A> where
 
         info!("Starting full task loop on channel {ch_idx}");
         loop {
-            let mut work_done = false;
-            // Check for outgoing Notifications (non-blocking)
             #[cfg(all(feature = "abi-7-11", ))]
             if self.meta.notify.load(Relaxed) {
-                // Note: this seems useless
-                match self.chs[ch_idx].ready_write() {
-                    Err(err) => {
-                        if err.raw_os_error() == Some(EINTR) {
-                            debug!("FUSE fd connection interrupted, will retry.");
-                        } else {
-                            warn!("FUSE fd connection: {err}");
-                            // Assume very bad. Stop the run. TODO: maybe some handling.
-                            return Err(err);
-                        }
+                // Check for outgoing notifications
+                // try_recv() returns immediately
+                match self.nr.try_recv() {
+                    Ok(notification) => {
+                        debug!("Notification {:?} on channel {ch_idx}", &notification.label());
+                        self.handle_one_notification_sync(notification, &notifier, ch_idx)?;
+                        // skip checking for incoming FUSE requests,
+                        // to prioritize checking for additional outgoing messages
+                        continue;
                     }
-                    Ok(ready) => {
-                        if ready {    
-                            if self.handle_one_notification_sync(&notifier, ch_idx)? {
-                                work_done = true;
-                            }
-                        }
+                    Err(TryRecvError::Empty) => {
+                        // No poll events pending, proceed to requests
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        warn!("Notification channel disconnected.");
+                        self.meta.notify.store(false, Relaxed);  
+                        // This is not necessarily a fatal error for the session itself,
+                        // as FUSE requests can still be processed. Proceed.
                     }
                 }
             }
-            if work_done {
-                // skip checking for incoming FUSE requests,
-                // to prioritize checking for additional outgoing messages
-                continue;
-            }
-            // Check for incoming FUSE requests (non-blocking)
-            match self.chs[ch_idx].ready_read() {
+            // Check for incoming FUSE requests; (non-blocking)
+            match self.chs[ch_idx].try_receive(&mut buffer) {
                 Err(err) => {
                     if err.raw_os_error() == Some(EINTR) {
                         debug!("FUSE fd connection interrupted, will retry.");
+                        continue;
+                    //TODO: handle additional cases
                     } else {
-                        warn!("FUSE fd connection: {err}");
-                        // Assume very bad. Stop the run. TODO: maybe some handling.
+                        warn!("FUSE fd: {err}");
+                        // Unhandled error. Stop the run. 
                         return Err(err);
                     }
                 }
-                Ok(ready) => {
-                    if ready {
-                        if !self.handle_one_request_sync(ch_idx, &mut buffer)? {
-                            break;
-                        }
-                    }
-                    // if not ready, do nothing.
-                }
-            }
-            if !work_done {
-                // No actions taken this loop iteration.
-                // Sleep briefly to yield CPU.
-                std::thread::sleep(SYNC_SLEEP_INTERVAL);
-                // Do a heartbeat to let the Filesystem know that some time has passed.
-                let fs_status = match &mut self.filesystem {
-                    AnyFS::Sync(fs) => fs.heartbeat(),
-                    _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem")
-                };
-                match fs_status {
-                    FsStatus::Stopped => {
+                Ok(Some(data)) => {
+                    if self.handle_one_request_sync(ch_idx, data) {
+                        // Skip the heartbeat to prioritize processing other pending requests
+                        continue;
+                    } else {
+                        // Invalid request, assuming the state cannot be recovered
                         break;
                     }
-                    _ => {
-                        // TODO: handle other cases
-                    }
+                }
+                Ok(None) => {
+                    // request not ready, proceed to heartbeat.
+                }
+            }
+            // No events were found during this loop iteration.
+            // Sleep to prevent a busy loop
+            std::thread::sleep(SYNC_SLEEP_INTERVAL);
+            // Do a heartbeat to let the Filesystem know that some time has passed.
+            let fs_status = match &mut self.filesystem {
+                AnyFS::Sync(fs) => fs.heartbeat(),
+                _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem")
+            };
+            match fs_status {
+                FsStatus::Stopped => {
+                    break;
+                }
+                _ => {
+                    // TODO: handle other cases
                 }
             }
         }

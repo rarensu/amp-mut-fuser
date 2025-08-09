@@ -4,7 +4,6 @@ use std::{
     os::unix::prelude::AsRawFd,
     sync::Arc,
 };
-#[cfg(feature = "tokio")]
 use smallvec::SmallVec;
 
 use libc::{c_int, c_void, size_t};
@@ -79,11 +78,26 @@ impl Channel {
         }
     }
 
+    #[cfg(not(feature = "tokio"))]
     /// Receives data up to the capacity of the given buffer.
     /// Can be awaited: blocks on a dedicated thread.
     /// Populates data into the buffer starting from the point of alignment
-    //#[cfg(feature = "tokio")]
-    pub async fn receive_later(&self, mut buffer: Vec<u8>) -> (io::Result<Vec<u8>>, Vec<u8>) { 
+    pub async fn receive_async(&self, mut _buffer: Vec<u8>) -> (io::Result<Vec<u8>>, Vec<u8>) { 
+        let _thread_ch = self.clone();  
+        /*
+        ??.spawn_blocking(move || {
+            let res = thread_ch.receive(&mut buffer);
+            (res, buffer)
+        }).await.expect("Unable to recover worker i/o thread")
+        */
+        unimplemented!("non-tokio async i/o not implemented")
+    }
+
+    #[cfg(feature = "tokio")]
+    /// Receives data up to the capacity of the given buffer.
+    /// Can be awaited: blocks on a dedicated thread.
+    /// Populates data into the buffer starting from the point of alignment
+    pub async fn receive_async(&self, mut buffer: Vec<u8>) -> (io::Result<Vec<u8>>, Vec<u8>) { 
         let thread_ch = self.clone();  
         tokio::task::spawn_blocking(move || {
             let res = thread_ch.receive(&mut buffer);
@@ -93,7 +107,7 @@ impl Channel {
 
     /// Polls the kernel to determine if a request is ready for reading (does not block).
     /// This method is used in the synchronous notifications execution model.
-    pub fn ready_read(&self) -> io::Result<bool> {
+    pub fn poll_read(&self) -> io::Result<bool> {
         let mut buf = [libc::pollfd {
             fd: self.raw_fd,
             events: libc::POLLIN,
@@ -132,6 +146,27 @@ impl Channel {
             }
         }
     }
+
+    pub fn try_receive(&self, buffer: &mut [u8]) -> io::Result<Option<Vec<u8>>> {
+        if self.poll_read()? {
+            Ok(Some(self.receive(buffer)?))
+        } else { 
+            Ok(None) 
+        }
+    }
+
+    pub async fn try_receive_async(&self, buffer: Vec<u8>) -> (io::Result<Option<Vec<u8>>>, Vec<u8>) {
+        if match self.poll_read() {
+            Err(e) => {return (Err(e), buffer);},
+            Ok(ready) => ready
+        } {
+            let (res, new_buffer) = self.receive_async(buffer).await;
+            (res.map(|data|Some(data)), new_buffer)
+        } else {
+            (Ok(None), buffer)
+        }
+    }
+
     /// Polls the kernel to determine if channel is ready to accept a notification (does not block).
     /// This method is used in the synchronous notifications execution model.
     pub fn ready_write(&self) -> io::Result<bool> {
@@ -194,10 +229,23 @@ impl Channel {
         }
     }
     
+    #[cfg(not(feature = "tokio"))]
+    /// Writes data from the owned buffer.
+    /// Can be awaited: blocks on a dedicated thread.
+    pub async fn send_async(&self, _bufs: SmallVec<[Vec<u8>; 4]>) -> io::Result<()> {
+        let _thread_sender = self.clone();
+        /*
+        tokio::task::spawn_blocking(move || {
+            let bufs = bufs.iter().map(|v| {IoSlice::new(v)}).collect::<Vec<IoSlice<'_>>>();
+            thread_sender.send(&bufs)
+        }).await.expect("Unable to recover worker i/o thread")
+        */
+        unimplemented!("non-tokio async i/o not implemented")
+    }
     #[cfg(feature = "tokio")]
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
-    pub async fn send_later(&self, bufs: SmallVec<[Vec<u8>; 4]>) -> io::Result<()> {
+    pub async fn send_async(&self, bufs: SmallVec<[Vec<u8>; 4]>) -> io::Result<()> {
         let thread_sender = self.clone();
         tokio::task::spawn_blocking(move || {
             let bufs = bufs.iter().map(|v| {IoSlice::new(v)}).collect::<Vec<IoSlice<'_>>>();

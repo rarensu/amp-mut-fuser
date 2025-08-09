@@ -78,6 +78,7 @@ pub struct Session<L, S, A> where
     S: SyncFS,
     A: AsyncFS
 {
+    // TODO: if threaded, filesystem: Mutex<AnyFS<...>>
     /// Filesystem operation implementations
     pub(crate) filesystem: AnyFS<L, S, A>,
     /// Communication channels to the kernel fuse driver
@@ -343,15 +344,12 @@ impl BackgroundSession {
 
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
 
-        #[cfg(not(feature = "abi-7-11"))]
         // The main session (se) is moved into this thread.
-        let main_loop_guard = thread::spawn(move || {
-            futures::executor::block_on(se.run())
-        });
-        #[cfg(feature = "abi-7-11")]
-        let main_loop_guard = thread::spawn(move || {
-            futures::executor::block_on(se.run_concurrently_sequential_full())
-        });
+        let main_loop_guard = thread::spawn(
+            move || {
+                se.run_blocking()
+            }
+        );
 
         Ok(BackgroundSession {
             main_loop_guard,
