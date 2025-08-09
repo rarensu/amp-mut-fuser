@@ -17,18 +17,20 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-#[allow(clippy::wildcard_imports)] // avoid duplicating feature gates
-use crate::ll::{Errno, TimeOrNow};
+use bytes::Bytes;
+use crate::{KernelConfig, FsStatus, Errno, TimeOrNow};
+use crate::request::{Forget, RequestMeta};
+use crate::reply::{Entry, FileAttr, DirentList, Open, Statfs, Xattr, Lock};
 #[cfg(feature = "abi-7-11")]
 use crate::reply::Ioctl;
+#[cfg(feature = "abi-7-21")]
+use crate::reply::DirentPlusList;
 #[cfg(target_os = "macos")]
 use crate::reply::XTimes;
-use crate::reply::{Entry, FileAttr, DirentList, Open, Statfs, Xattr, Lock};
-#[cfg(feature = "abi-7-21")]
-use crate::DirentPlusList;
-use crate::{Forget, KernelConfig};
-use crate::request::RequestMeta;
-use bytes::Bytes;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::{Notification};
+#[cfg(feature = "abi-7-11")]
+use crossbeam_channel::{Sender};
 
 /// Filesystem trait.
 ///
@@ -48,9 +50,25 @@ pub trait Filesystem {
         Ok(config)
     }
 
+    /// Initializes the notification event sender for the filesystem.
+    /// The boolean indicates whether the filesystem supports it.
+    #[cfg(feature = "abi-7-11")]
+    fn init_notification_sender(
+        &mut self,
+        sender: Sender<Notification>,
+    ) -> bool {
+        false // Default: not supported
+    }
+
     /// Clean up filesystem.
     /// Called on filesystem exit.
     fn destroy(&mut self) {}
+
+    /// In a syncronous execution model where a sleep may occur,
+    /// The heartbeat may be used to alert the Filesystem that time has passed.
+    fn heartbeat(&mut self) -> FsStatus {
+        FsStatus::Default
+    }
 
     /// Look up a directory entry by name and get its attributes.
     /// The method should return `Ok(Entry)` if the entry is found, or `Err(Errno)` otherwise.

@@ -12,8 +12,13 @@ use std::ffi::OsStr;
 use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::SystemTime;
-use crate::KernelConfig;
+use crate::{KernelConfig, FsStatus};
 pub use crate::ll::{TimeOrNow, fuse_abi::fuse_forget_one};
+#[cfg(feature = "abi-7-11")]
+use crate::notify::{Notification};
+#[cfg(feature = "abi-7-11")]
+use crossbeam_channel::{Sender};
+
 
 #[cfg(feature = "abi-7-11")]
 use super::ReplyPoll;
@@ -46,9 +51,25 @@ pub trait Filesystem {
         Ok(())
     }
 
+    /// Initializes the notification event sender for the filesystem.
+    /// The boolean indicates whether the filesystem supports it.
+    #[cfg(feature = "abi-7-11")]
+    fn init_notification_sender(
+        &mut self,
+        sender: Sender<Notification>,
+    ) -> bool {
+        false // Default: not supported
+    }
+
     /// Clean up filesystem.
     /// Called on filesystem exit.
     fn destroy(&mut self) {}
+
+    /// In a syncronous execution model where a sleep may occur,
+    /// The heartbeat may be used to alert the Filesystem that time has passed.
+    fn heartbeat(&mut self) -> FsStatus {
+        FsStatus::Default
+    }
 
     /// Look up a directory entry by name and get its attributes.
     fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {

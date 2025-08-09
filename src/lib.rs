@@ -62,12 +62,11 @@ pub use reply::XTimes;
 pub use bytes::Bytes;
 pub use reply::{Dirent, DirentList, DirentPlusList, Entry, FileAttr, FileType, Open, Statfs, Xattr, Lock};
 pub use request::{Forget, RequestMeta};
-pub use session::{Session, SessionACL, SessionUnmounter, FsStatus};
+pub use session::{Session, SessionACL, SessionUnmounter};
 #[cfg(feature = "threaded")]
 pub use session::BackgroundSession;
 pub use container::{Container, SafeBorrow};
 pub use any::AnyFS;
-use crate::session::FilesystemExt;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
 use crate::trait_async::Filesystem as AsyncFS;
@@ -283,6 +282,20 @@ impl KernelConfig {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Debug)]
+/// This enum is an optional way for the Filesystem to report its status to a Session thread.
+pub enum FsStatus {
+    /// Default may be used when the Filesystem does not implement a status
+    Default,
+    /// Ready indicates the Filesystem has no actions in progress
+    Ready,
+    /// Busy indicates the Filesytem has one or more actions in progress
+    Busy,
+    /// Stopped indicates that the Filesystem will not accept new requests
+    Stopped
+    // This list is a work in progress and I'm still trying to figure out what values would be useful
+}
+
 /// Mount the given filesystem to the given mountpoint. This function will
 /// block until the filesystem is unmounted.
 ///
@@ -298,9 +311,9 @@ pub fn mount<L, S, A, P>(
     mountpoint: P,
     options: &[&OsStr],
 ) -> io::Result<()> where 
-    L: crate::trait_legacy::Filesystem + 'static,
-    S: crate::trait_sync::Filesystem + 'static,
-    A: crate::trait_async::Filesystem + 'static,
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS + 'static,
     P: AsRef<Path>
 {
     let options = parse_options_from_args(options)?;
@@ -322,18 +335,14 @@ pub fn mount2<L, S, A, P>(
     mountpoint: P,
     options: &[MountOption],
 ) -> io::Result<()> where 
-    L: LegacyFS + FilesystemExt + 'static,
-    S: SyncFS + FilesystemExt + 'static,
-    A: AsyncFS + FilesystemExt + 'static,
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS + 'static,
     P: AsRef<Path>
 {
     check_option_conflicts(options)?;
-    Session::new_mounted(filesystem, mountpoint.as_ref(), options).and_then(
-        |se| 
-        futures::executor::block_on(
-            se.run()
-        )
-    )
+    let se = Session::new_mounted(filesystem, mountpoint.as_ref(), options)?;
+    se.run()
 }
 
 /// Mount the given filesystem to the given mountpoint in a background thread.
@@ -355,9 +364,9 @@ pub fn spawn_mount<L, S, A, P>(
     mountpoint: P,
     options: &[&OsStr],
 ) -> io::Result<BackgroundSession> where 
-    L: LegacyFS + FilesystemExt + Send + 'static,
-    S: SyncFS + FilesystemExt + Send + 'static,
-    A: AsyncFS + FilesystemExt + Send + 'static,
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + 'static,
     P: AsRef<Path>
 {
     let options: Option<Vec<_>> = options
@@ -365,7 +374,8 @@ pub fn spawn_mount<L, S, A, P>(
         .map(|x| Some(MountOption::from_str(x.to_str()?)))
         .collect();
     let options = options.ok_or(ErrorKind::InvalidData)?;
-    Session::new_mounted(filesystem, mountpoint.as_ref(), options.as_ref()).and_then(session::Session::spawn)
+    let se = Session::new_mounted(filesystem, mountpoint.as_ref(), options.as_ref())?;
+    se.spawn()
 }
 
 /// Mount the given filesystem to the given mountpoint in a background thread.
@@ -387,9 +397,9 @@ pub fn spawn_mount2<L, S, A, P>(
     mountpoint: P,
     options: &[MountOption],
 ) -> io::Result<BackgroundSession> where 
-    L: LegacyFS + FilesystemExt + Send + 'static,
-    S: SyncFS + FilesystemExt + Send + 'static,
-    A: AsyncFS + FilesystemExt + Send + 'static,
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + 'static,
     P: AsRef<Path>
 {
     check_option_conflicts(options)?;

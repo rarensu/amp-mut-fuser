@@ -12,17 +12,22 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
+use bytes::Bytes;
+use crate::{KernelConfig, FsStatus, Errno, TimeOrNow};
+use crate::request::{Forget, RequestMeta};
+use crate::reply::{
+    Entry, FileAttr, DirentList, Open, Statfs, Xattr, Lock, 
+};
 #[cfg(feature = "abi-7-11")]
 use crate::Ioctl;
 #[cfg(target_os = "macos")]
 use crate::XTimes;
-use crate::{
-    Errno, TimeOrNow, RequestMeta, Entry, FileAttr,
-    DirentList, Open, Statfs, Xattr, Lock, Forget, KernelConfig
-};
 #[cfg(feature = "abi-7-21")]
-use crate::DirentPlusList;
-use bytes::Bytes;
+use crate::reply::DirentPlusList;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::{Notification};
+#[cfg(feature = "abi-7-11")]
+use crossbeam_channel::{Sender};
 
 use async_trait::async_trait;
 
@@ -45,9 +50,25 @@ pub trait Filesystem: Send + Sync {
         Ok(config)
     }
 
+    /// Initializes the notification event sender for the filesystem.
+    /// The boolean indicates whether the filesystem supports it.
+    #[cfg(feature = "abi-7-11")]
+    fn init_notification_sender(
+        &mut self,
+        sender: Sender<Notification>,
+    ) -> bool {
+        false // Default: not supported
+    }
+
     /// Clean up filesystem.
     /// Called on filesystem exit.
     async fn destroy(&self) {}
+
+    /// In a syncronous execution model where a sleep may occur,
+    /// The heartbeat may be used to alert the Filesystem that time has passed.
+    async fn heartbeat(&self) -> FsStatus {
+        FsStatus::Default
+    }
 
     /// Look up a directory entry by name and get its attributes.
     /// The method should return `Ok(Entry)` if the entry is found, or `Err(Errno)` otherwise.

@@ -42,9 +42,11 @@ pkg-config = { version = "0.3.14", optional = true }
 
 [features]
 default = ["threaded"]
+tokio = ["threaded"]
 threaded = ["no-rc"]
 no-rc = []
 locking = []
+ext = []
 libfuse = ["pkg-config"]
 serializable = ["serde"]
 macfuse-4-compat = []

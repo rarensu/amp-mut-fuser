@@ -81,7 +81,7 @@ pub struct Session<L, S, A> where
     /// Communication channels to the kernel fuse driver
     pub(crate) chs: Vec<Channel>,
     /// Handle to the mount.  Dropping this unmounts.
-    mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
+    pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Whether to restrict access to owner, root + owner, or unrestricted
     /// Used to implement `allow_root` and `auto_unmount`
     pub(crate) meta: SessionMeta,
@@ -94,9 +94,9 @@ pub struct Session<L, S, A> where
 }
 
 impl<L, S, A> Session<L, S, A> where 
-    L: LegacyFS + FilesystemExt,
-    S: SyncFS + FilesystemExt,
-    A: AsyncFS + FilesystemExt 
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS 
 {
     /// Create a new session by mounting the given filesystem to the given mountpoint
     pub fn new_mounted<P: AsRef<Path>>(
@@ -147,7 +147,11 @@ impl<L, S, A> Session<L, S, A> where
         let (ns, nr) = crossbeam_channel::unbounded();
         #[cfg(feature = "abi-7-11")]
         // Pass the sender to the filesystem.
-        let notify = filesystem.init_notification_sender(ns.clone());
+        let notify = match &mut filesystem {
+            AnyFS::Legacy(lfs) => lfs.init_notification_sender(ns.clone()),
+            AnyFS::Sync(sfs) => sfs.init_notification_sender(ns.clone()),
+            AnyFS::Async(afs) => afs.init_notification_sender(ns.clone())
+        };
         let meta = SessionMeta {
             allowed,
             session_owner: geteuid().as_raw(),
@@ -224,6 +228,40 @@ impl<L, S, A> Session<L, S, A> where
     }
 }
 
+impl<L, S, A> Session<L, S, A> where 
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS
+{
+    /// This function starts the main Session loop of a Legacy or Sync Filesystem in the current thread. 
+    /// # Panics
+    /// Panics if the filesystem is Async. Hint: try `run_blocking()` or `run_async()`
+    pub fn run(self) -> io::Result<()> {
+        match &self.filesystem {
+            AnyFS::Legacy(_) => self.run_legacy(),
+            AnyFS::Sync(_) => self.run_sync(),
+            AnyFS::Async(_) => panic!("Attempted to use Legacy/Sync method on an Async filesystem.")
+        }
+    }
+}
+
+impl<L, S, A> Session<L, S, A> where 
+    L: LegacyFS + Send + Sync,
+    S: SyncFS + Send + Sync,
+    A: AsyncFS + Send + Sync
+{
+    /// This function starts the main Session loop of Any Filesystem, blocking the current thread.
+    pub fn run_blocking(self) -> io::Result<()> {
+        match &self.filesystem {
+            AnyFS::Legacy(_) => self.run_legacy(),
+            AnyFS::Sync(_) => self.run_sync(),
+            AnyFS::Async(_) => futures::executor::block_on(self.run_async())
+        }
+    }
+}
+
+
+
 #[derive(Debug)]
 /// A thread-safe object that can be used to unmount a Filesystem
 pub struct SessionUnmounter {
@@ -242,9 +280,9 @@ impl SessionUnmounter {
 /// background thread using `spawn()`.
 #[cfg(feature = "threaded")]
 impl<L, S, A> Session<L, S, A> where 
-    L: LegacyFS + Send + 'static,
-    S: SyncFS + Send + 'static,
-    A: AsyncFS + Send + 'static
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + Send + Sync + 'static
 {
     /// Run the session loop in a background thread
     pub fn spawn(self) -> io::Result<BackgroundSession> {
@@ -293,10 +331,10 @@ impl BackgroundSession {
     /// Create a new background session for the given session by running its
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
-    pub fn new<L, S, A>(se: Session<L, S, A>) -> io::Result<BackgroundSession>where 
-        L: LegacyFS + Send + 'static,
-        S: SyncFS + Send + 'static,
-        A: AsyncFS + Send + 'static
+    pub fn new<L, S, A>(se: Session<L, S, A>) -> io::Result<BackgroundSession> where 
+        L: LegacyFS + Send + Sync + 'static,
+        S: SyncFS + Send + Sync +'static,
+        A: AsyncFS + Send + Sync + 'static
     {
         #[cfg(feature = "abi-7-11")]
         let extra_notification_sender = se.ns.clone();
@@ -360,74 +398,3 @@ impl fmt::Debug for BackgroundSession {
         builder.finish()
     }
 }
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-/// This enum is an optional way for the Filesystem to report its status to a Session thread.
-pub enum FsStatus {
-    /// Default may be used when the Filesystem does not implement a status
-    Default,
-    /// Ready indicates the Filesystem has no actions in progress
-    Ready,
-    /// Busy indicates the Filesytem has one or more actions in progress
-    Busy,
-    /// Stopped indicates that the Filesystem will not accept new requests
-    Stopped
-    // This list is a work in progress and I'm still trying to figure out what values would be useful
-}
-
-#[allow(unused_variables)]
-pub trait FilesystemExt {
-    /// Final warning before the Session Drops the Filesystem
-    fn cleanup(&mut self) {
-        // Default: do nothing
-    }
-
-    /// Initializes the notification event sender for the filesystem.
-    /// The boolean indicates whether the filesystem supports it.
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
-        sender: Sender<Notification>,
-    ) -> bool {
-        false // Default: not supported
-    }
-
-    /// In a syncronous execution model where a sleep may happen,
-    /// the heartbeat may be used to alert the Filesystem that time has passed.
-    fn heartbeat(&self) -> FsStatus {
-        FsStatus::Default
-    }
-}
-
-impl<L, S, A> FilesystemExt for AnyFS<L, S, A> where 
-    L: LegacyFS + FilesystemExt,
-    S: SyncFS + FilesystemExt,
-    A: AsyncFS + FilesystemExt 
-{
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
-        sender: Sender<Notification>,
-    ) -> bool {
-        match self {
-            AnyFS::Legacy(lfs) => lfs.init_notification_sender(sender),
-            AnyFS::Sync(sfs) => sfs.init_notification_sender(sender),
-            AnyFS::Async(afs) => afs.init_notification_sender(sender)
-        }
-    }
-    fn cleanup(&mut self) {
-        match self {
-            AnyFS::Legacy(lfs) => lfs.cleanup(),
-            AnyFS::Sync(sfs) => sfs.cleanup(),
-            AnyFS::Async(afs) => afs.cleanup()
-        }
-    }
-    fn heartbeat(&self) -> FsStatus {
-        match self {
-            AnyFS::Legacy(lfs) => lfs.heartbeat(),
-            AnyFS::Sync(sfs) => sfs.heartbeat(),
-            AnyFS::Async(afs) => afs.heartbeat()
-        }
-    }
-}
-

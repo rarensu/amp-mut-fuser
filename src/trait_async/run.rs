@@ -12,10 +12,11 @@ use std::thread::{self, JoinHandle};
 #[cfg(feature = "threaded")]
 use std::fmt;
 
-use crate::session::{Session, BackgroundSession, AnyFilesystem, FsStatus, BUFFER_SIZE};
+use crate::session::{BackgroundSession, Session, BUFFER_SIZE};
 // This value is used to prevent a busy loop in the synchronous run with notification
 use crate::channel::SYNC_SLEEP_INTERVAL;
 use crate::request::RequestHandler;
+use crate::FsStatus;
 use crate::{channel};
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
@@ -23,16 +24,21 @@ use crate::{channel::Channel, mnt::Mount};
 use crate::notify::{Notification, Notifier};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::TryRecvError;
+use crate::any::AnyFS;
+use crate::trait_legacy::Filesystem as LegacyFS;
+use crate::trait_sync::Filesystem as SyncFS;
+use crate::trait_async::Filesystem as AsyncFS;
 
-use super::Filesystem as AsyncFilesystem;
-
-impl<FS: AsyncFilesystem> Session<FS> {
-    
+impl<L, S, A> Session<L, S, A> where 
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync +'static,
+    A: AsyncFS + 'static
+{ 
     /// Run the session loop that receives kernel requests and dispatches them to method
     /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
     /// having multiple buffers (which take up much memory), but the filesystem methods
     /// may run concurrent by spawning threads.
-    pub async fn run(self) -> io::Result<()> {
+    pub async fn run_async(self) -> io::Result<()> {
         let se = Arc::new(self);
         Session::do_all_events(se.clone(), 0).await
     }
@@ -63,21 +69,21 @@ impl<FS: AsyncFilesystem> Session<FS> {
         #[cfg(feature = "abi-7-11")]
         for ch_idx in (0..(channel_count)).filter(|i| i%2==0) {
             futures.push(
-                tokio::spawn(Session::do_requests(se.clone(), ch_idx))
+                tokio::spawn(Session::do_requests_async(se.clone(), ch_idx))
             );
         }
         for ch_idx in (0..(channel_count)).filter(|i| i%2==1) {
             #[cfg(feature = "abi-7-11")]
             futures.push(
-                tokio::spawn(Session::do_notifications(se.clone(), ch_idx))
+                tokio::spawn(Session::do_notifications_async(se.clone(), ch_idx))
             );
             #[cfg(not(feature = "abi-7-11"))]
             futures.push(
-                tokio::spawn(Session::do_requests(se.clone(), ch_idx))
+                tokio::spawn(Session::do_requests_async(se.clone(), ch_idx))
             );
         }
         futures.push(
-            tokio::spawn(Session::do_heartbeats(se.clone()))
+            tokio::spawn(Session::do_heartbeats_async(se.clone()))
         );
         for future in futures {
             if let Err(e) = future.await.expect("Unable to await task?") {
@@ -88,54 +94,87 @@ impl<FS: AsyncFilesystem> Session<FS> {
     }
 
 
-    async fn do_requests(se: Arc<Session<FS>>, ch_idx: usize) -> io::Result<()> {
+    async fn do_requests_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
 
         info!("Starting request loop on channel {ch_idx} with fd {}", &se.chs[ch_idx].raw_fd);
         loop {
-            // Read the next request from the given channel to kernel driver
-            // The kernel driver makes sure that we get exactly one request per read
-            let (result, new_buffer) = se.chs[ch_idx].receive_later(buffer).await;
-            buffer = new_buffer;
-            match result {
-                Ok(size) => {
-                    let buf = channel::aligned_sub_buf(&mut buffer, channel::FUSE_HEADER_ALIGNMENT);
-                    let data = Vec::from(&buf[..size]);
-                    buf[..size].fill(0);
-                    match RequestHandler::new(se.chs[ch_idx].clone(), data) {
-                        // Dispatch request
-                        Some(req) => {
-                            debug!("Request {} on channel {ch_idx}.", req.meta.unique);
-                            req.dispatch_async(&se.filesystem, &se.meta).await
-                        },
-                        // Quit loop on illegal request
-                        None => break,
-                    }
-                },
-                Err(err) => match err.raw_os_error() {
-                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                    Some(ENOENT) => continue,
-                    // Interrupted system call, retry
-                    Some(EINTR) => continue,
-                    // Explicitly try again
-                    Some(EAGAIN) => continue,
-                    // Filesystem was unmounted, quit the loop
-                    Some(ENODEV) => break,
-                    // Unhandled error
-                    _ => return Err(err),
-                },
+            // Move buffer into the helper function
+            let updated_buffer = Session::handle_one_request_async(&se, ch_idx, buffer).await?;
+            if updated_buffer.len() > 0 {
+                // Re-use the buffer
+                buffer = updated_buffer;
+            } else {
+                break;
             }
             // TODO: maybe add a heartbeat?
         }
         Ok(())
     }
 
+    async fn handle_one_request_async(se: &Arc<Session<L, S, A>>, ch_idx: usize, buffer: Vec<u8>) -> io::Result<Vec<u8>> {
+        // Read the next request from the given channel to kernel driver
+        // The kernel driver makes sure that we get exactly one request per read
+        #[cfg(not(feature = "tokio"))]
+        let mut updated_buffer = buffer;
+        #[cfg(not(feature = "tokio"))]
+        // Read a FUSE request (blocks until read succeeds)
+        let result = se.chs[ch_idx].receive(&mut updated_buffer);
+        #[cfg(feature = "tokio")]
+        // Read a FUSE request (await until read succeeds)
+        let (result, mut updated_buffer) = se.chs[ch_idx].receive_later(buffer).await;
+        match result {
+            // Kernel sent data
+            Ok(size) => {
+                // Prepare data
+                let buf = channel::aligned_sub_buf(&mut updated_buffer, channel::FUSE_HEADER_ALIGNMENT);
+                let data = Vec::from(&buf[..size]);
+                buf[..size].fill(0);
+                // Parse data
+                match RequestHandler::new(se.chs[ch_idx].clone(), data) {
+                    // Request is valid
+                    Some(req) => {
+                        debug!("Request {} on channel {ch_idx}.", req.meta.unique);
+                        match  &se.filesystem {
+                            AnyFS::Async(fs) => {
+                                // Dispatch request
+                                req.dispatch_async(fs, &se.meta).await;
+                                // Return the buffer for re-use
+                                Ok(updated_buffer)
+                            },
+                            _ => panic!("Attempted to call Async run method on non-Async Filesystem")
+                        }
+                    },
+                    // Illegal request
+                    // Return an empty buffer to quit the loop
+                    None => Ok(Vec::new())
+                }
+            },
+            Err(err) => match err.raw_os_error() {
+                // Operation interrupted. Accordingly to FUSE, this is safe to retry
+                // Return the buffer for re-use
+                Some(ENOENT) => Ok(updated_buffer),
+                // Interrupted system call, retry
+                // Return the buffer for re-use
+                Some(EINTR) => Ok(updated_buffer),
+                // Explicitly try again
+                // Return the buffer for re-use
+                Some(EAGAIN) => Ok(updated_buffer),
+                // Filesystem was unmounted,
+                // Return an empty buffer to quit the loop
+                Some(ENODEV) => Ok(Vec::new()),
+                // Unhandled error
+                _ => return Err(err),
+            },
+        }
+    }
+
     /// Run the session loop in a single thread, same as `run()`, but additionally
     /// processing both FUSE requests and poll events without blocking.
-    #[cfg(feature = "abi-7-11")]
-    async fn do_notifications(se: Arc<Session<FS>>, ch_idx: usize) -> io::Result<()> {
+    #[cfg(all(feature = "abi-7-11"))]
+    async fn do_notifications_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
         let sender = se.get_ch(ch_idx);
         info!("Starting notification loop on channel {ch_idx} with fd {}", &sender.raw_fd);
         let notifier = Notifier::new(sender);
@@ -143,7 +182,7 @@ impl<FS: AsyncFilesystem> Session<FS> {
             if se.meta.destroyed.load(Relaxed) {
                 break;
             } else if se.meta.notify.load(Relaxed) {
-                if !Session::handle_one_notification(&se, &notifier, ch_idx).await? {
+                if !Session::handle_one_notification_async(&se, &notifier, ch_idx).await? {
                     // If no more notifications, 
                     // sleep to make sure that other tasks get attention.
                     tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
@@ -156,22 +195,54 @@ impl<FS: AsyncFilesystem> Session<FS> {
         Ok(())
     }
 
+    #[cfg(all(feature = "abi-7-11"))]
+    async fn handle_one_notification_async(se: &Session<L, S, A>, notifier: &Notifier, ch_idx: usize) -> io::Result<bool> {
+        match se.nr.try_recv() {
+            Ok(notification) => {
+                debug!("Notification {:?} on channel {ch_idx}", &notification.label());
+                if let Notification::Stop = notification {
+                    // Filesystem says no more notifications.
+                    info!("Disabling notifications.");
+                    se.meta.notify.store(false, Relaxed);
+                }
+                if let Err(_e) = notifier.notify(notification).await {
+                    error!("Failed to send notification.");
+                    // TODO. Decide if error is fatal. ENODEV might mean unmounted.
+                }
+                Ok(true)
+            }
+            Err(TryRecvError::Empty) => {
+                // No poll events pending, proceed to check FUSE FD
+                Ok(false)
+            }
+            Err(TryRecvError::Disconnected) => {
+                // Filesystem's Notification Sender disconnected.
+                // This is not necessarily a fatal error for the session itself,
+                // as FUSE requests can still be processed.
+                warn!("Notification channel disconnected.");
+                se.meta.notify.store(false, Relaxed);  
+                Ok(false)
+            }
+        }
+    }
+
     /// Run the session loop in a single thread, same as `run()`, but additionally
     /// processing both FUSE requests and poll events without blocking.
-    async fn do_heartbeats(se: Arc<Session<FS>>) -> io::Result<()> {
+    async fn do_heartbeats_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
         info!("Starting heartbeat loop");
         loop {
             tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
             // Do a heartbeat to let the Filesystem know that some time has passed.
-            match FS::heartbeat(&se.filesystem).await {
-                Ok(status) => {
-                    if let FsStatus::Stopped = status {
-                        break;
-                    }
-                    // TODO: handle other cases
+            let fs_status = match &se.filesystem {
+                AnyFS::Async(fs) => fs.heartbeat().await,
+                _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem")
+            };
+            match fs_status {
+                FsStatus::Stopped => {
+                    break;
                 }
-                Err(e) => {
-                    warn!("Heartbeat error: {e:?}");
+                _ => {
+                    // TODO: handle other cases
                 }
             }
         }
@@ -180,7 +251,7 @@ impl<FS: AsyncFilesystem> Session<FS> {
 
     /// Run the session loop in a single thread, same as `run()`, but additionally
     /// processing both FUSE requests and poll events without blocking.
-    async fn do_all_events(se: Arc<Session<FS>>, ch_idx: usize) -> io::Result<()> {
+    async fn do_all_events(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
         let buf = channel::aligned_sub_buf(
@@ -210,7 +281,7 @@ impl<FS: AsyncFilesystem> Session<FS> {
                     }
                     Ok(ready) => {
                         if ready {    
-                            if Session::handle_one_notification(&se, &notifier, ch_idx).await? {
+                            if Session::handle_one_notification_async(&se, &notifier, ch_idx).await? {
                                 work_done = true;
                             }
                         }
@@ -223,7 +294,13 @@ impl<FS: AsyncFilesystem> Session<FS> {
                 continue;
             }
             // Check for incoming FUSE requests (non-blocking)
-            match se.chs[ch_idx].ready_read() {
+            #[cfg(not(feature = "tokio"))]
+            let poll = se.chs[ch_idx].ready_read();
+            #[cfg(feature = "tokio")]
+            // Tokio variant doesn't need to do this check.
+            const poll: io::Result<bool> = Ok(true);
+            //#[allow(match)]
+            match poll {
                 Err(err) => {
                     if err.raw_os_error() == Some(EINTR) {
                         debug!("FUSE fd connection interrupted, will retry.");
@@ -235,102 +312,34 @@ impl<FS: AsyncFilesystem> Session<FS> {
                 }
                 Ok(ready) => {
                     if ready {
-                        // Read a FUSE request (blocks until read succeeds)
-                        let result = se.chs[ch_idx].receive(buf);
-                        match result {
-                            Ok(size) => {
-                                if size == 0 {
-                                    // Read of 0 bytes on FUSE FD typically means it was closed (unmounted)
-                                    info!("FUSE channel read 0 bytes, session ending.");
-                                    break;
-                                }
-                                let data = Vec::from(&buf[..size]);
-                                if let Some(req) = RequestHandler::new(sender.clone(), data) {
-                                    debug!("Request {} on channel {ch_idx}.", req.meta.unique);
-                                    req.dispatch_async(&se.filesystem, &se.meta).await;
-                                } else {
-                                    // Illegal request, quit loop
-                                    warn!("Failed to parse FUSE request, session ending.");
-                                    break;
-                                }
-                                work_done = true;
-                            }
-                            Err(err) => match err.raw_os_error() {
-                                Some(ENOENT) => {
-                                    debug!("FUSE channel receive ENOENT, retrying.");
-                                    continue;
-                                }
-                                Some(EINTR) => {
-                                    debug!("FUSE channel receive EINTR, retrying.");
-                                    continue;
-                                }
-                                Some(EAGAIN) => {
-                                    debug!("FUSE channel receive EAGAIN, retrying.");
-                                    continue;
-                                }
-                                Some(ENODEV) => {
-                                    info!("FUSE device not available (ENODEV), session ending.");
-                                    break; // Filesystem was unmounted
-                                }
-                                _ => {
-                                    error!("Error receiving FUSE request: {err}");
-                                    return Err(err); // Unhandled error
-                                }
-                            },
+                        // Move buffer into the helper function
+                        let updated_buffer = Session::handle_one_request_async(&se, ch_idx, buffer).await?;
+                        if updated_buffer.len() > 0 {
+                            // Re-use the buffer
+                            buffer = updated_buffer;
+                        } else {
+                            break;
                         }
+                        work_done = true;
                     }
                     // if not ready, do nothing.
                 }
             }
-            if !work_done {
-                // No actions taken this loop iteration.
-                // Sleep briefly to yield CPU.
-                tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
-                // Do a heartbeat to let the Filesystem know that some time has passed.
-                match FS::heartbeat(&se.filesystem).await {
-                    Ok(status) => {
-                        if let FsStatus::Stopped = status {
-                            break;
-                        }
-                        // TODO: handle other cases
-                    }
-                    Err(e) => {
-                        warn!("Heartbeat error: {e:?}");
-                    }
+            // Do a heartbeat to let the Filesystem know that some time has passed.
+            let fs_status = match &se.filesystem {
+                AnyFS::Async(fs) => fs.heartbeat().await,
+                _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem")
+            };
+            match fs_status {
+                FsStatus::Stopped => {
+                    break;
+                }
+                _ => {
+                    // TODO: handle other cases
                 }
             }
         }
         Ok(())
     }
 
-    #[cfg(feature = "abi-7-11")]
-    async fn handle_one_notification(se: &Session<FS>, notifier: &Notifier, ch_idx: usize) -> io::Result<bool> {
-        match se.nr.try_recv() {
-            Ok(notification) => {
-                debug!("Notification {:?} on channel {ch_idx}", &notification.label());
-                if let Notification::Stop = notification {
-                    // Filesystem says no more notifications.
-                    info!("Disabling notifications.");
-                    se.meta.notify.store(false, Relaxed);
-                }
-                if let Err(_e) = notifier.notify(notification).await {
-                    error!("Failed to send notification.");
-                    // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-                }
-                Ok(true)
-            }
-            Err(TryRecvError::Empty) => {
-                // No poll events pending, proceed to check FUSE FD
-                Ok(false)
-            }
-            Err(TryRecvError::Disconnected) => {
-                // Filesystem's Notification Sender disconnected.
-                // This is not necessarily a fatal error for the session itself,
-                // as FUSE requests can still be processed.
-                warn!("Notification channel disconnected.");
-                se.meta.notify.store(false, Relaxed);  
-                Ok(false)
-            }
-        }
-    }
 }

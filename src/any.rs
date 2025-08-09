@@ -1,8 +1,11 @@
-use crate::session::FilesystemExt;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
 use crate::trait_async::Filesystem as AsyncFS;
 
+/// This enum holds any of these variants of Filesystem:
+/// `::Legacy(fuser::trait_legacy::Filesystem)`,
+/// `::Sync(fuser::trait_sync::Filesystem)`, or
+/// `::Async(fuser::trait_sync::Filesystem)`.
 #[derive(Debug)]
 pub enum AnyFS<L, S, A> where 
     L: LegacyFS,
@@ -14,16 +17,15 @@ pub enum AnyFS<L, S, A> where
     Async(A),
 }
 
+// Compiler trickery to enable useful blanket traits
 pub(crate) struct _Nl {}
-impl FilesystemExt for _Nl {}
 impl LegacyFS for _Nl {}
 pub(crate) struct _Ns {}
-impl FilesystemExt for _Ns {}
 impl SyncFS for _Ns {}
 pub(crate) struct _Na {}
-impl FilesystemExt for _Na {}
 impl AsyncFS for _Na {}
 
+// Useful blanket traits
 impl<L> From<L> for AnyFS<L, _Ns, _Na> where
     L: LegacyFS
 {
@@ -45,3 +47,6 @@ impl<A> From<A> for AnyFS<_Nl, _Ns, A> where
         AnyFS::Async(value)
     }
 }
+
+
+
