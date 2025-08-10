@@ -12,9 +12,12 @@ use crate::ll::{self, Operation, fuse_abi as abi, Request as AnyRequest, Errno};
 use super::Filesystem;
 
 impl RequestHandler {
-    /// Dispatch request to the given filesystem.
-    /// This calls the appropriate filesystem operation method for the
-    /// request and sends back the returned reply to the kernel
+    /// Dispatches a request to the given asynchronous filesystem.
+    ///
+    /// This function is called by the `Session` when it receives a request for
+    /// an `async` filesystem. It calls the appropriate `async` method on the
+    /// `Filesystem` trait, awaits the result, and then sends the response
+    /// back to the kernel using the `ReplyHandler`.
     pub(crate) async fn dispatch_async<FS: Filesystem>(self, fs: &FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
         macro_rules! reply {

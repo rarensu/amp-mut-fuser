@@ -1,3 +1,81 @@
+//! The legacy, callback-based FUSE API.
+//!
+//! This module provides the `Filesystem` trait, which is the original,
+//! callback-based API from the `fuse` crate. It is recommended to use the
+//! `trait_sync` or `trait_async` APIs for new filesystems.
+//!
+//! ## Example
+//!
+//! ```rust,no_run
+//! use fuser::{
+//!     FileAttr, FileType, MountOption, ReplyAttr, ReplyData, ReplyEntry,
+//!     ReplyDirectory, Request, trait_legacy::Filesystem,
+//! };
+//! use std::ffi::OsStr;
+//! use std::time::{Duration, UNIX_EPOCH};
+//!
+//! const TTL: Duration = Duration::from_secs(1); // 1 second
+//!
+//! const HELLO_DIR_ATTR: FileAttr = FileAttr {
+//!     ino: 1,
+//!     size: 0,
+//!     blocks: 0,
+//!     atime: UNIX_EPOCH, // 1970-01-01 00:00:00
+//!     mtime: UNIX_EPOCH,
+//!     ctime: UNIX_EPOCH,
+//!     crtime: UNIX_EPOCH,
+//!     kind: FileType::Directory,
+//!     perm: 0o755,
+//!     nlink: 2,
+//!     uid: 501,
+//!     gid: 20,
+//!     rdev: 0,
+//!     flags: 0,
+//!     blksize: 512,
+//! };
+//!
+//! struct HelloFS;
+//!
+//! impl Filesystem for HelloFS {
+//!     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+//!         // ...
+//!     }
+//!
+//!     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+//!         // ...
+//!     }
+//!
+//!     fn read(
+//!         &mut self,
+//!         _req: &Request,
+//!         ino: u64,
+//!         fh: u64,
+//!         offset: i64,
+//!         size: u32,
+//!         reply: ReplyData,
+//!     ) {
+//!         // ...
+//!     }
+//!
+//!     fn readdir(
+//!         &mut self,
+//!         _req: &Request,
+//!         ino: u64,
+//!         fh: u64,
+//!         offset: i64,
+//!         reply: ReplyDirectory,
+//!     ) {
+//!         // ...
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let mountpoint = std::env::args_os().nth(1).unwrap();
+//!     let fs = HelloFS;
+//!     fuser::mount2(fs.into(), mountpoint, &[MountOption::AutoUnmount]).unwrap();
+//! }
+//! ```
+
 mod filesystem;
 pub use filesystem::Filesystem;
 #[cfg(feature = "abi-7-16")]

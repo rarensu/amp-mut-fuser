@@ -2,12 +2,22 @@ use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
 use crate::trait_async::Filesystem as AsyncFS;
 
-/// This enum holds any of these variants of Filesystem:
-/// `::Legacy(fuser::trait_legacy::Filesystem)`,
-/// `::Sync(fuser::trait_sync::Filesystem)`, or
-/// `::Async(fuser::trait_sync::Filesystem)`.
+/// A wrapper for any of the three `Filesystem` traits.
+///
+/// `AnyFS` is an enum that can hold a `trait_legacy::Filesystem`, a `trait_sync::Filesystem`,
+/// or a `trait_async::Filesystem`. It is used by the `mount2` function to accept any of these
+/// three traits.
+///
+/// The `From` trait is implemented for each of the filesystem traits, so you can convert
+/// your filesystem struct into an `AnyFS` by calling `.into()`.
+///
+/// For example:
+/// ```rust,ignore
+/// let fs = MySyncFilesystem;
+/// fuser::mount2(fs.into(), "/mnt/fuse", &[]).unwrap();
+/// ```
 #[derive(Debug)]
-pub enum AnyFS<L, S, A> where 
+pub enum AnyFS<L, S, A> where
     L: LegacyFS,
     S: SyncFS,
     A: AsyncFS
@@ -31,7 +41,12 @@ impl SyncFS for _Ns {}
 pub struct _Na {}
 impl AsyncFS for _Na {}
 
-// Useful blanket traits
+// The following `From` implementations wrap a filesystem struct in the `AnyFS` enum.
+// This allows the `mount2` function to be generic over the three filesystem traits.
+// The `_Nl`, `_Ns`, and `_Na` structs are empty placeholder types that implement the
+// respective `Filesystem` traits, so that we can have a concrete type for the `AnyFS`
+// enum.
+
 impl<L> From<L> for AnyFS<L, _Ns, _Na> where
     L: LegacyFS
 {

@@ -12,9 +12,11 @@ use crate::ll::{self, Operation, fuse_abi as abi, Request as AnyRequest, Errno};
 use super::Filesystem;
 
 impl RequestHandler {
-    /// Dispatch request to the given filesystem.
-    /// This calls the appropriate filesystem operation method for the
-    /// request and sends back the returned reply to the kernel
+    /// Dispatches a request to the given synchronous filesystem.
+    ///
+    /// This function is called by the `Session` when it receives a request for
+    /// a `sync` filesystem. It calls the appropriate method on the `Filesystem`
+    /// trait and then sends the response back to the kernel using the `ReplyHandler`.
     pub(crate) fn dispatch_sync<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
         let op = if let Ok(op) = self.request.operation() { op }
