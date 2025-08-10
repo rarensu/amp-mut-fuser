@@ -7,7 +7,7 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FileAttr,
-    trait_sync::Filesystem, FileType, Ioctl, MountOption, RequestMeta,
+    trait_async::Filesystem, FileType, Ioctl, MountOption, RequestMeta,
 };
 use bytes::Bytes;
 use log::{debug, info};
@@ -232,7 +232,7 @@ fn main() {
         &options
     ).expect("Failed to create Session");
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    match rt.block_on(async { se.run_concurrently_sequential_full().await }) {
+    match rt.block_on(se.run_async()) {
         Ok(_se) => info!("Session ended safely"),
         Err(e) => info!("Session ended with error {e:?}")
     }

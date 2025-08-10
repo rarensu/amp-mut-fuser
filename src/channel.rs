@@ -248,27 +248,28 @@ impl Channel {
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
     #[allow(unused)] // this stub is a placeholder for future non-tokio async i/o
-    pub async fn send_async(&self, _bufs: &[IoSlice<'_>]) -> io::Result<()> {
-        let _thread_sender = self.clone();
-        /*
-        tokio::task::spawn_blocking(move || {
+    pub async fn send_async(&self, bufs: &[IoSlice<'_>]) -> io::Result<()> {
+        let bufs = bufs.iter().map(|v| { Vec::from(v.as_ref())}).collect::<Vec<Vec<u8>>>();
+        let thread_sender = self.clone();
+        std::thread::spawn(move || {
             let bufs = bufs.iter().map(|v| {IoSlice::new(v)}).collect::<Vec<IoSlice<'_>>>();
             thread_sender.send(&bufs)
-        }).await.expect("Unable to recover worker i/o thread")
-        */
-        unimplemented!("non-tokio async i/o not implemented")
+        });
+        unimplemented!("non-tokio async i/o not implemented");
+        Ok(())
     }
     #[cfg(feature = "tokio")]
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
     #[allow(unused)] // this stub is a placeholder for future tokio async i/o
     pub async fn send_async(&self, bufs: &[IoSlice<'_>]) -> io::Result<()> {
-        //iovec - to SmallVec<[Vec<u8>; 4]>
+        let bufs = bufs.iter().map(|v| { Vec::from(v.as_ref())}).collect::<Vec<Vec<u8>>>();
         let thread_sender = self.clone();
         tokio::task::spawn_blocking(move || {
             let bufs = bufs.iter().map(|v| {IoSlice::new(v)}).collect::<Vec<IoSlice<'_>>>();
             thread_sender.send(&bufs)
-        }).await.expect("Unable to recover worker i/o thread")
+        }); //.await.expect("Unable to recover worker i/o thread")
+        Ok(())
     }
 
     /// ?

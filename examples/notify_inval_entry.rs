@@ -267,7 +267,7 @@ fn main() {
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    match rt.block_on(async { session.run().await }) {
+    match rt.block_on(session.run_async()) {
         Ok(()) => info!("Session ended safely."),
         Err(e) => info!("Session ended with error: {e:?}"),
     }

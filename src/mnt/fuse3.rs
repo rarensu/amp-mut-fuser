@@ -10,7 +10,6 @@ use std::{
     os::unix::{ffi::OsStrExt, io::FromRawFd},
     path::Path,
     ptr,
-    sync::Arc,
 };
 use crate::channel::Channel;
 

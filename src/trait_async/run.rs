@@ -117,7 +117,7 @@ impl<L, S, A> Session<L, S, A> where
             #[cfg(feature = "tokio")]
             // Read a FUSE request (await until read succeeds)
             // Move buffer into the helper function, receive the buffer back if it succeeds.
-            let (result, mut updated_buffer) = se.chs[ch_idx].receive_async(buffer).await;
+            let (result, updated_buffer) = se.chs[ch_idx].receive_async(buffer).await;
             if updated_buffer.len() > 0 {
                 // Re-use the buffer for the next loop iteration
                 buffer = updated_buffer;
@@ -222,11 +222,13 @@ impl<L, S, A> Session<L, S, A> where
             #[cfg(not(feature = "tokio"))]
             let res = notifier.notify(notification);
             #[cfg(feature = "tokio")]
-            let res = tokio::task::spawn_blocking(notifier.notify(notification)).await;
+            let notifier_copy = notifier.clone();
+            #[cfg(feature = "tokio")]
+            let res = tokio::task::spawn_blocking(async move||{notifier_copy.notify(notification)}).await;
             if let Err(e) = res {
                 error!("Failed to send notification.");
                 // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-                Err(e)
+                Err(e.into())
             } else { Ok(()) }
         }
     }
