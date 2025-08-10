@@ -140,13 +140,14 @@ The `mount2` function is a simple "easy mode" that handles all the details of se
 
 Here is a non-minimal example for an `async` filesystem using `tokio`:
 
-```rust,ignore
+```rust
 use fuser::trait_async::Filesystem;
 
 struct MyAsyncFS;
 
-// ... implement trait_async::Filesystem for MyAsyncFS ...
-
+impl Filesystem for MyFS {
+    // implement methods here
+}
 fn main() {
     let fs = MyAsyncFS;
     let mountpoint = "/tmp/mnt";
@@ -157,9 +158,13 @@ fn main() {
         &options
     ).unwrap();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    rt.block_on(se.run_async()).unwrap();
+    rt.block_on(
+        se.run_async()
+    ).unwrap();
 }
 ```
+
+Session objects have additional, alternative methods for more fine-grained control over the execution model.
 
 ### Feature Gates
 
@@ -207,7 +212,7 @@ A bried overview of repository organization for new contributors.
 *   **`src/mnt/`**: Code for establishing communication with the fuse device, which is called mounting.
 *   **`src/ll/`**: The low-level FUSE message interface. This module contains the raw FUSE ABI definitions and is responsible for the translating between Rust-based data structures and byte-based fuse kernel messages. It is not recommended for applications to use this code directly.
 
-The `Session` object's methods are defined in multiple locations. Generic methods that work with any `Filesystem` variant are defined in `src/session.rs`. However, the methods for running the `Session`'s event loop are specific to each `Filesystem` trait and can be found in the `run.rs` file within each `trait_*` subdirectory (e.g., `src/trait_async/run.rs`).
+The `Session` object's methods are defined in multiple locations. Generic methods that work with any `Filesystem` variant are defined in `src/session.rs`. Methods that provide fine-grained control over the execution model are tied to specific `Filesystem` traits and can be found in the `run.rs` file within each `trait_*` subdirectory (e.g., `src/trait_async/run.rs`).
 
 [Rust]: https://rust-lang.org
 [Homebrew]: https://brew.sh
