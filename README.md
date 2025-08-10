@@ -69,10 +69,11 @@ sudo apt-get install libfuse-dev pkg-config
 sudo yum install fuse-devel pkgconfig
 ```
 
-### macOS (untested)
+### macOS
 
 Install [FUSE for macOS], which can be obtained from their website or installed using the Homebrew or Nix package managers. macOS version 10.9 or later is required. If you are using a Mac with Apple Silicon, you must also [enable support for third party kernel extensions][enable kext].
 
+Note: Testing on macOS is only done infrequently. If you experience difficulties, please create an issue. 
 
 #### To install using Homebrew
 
@@ -113,11 +114,11 @@ or put this in your `Cargo.toml`:
 fuser = "0.15"
 ```
 
-To create a new filesystem, we recommend implementing the `fuser::trait_sync::Filesystem` trait. See the [documentation] for details. The `examples` directory contains several basic filesystems, though many still use the legacy API and are being updated.
+To create a new filesystem, we recommend implementing the `fuser::trait_sync::Filesystem` trait. See the [documentation] for details. The `examples` directory contains several basic filesystems, including at least one example of each trait type.
 
 A minimal `sync` filesystem looks like this:
 
-```rust,ignore
+```rust
 use fuser::trait_sync::Filesystem;
 
 struct MyFS;
@@ -128,8 +129,10 @@ impl Filesystem for MyFS {
 
 fn main() {
     let fs = MyFS;
-    // The `from` trait automatically wraps `MyFS` in the `AnyFS` enum
-    fuser::mount2(fs.into(), "/mnt/fuse", &[]).unwrap();
+    let dir = "/tmp/mnt";
+    let opts = &[];
+    // The `from` trait automatically converts `MyFS` in a matching `AnyFS` enum value.
+    fuser::mount2(fs.into(), dir, opts).unwrap();
 }
 ```
 
@@ -138,7 +141,7 @@ fn main() {
 The crate uses feature gates to manage optional functionality and dependencies. Some key features include:
 *   **`abi-7-x`**: A set of features to select the FUSE protocol version. Recommended to select the highest version.
 *   **`threaded`**: Enable support for multithreaded applications and threaded i/o (default).
-*   **`tokio`**: Enable support for tokio asynchronous runtime. Integrates with fuser's included thread-pooled i/o.
+*   **`tokio`**: Enable support for tokio asynchronous runtime. Integrates with fuser's internal threaded i/o.
 *   **`no-rc`**: Disable support for non-thread-safe structs `Rc`/`RefCell` (default).
 *   **`locking`**: Enable support for locking structs `Mutex`/`RwLock`/`RefCell`.
 *   **`libfuse`**: Use libfuse bindings for some very low-level operations. An older alternative to the newer Rust-native implementations.
@@ -168,7 +171,7 @@ A brief overview of Fuser concepts for new contributors.
 * **`RequestHandler`** and **`ReplyHandler`**: These structures represents one FUSE operation initiated by the Kernel. The RequestHandler methods handle unpacks this message, and directs it to the filesystem. The `ReplyHandler` passes the response back to the kernel.
 * **`Notification`**: This struct represents one FUSE operation initiated by the User application (i.e., not in response to a `Request`).
 * **`Filesystem`**: User application code, which implements one specific Filesystem trait.
-* **`AnyFS`**: Glue code which enables the `Session` struct to generically handle any of the three `Filesystem` trait variants.
+* **`AnyFS`**: A simple `enum` which enables the `Session` struct to natively accept any of the three `Filesystem` trait variants, always using the matching `dispatch` method at run-time.
 
 ### Subdirectories
 

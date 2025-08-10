@@ -332,7 +332,7 @@ pub fn mount<L, S, A, P>(
 /// Mount the given filesystem to the given mountpoint. This function will
 /// block until the filesystem is unmounted.
 ///
-/// `filesystem`: The filesystem implementation.
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant).
 /// `mountpoint`: The path to the mountpoint.
 /// `options`: A slice of `MountOption` enums specifying mount options.
 ///
@@ -360,7 +360,7 @@ pub fn mount2<L, S, A, P>(
 /// keep the filesystem mounted. When the handle is dropped, the filesystem will
 /// be unmounted.
 ///
-/// `filesystem`: The filesystem implementation. Must be `Send + 'static`.
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant). Must be `Send + 'static`.
 /// `mountpoint`: The path to the mountpoint.
 /// `options`: A slice of mount options. Each option needs to be a separate string,
 /// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
@@ -393,7 +393,7 @@ pub fn spawn_mount<L, S, A, P>(
 /// keep the filesystem mounted. When the handle is dropped, the filesystem will
 /// be unmounted.
 ///
-/// `filesystem`: The filesystem implementation. Must be `Send + 'static`.
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant). Must be `Send + 'static`.
 /// `mountpoint`: The path to the mountpoint.
 /// `options`: A slice of `MountOption` enums specifying mount options.
 ///
