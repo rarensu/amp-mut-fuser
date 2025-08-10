@@ -473,16 +473,11 @@ mod tests {
         RequestMeta { unique: 0, uid: 1000, gid: 1000, pid: 2000 }
     }
 
-    // Synchronous helper to call async init_notification_sender in tests.
-    fn init_sender_sync(fs: &PassthroughFs, tx: Sender<Notification>) -> bool {
-        futures::executor::block_on(fs.init_notification_sender(tx))
-    }
-
     #[test]
     fn test_lookup_heartbeat_cycle() {
-        let fs = PassthroughFs::new();
+        let mut fs = PassthroughFs::new();
         let (tx, rx) = crossbeam_channel::unbounded();
-        assert!(init_sender_sync(&fs, tx));
+        assert!(fs.init_notification_sender(tx));
 
         // Should react to lookup with a pending entry and a notification
         futures::executor::block_on(
@@ -502,7 +497,7 @@ mod tests {
         let sender = sender.unwrap();
 
         // Heartbeat should not do anything yet
-        futures::executor::block_on(fs.heartbeat()).unwrap();
+        futures::executor::block_on(fs.heartbeat());
         assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(
             fs.backing_cache.lock().unwrap().get(&2).unwrap(),
@@ -513,7 +508,7 @@ mod tests {
         sender.send(Ok(123)).unwrap();
 
         // Heartbeat should now trigger the transition to ready
-        futures::executor::block_on(fs.heartbeat()).unwrap();
+        futures::executor::block_on(fs.heartbeat());
         assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(
             fs.backing_cache.lock().unwrap().get(&2).unwrap(),
@@ -529,7 +524,7 @@ mod tests {
         std::thread::sleep(BACKING_TIMEOUT);
 
         // Heartbeat should now trigger the transition to closed
-        futures::executor::block_on(fs.heartbeat()).unwrap();
+        futures::executor::block_on(fs.heartbeat());
         assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(
             fs.backing_cache.lock().unwrap().get(&2).unwrap(),
@@ -546,7 +541,7 @@ mod tests {
         sender.unwrap().send(Ok(0)).unwrap();
 
         // Heartbeat should now trigger dropping the entry
-        futures::executor::block_on(fs.heartbeat()).unwrap();
+        futures::executor::block_on(fs.heartbeat());
         assert_eq!(fs.backing_cache.lock().unwrap().len(), 0);
     }
 }

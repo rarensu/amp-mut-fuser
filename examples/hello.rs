@@ -234,7 +234,7 @@ fn main() {
 
 #[cfg(test)]
 mod test {
-    use fuser::{Filesystem, RequestMeta, Errno, FileType};
+    use fuser::{trait_async::Filesystem, RequestMeta, Errno, FileType};
     use std::ffi::OsStr;
     use std::path::PathBuf;
     use std::os::unix::ffi::OsStrExt;
@@ -280,9 +280,9 @@ mod test {
         );
         assert!(result.is_ok(), "Readdir on root should succeed");
         if let Ok(entries_list) = result {
-            // using unlock().unwrap() in case locking variants are enabled in the current build.
+            // using lock().unwrap() in case locking variants are enabled in the current build.
             // otherwise, one could simply use as_ref() or &
-            let entries_slice = entries_list.unlock().unwrap();
+            let entries_slice = entries_list.lock().unwrap();
             assert_eq!(entries_slice.len(), 3, "Root directory should contain exactly 3 entries");
 
             // Check entry 0: "."
@@ -313,7 +313,7 @@ mod test {
         let hellofs = super::HelloFS::new();
         let req = dummy_meta();
         let result = futures::executor::block_on(
-            hellofs.create(req, 1, &PathBuf::from("newfile.txt"), 0o644, 0, 0)
+            fuser::trait_async::Filesystem::create(&hellofs, req, 1, &PathBuf::from("newfile.txt"), 0o644, 0, 0)
         );
         assert!(result.is_err(), "Create should fail for read-only filesystem");
         if let Err(e) = result {
