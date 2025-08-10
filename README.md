@@ -136,6 +136,31 @@ fn main() {
 }
 ```
 
+The `mount2` function is a simple "easy mode" that handles all the details of setting up and running the FUSE session. For more advanced use cases, you can use the "toolbox mode" by creating a `Session` object directly. This gives you more control, for example, to run the filesystem in a background thread using your own async runtime.
+
+Here is a non-minimal example for an `async` filesystem using `tokio`:
+
+```rust,ignore
+use fuser::trait_async::Filesystem;
+
+struct MyAsyncFS;
+
+// ... implement trait_async::Filesystem for MyAsyncFS ...
+
+fn main() {
+    let fs = MyAsyncFS;
+    let mountpoint = "/tmp/mnt";
+    let options = Vec::new();
+    let se = fuser::Session::new_mounted(
+        fs.into(),
+        mountpoint,
+        &options
+    ).unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    rt.block_on(se.run_async()).unwrap();
+}
+```
+
 ### Feature Gates
 
 The crate uses feature gates to manage optional functionality and dependencies. Some key features include:
@@ -181,6 +206,8 @@ A bried overview of repository organization for new contributors.
 *   **`src/container/`**: Custom data structures that are generic over their storage, including borrowed (`'static`), owned, and shared types, (similar to the `bytes::Bytes` struct) to encourage no-copy solutions. It is currently used for the `DirentList` and `DirentPlusList` types which return `readdir()` and `readdirplus()`.
 *   **`src/mnt/`**: Code for establishing communication with the fuse device, which is called mounting.
 *   **`src/ll/`**: The low-level FUSE message interface. This module contains the raw FUSE ABI definitions and is responsible for the translating between Rust-based data structures and byte-based fuse kernel messages. It is not recommended for applications to use this code directly.
+
+The `Session` object's methods are defined in multiple locations. Generic methods that work with any `Filesystem` variant are defined in `src/session.rs`. However, the methods for running the `Session`'s event loop are specific to each `Filesystem` trait and can be found in the `run.rs` file within each `trait_*` subdirectory (e.g., `src/trait_async/run.rs`).
 
 [Rust]: https://rust-lang.org
 [Homebrew]: https://brew.sh
