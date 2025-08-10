@@ -299,6 +299,12 @@ pub enum FsStatus {
     // This list is a work in progress and I'm still trying to figure out what values would be useful
 }
 
+impl Default for FsStatus {
+    fn default() -> Self {
+        FsStatus::Default
+    }
+}
+
 /// Mount the given filesystem to the given mountpoint. This function will
 /// block until the filesystem is unmounted.
 ///
