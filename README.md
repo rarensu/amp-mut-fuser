@@ -17,11 +17,13 @@ of continuing development. In particular adding features from ABIs after 7.19
 
 ## Available APIs
 
-This crate offers three different `Filesystem` traits that can be implemented to create a FUSE filesystem. They offer different trade-offs between ease of use, performance, and control.
+This crate offers three different `Filesystem` traits variants that can be implemented to create a FUSE filesystem. They offer different trade-offs between ease of use, performance, and control.
 
-*   **`trait_sync::Filesystem`**: A synchronous API for single-threaded applications. This is the **recommended trait for most new filesystems**, because it is the easiest to use. The API is currently considered experimental.
-*   **`trait_async::Filesystem`**: An `async/await`-based API for integration with asynchronous runtimes like Tokio. It supports single-threaded and multi-threaded applications. The API is currently consdiered experimental.
+*   **`trait_sync::Filesystem`**: A synchronous API that handles events in serial while blocking a single thread, which can be a background thread. This is the **recommended trait for most new filesystems**, because it is the easiest to use. The API is currently considered experimental.
+*   **`trait_async::Filesystem`**: An `async/await`-based API for integration with asynchronous runtimes like Tokio. It supports single-threaded and multi-threaded applications. Although the API supports concurrent Filesystem operations, this approach is very tricky; a wrong implementetion deadlocks itself and the conditions are not well-documented. The API is currently considered experimental.
 *   **`trait_legacy::Filesystem`**: The original, callback-based API. It is on track to become deprecated and removed in a future release. It should not be used for new projects.
+
+Additionally, adapters to convert from one `Filesystem` trait variant to another are available in a external crate (TODO: link here).
 
 ## Documentation
 
@@ -31,9 +33,9 @@ This crate offers three different `Filesystem` traits that can be implemented to
 
 A working FUSE filesystem consists of three parts:
 
-1. The **kernel driver** that registers as a filesystem and forwards operations into a communication channel to a userspace process that handles them.
-1. The **userspace library** (libfuse) that helps the userspace process to establish and run communication with the kernel driver.
-1. The **userspace implementation** that actually processes the filesystem operations.
+1. The **kernel driver** (part of the operating system) that registers as a filesystem and forwards operations into a communication channel to a userspace process that handles them.
+1. The **userspace library** (e.g., `fuser` and/or `libfuse`) that helps the userspace process to establish and run communication with the kernel driver.
+1. The **userspace implementation** (your code here) that actually processes the filesystem operations.
 
 The kernel driver is provided by the FUSE project, the userspace implementation needs to be provided by the developer. FUSE-Rust provides a replacement for the libfuse userspace library between these two. This way, a developer can fully take advantage of the Rust type interface and runtime features when building a FUSE filesystem in Rust.
 
@@ -114,7 +116,7 @@ or put this in your `Cargo.toml`:
 fuser = "0.15"
 ```
 
-To create a new filesystem, we recommend implementing the `fuser::trait_sync::Filesystem` trait. See the [documentation] for details. The `examples` directory contains several basic filesystems, including at least one example of each trait type.
+To create a new filesystem, we recommend implementing the `fuser::trait_sync::Filesystem` trait. See the [documentation] for details. The `examples` directory contains several basic filesystems, including at least one example of each trait type. Whichever trait you choose, you must convert your struct with that specific trait into the matching generic AnyFS enum variant, which is how `fuser` functions accept Filesystems of any type.
 
 A minimal `sync` filesystem looks like this:
 
@@ -131,12 +133,12 @@ fn main() {
     let fs = MyFS;
     let dir = "/tmp/mnt";
     let opts = &[];
-    // The `from` trait automatically converts `MyFS` in a matching `AnyFS` enum value.
+    // The `into()` method automatically converts `MyFS` in a matching `AnyFS` enum value.
     fuser::mount2(fs.into(), dir, opts).unwrap();
 }
 ```
 
-The `mount2` function is a simple "easy mode" that handles all the details of setting up and running the FUSE session. For more advanced use cases, you can use the "toolbox mode" by creating a `Session` object directly. This gives you more control, for example, to run the filesystem in a background thread using your own async runtime.
+The `mount2` function is a simple "easy button" that handles all the details of setting up and running the FUSE session. For more advanced use cases, you can use all the tools in the toolbox by creating a `Session` object directly. This gives you more control, for example, to run the filesystem in a background thread using your own async runtime.
 
 Here is a non-minimal example for an `async` filesystem using `tokio`:
 
@@ -152,6 +154,7 @@ fn main() {
     let fs = MyAsyncFS;
     let mountpoint = "/tmp/mnt";
     let options = Vec::new();
+    // The `into()` method automatically converts `MyFS` in a matching `AnyFS` enum value.
     let se = fuser::Session::new_mounted(
         fs.into(),
         mountpoint,
