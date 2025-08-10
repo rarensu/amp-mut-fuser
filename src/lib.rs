@@ -1,5 +1,16 @@
 //! FUSE userspace library implementation
 //!
+//! # Available APIs
+//!
+//! This crate offers three different `Filesystem` traits that can be implemented to create a FUSE filesystem.
+//! They offer different trade-offs between ease of use, performance, and control.
+//!
+//! *   **[`trait_sync::Filesystem`]**: A synchronous, `Result`-based API. This is the **recommended trait for most new filesystems**. It is easier to use than the legacy API and is suitable for both single-threaded and multi-threaded applications. This API is currently considered experimental while the final design is settled.
+//! *   **[`trait_async::Filesystem`]**: An `async/await`-based API for integration with asynchronous runtimes like Tokio or async-std. This is also experimental but is the best choice for applications that are already using an async architecture.
+//! *   **[`trait_legacy::Filesystem`]**: The original, callback-based API. This API is powerful but more difficult to use correctly. It is now considered deprecated and will be removed in a future release. It should not be used for new projects.
+//!
+//! # Crate Overview
+//!
 //! This is an improved rewrite of the FUSE userspace library (lowlevel interface) to fully take
 //! advantage of Rust's architecture. The only thing we rely on in the real libfuse are mount
 //! and unmount calls which are needed to establish a fd to talk to the kernel driver.

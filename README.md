@@ -15,6 +15,14 @@ FUSE-Rust does not just provide bindings, it is a rewrite of the original FUSE C
 This library was originally forked from the [`fuse` crate](https://github.com/zargony/fuse-rs) with the intention
 of continuing development. In particular adding features from ABIs after 7.19
 
+## Available APIs
+
+This crate offers three different `Filesystem` traits that can be implemented to create a FUSE filesystem. They offer different trade-offs between ease of use, performance, and control.
+
+*   **`trait_sync::Filesystem`**: A synchronous, `Result`-based API. This is the **recommended trait for most new filesystems**. It is easier to use than the legacy API and is suitable for both single-threaded and multi-threaded applications. This API is currently considered experimental while the final design is settled.
+*   **`trait_async::Filesystem`**: An `async/await`-based API for integration with asynchronous runtimes like Tokio or async-std. This is also experimental but is the best choice for applications that are already using an async architecture.
+*   **`trait_legacy::Filesystem`**: The original, callback-based API. This API is powerful but more difficult to use correctly. It is now considered deprecated and will be removed in a future release. It should not be used for new projects.
+
 ## Documentation
 
 [FUSE-Rust reference][Documentation]
@@ -105,7 +113,25 @@ or put this in your `Cargo.toml`:
 fuser = "0.15"
 ```
 
-To create a new filesystem, implement the trait `fuser::Filesystem`. See the [documentation] for details or the `examples` directory for some basic examples.
+To create a new filesystem, we recommend implementing the `fuser::trait_sync::Filesystem` trait. See the [documentation] for details. The `examples` directory contains several basic filesystems, though many still use the legacy API and are being updated.
+
+A minimal `sync` filesystem looks like this:
+
+```rust,ignore
+use fuser::trait_sync::Filesystem;
+
+struct MyFS;
+
+impl Filesystem for MyFS {
+    // implement methods here
+}
+
+fn main() {
+    let fs = MyFS;
+    // The `from` trait automatically wraps `MyFS` in the `AnyFS` enum
+    fuser::mount2(fs.into(), "/mnt/fuse", &[]).unwrap();
+}
+```
 
 ## To Do
 
@@ -119,7 +145,24 @@ Developed and tested on Linux. Tested under [Linux][FUSE for Linux] and [FreeBSD
 
 Licensed under [MIT License](LICENSE.md), except for those files in `examples/` that explicitly contain a different license.
 
-## Contribution
+## Contributing
+
+For those looking to contribute to `fuser`, here is a brief overview of the key modules to help you get started:
+
+*   **`src/trait_*`**: These three modules (`trait_legacy`, `trait_sync`, `trait_async`) contain the definitions for the three `Filesystem` traits and the logic for running a session with each of them.
+    *   `filesystem.rs`: Defines the core `Filesystem` trait for that API variant.
+    *   `dispatch.rs`: Contains the logic to map a low-level FUSE request to the correct method on the `Filesystem` trait.
+    *   `run.rs`: Contains the implementation of the main request-processing loop for that API variant.
+*   **`src/any.rs`**: Defines the `AnyFS` enum. This is a key piece of the unified API, allowing the `Session` struct to generically handle any of the three `Filesystem` trait variants.
+*   **`src/session.rs`**: Contains the central, unified `Session` struct. It handles the process of mounting and running a filesystem. It uses the `AnyFS` enum to dispatch to the correct `run_*` method for the provided filesystem.
+*   **`src/container`**: Provides data structures (`DirEntry`, `DirEntryList`) that are generic over their storage. This allows for returning either borrowed or owned data from filesystem methods, which can help to avoid unnecessary data copies in high-performance scenarios.
+*   **`src/ll`**: The low-level (hence `ll`) interface. This module contains the raw FUSE ABI definitions and is responsible for the direct communication with the kernel.
+
+### Feature Gates
+
+The crate uses feature gates to manage optional functionality and dependencies. Some key features include:
+*   **`abi-7-x`**: A set of features to select the FUSE protocol version.
+*   **`async-io` / `tokio-io`**: Enable support for different asynchronous runtimes. These are mutually exclusive.
 
 Fork, hack, submit pull request. Make sure to make it useful for the target audience, keep the project's philosophy and Rust coding standards in mind. For larger or essential changes, you may want to open an issue for discussion first. Also remember to update the [Changelog] if your changes are relevant to the users.
 
