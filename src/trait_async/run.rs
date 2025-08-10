@@ -94,8 +94,8 @@ impl<L, S, A> Session<L, S, A> where
         Ok(())
     }
 
-
-    async fn do_requests_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
+    /// Process requests in a single task.
+    pub async fn do_requests_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
@@ -167,10 +167,11 @@ impl<L, S, A> Session<L, S, A> where
         }
     }
 
-    /// Run the session loop in a single thread, same as `run()`, but additionally
-    /// processing both FUSE requests and poll events without blocking.
+    /// Process notifications in a single task.
+    /// This variant executes sleep() to prevent busy loops.
     #[cfg(all(feature = "abi-7-11"))]
-    async fn do_notifications_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
+    #[allow(unused)] // this function is reserved for future multithreaded implementations
+    pub async fn do_notifications_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
         let sender = se.get_ch(ch_idx);
         info!("Starting notification loop on channel {ch_idx} with fd {}", &sender.raw_fd);
         let notifier = Notifier::new(sender);
@@ -225,9 +226,10 @@ impl<L, S, A> Session<L, S, A> where
         }
     }
 
-    /// Run the session loop in a single thread, same as `run()`, but additionally
-    /// processing both FUSE requests and poll events without blocking.
-    async fn do_heartbeats_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
+    /// Process heartbeats in a single task.
+    /// This variant executes sleep() to prevent busy loops.
+    #[allow(unused)] // this function is reserved for future multithreaded implementations
+    pub async fn do_heartbeats_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
         info!("Starting heartbeat loop");
         loop {
             #[cfg(not(feature = "tokio"))]
@@ -251,10 +253,10 @@ impl<L, S, A> Session<L, S, A> where
         Ok(())
     }
 
-    /// Run the session loop in a single thread.
+    /// Run the session loop in a single task.
     /// Alternates between processing requests, notifications, and heartbeats, without blocking.
     /// This variant executes sleep() to prevent busy loops.
-    async fn do_all_events_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
+    pub async fn do_all_events_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
         #[cfg(feature = "abi-7-11")]

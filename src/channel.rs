@@ -4,7 +4,6 @@ use std::{
     os::unix::prelude::AsRawFd,
     sync::Arc,
 };
-use smallvec::SmallVec;
 
 use libc::{c_int, c_void, size_t};
 use crate::ll::fuse_abi;
@@ -82,6 +81,7 @@ impl Channel {
     /// Receives data up to the capacity of the given buffer.
     /// Can be awaited: blocks on a dedicated thread.
     /// Populates data into the buffer starting from the point of alignment
+    #[allow(unused)] // this stub is a placeholder for future non-tokio async i/o
     pub async fn receive_async(&self, mut _buffer: Vec<u8>) -> (io::Result<Vec<u8>>, Vec<u8>) { 
         let _thread_ch = self.clone();  
         /*
@@ -106,7 +106,7 @@ impl Channel {
     }
 
     /// Polls the kernel to determine if a request is ready for reading (does not block).
-    /// This method is used in the synchronous notifications execution model.
+    /// This method is used in a synchronous execution model.
     pub fn poll_read(&self) -> io::Result<bool> {
         let mut buf = [libc::pollfd {
             fd: self.raw_fd,
@@ -155,11 +155,25 @@ impl Channel {
         }
     }
 
+    /// Reads a request, but only if a request is ready for immediate reading (does not block).
+    /// This method is used in an asynchronous execution model.
+    /// Always returns the owned buffer for later re-use.
+    /// On read: returns (Ok(Some(data)), buffer)
+    /// On no read: returns  (Ok(None), buffer)
+    /// On error: returns  (Err, buffer)
+    #[allow(unreachable_code, dead_code, unused_variables)] // The non-tokio portion of this function is a TODO item.
     pub async fn try_receive_async(&self, buffer: Vec<u8>) -> (io::Result<Option<Vec<u8>>>, Vec<u8>) {
         if match self.poll_read() {
             Err(e) => {return (Err(e), buffer);},
             Ok(ready) => ready
         } {
+            // TODO: non-tokio implementation
+            #[cfg(not(feature = "tokio"))]
+            let (res, new_buffer) = (Ok(vec![]), buffer);
+            #[cfg(not(feature = "tokio"))]
+            unimplemented!("non-tokio async i/o not implemented");
+            // Tokio implementation
+            #[cfg(feature = "tokio")]
             let (res, new_buffer) = self.receive_async(buffer).await;
             (res.map(|data|Some(data)), new_buffer)
         } else {
@@ -169,7 +183,8 @@ impl Channel {
 
     /// Polls the kernel to determine if channel is ready to accept a notification (does not block).
     /// This method is used in the synchronous notifications execution model.
-    pub fn ready_write(&self) -> io::Result<bool> {
+    #[allow(unused)] // This function is reserved for future non-blocking synchronous writes
+    pub fn poll_write(&self) -> io::Result<bool> {
         let mut buf = [libc::pollfd {
             fd: self.raw_fd,
             events: libc::POLLOUT,
@@ -232,7 +247,8 @@ impl Channel {
     #[cfg(not(feature = "tokio"))]
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
-    pub async fn send_async(&self, _bufs: SmallVec<[Vec<u8>; 4]>) -> io::Result<()> {
+    #[allow(unused)] // this stub is a placeholder for future non-tokio async i/o
+    pub async fn send_async(&self, _bufs: &[IoSlice<'_>]) -> io::Result<()> {
         let _thread_sender = self.clone();
         /*
         tokio::task::spawn_blocking(move || {
@@ -245,7 +261,9 @@ impl Channel {
     #[cfg(feature = "tokio")]
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
-    pub async fn send_async(&self, bufs: SmallVec<[Vec<u8>; 4]>) -> io::Result<()> {
+    #[allow(unused)] // this stub is a placeholder for future tokio async i/o
+    pub async fn send_async(&self, bufs: &[IoSlice<'_>]) -> io::Result<()> {
+        //iovec - to SmallVec<[Vec<u8>; 4]>
         let thread_sender = self.clone();
         tokio::task::spawn_blocking(move || {
             let bufs = bufs.iter().map(|v| {IoSlice::new(v)}).collect::<Vec<IoSlice<'_>>>();

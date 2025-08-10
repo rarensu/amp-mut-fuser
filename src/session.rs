@@ -249,9 +249,9 @@ impl<L, S, A> Session<L, S, A> where
 }
 
 impl<L, S, A> Session<L, S, A> where 
-    L: LegacyFS + Send + Sync,
-    S: SyncFS + Send + Sync,
-    A: AsyncFS + Send + Sync
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + Send + Sync + 'static
 {
     /// This function starts the main Session loop of Any Filesystem, blocking the current thread.
     pub fn run_blocking(self) -> io::Result<()> {

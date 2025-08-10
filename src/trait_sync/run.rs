@@ -56,7 +56,7 @@ impl<L, S, A> Session<L, S, A> where
     }
 
     /// Process requests, blocking a single thread. 
-    fn do_requests_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
+    pub fn do_requests_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
@@ -116,7 +116,8 @@ impl<L, S, A> Session<L, S, A> where
     
     /// Process notifications, blocking a single thread.
     #[cfg(all(feature = "abi-7-11", ))]
-    fn do_notifications_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
+    #[allow(unused)] // this function is reserved for future multithreaded implementations
+    pub fn do_notifications_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
         let sender = self.get_ch(ch_idx);
         info!("Starting notification loop on channel {ch_idx} with fd {}", &sender.raw_fd);
         let notifier = Notifier::new(sender);
@@ -161,9 +162,10 @@ impl<L, S, A> Session<L, S, A> where
         } else {Ok(()) }
     }
 
-    /// Run the session loop in a single thread, same as `run()`, but additionally
-    /// processing both FUSE requests and poll events without blocking.
-    fn do_heartbeats_sync(self: &mut Session<L, S, A>) -> io::Result<()> {
+    /// Process heartbeats, blocking a single thread.
+    /// This variant executes sleep() to prevent busy loops.
+    #[allow(unused)] // this function is reserved for future multithreaded implementations
+    pub fn do_heartbeats_sync(self: &mut Session<L, S, A>) -> io::Result<()> {
         info!("Starting heartbeat loop");
         loop {
             std::thread::sleep(SYNC_SLEEP_INTERVAL);
@@ -187,7 +189,7 @@ impl<L, S, A> Session<L, S, A> where
     /// Run the session loop in a single thread.
     /// Alternates between processing requests, notifications, and heartbeats, without blocking.
     /// This variant executes sleep() to prevent busy loops.
-    fn do_all_events_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
+    pub fn do_all_events_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];

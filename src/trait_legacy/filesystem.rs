@@ -12,8 +12,9 @@ use std::ffi::OsStr;
 use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::SystemTime;
-use crate::{KernelConfig, FsStatus};
-pub use crate::ll::{TimeOrNow, fuse_abi::fuse_forget_one};
+use crate::{KernelConfig, FsStatus, TimeOrNow};
+#[cfg(feature = "abi-7-16")]
+use super::fuse_forget_one;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification};
 #[cfg(feature = "abi-7-11")]

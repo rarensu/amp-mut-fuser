@@ -1,6 +1,7 @@
 mod filesystem;
 pub use filesystem::Filesystem;
-pub use filesystem::fuse_forget_one;
+#[cfg(feature = "abi-7-16")]
+pub use crate::ll::fuse_abi::fuse_forget_one;
 
 mod dispatch;
 pub use dispatch::Request;

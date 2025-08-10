@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use libc::c_int;
 use std::convert::AsRef;
 use zerocopy::IntoBytes;
@@ -13,8 +12,9 @@ use std::time::SystemTime;
 #[cfg(target_os = "macos")]
 use crate::XTimes;
 use crate::{
-    ll::reply::{fuse_attr_from_attr, mode_from_kind_and_perm, EntListBuf, Response}, reply::ReplyHandler,
-    Entry, Errno, FileAttr, FileType, Open, Ioctl, Statfs, Lock
+    ll::reply::{fuse_attr_from_attr, mode_from_kind_and_perm, EntListBuf, Response}, 
+    reply::ReplyHandler,
+    Entry, Errno, FileAttr, FileType, Open, Statfs, Lock
 };
 #[cfg(feature = "abi-7-40")]
 use super::BackingId;

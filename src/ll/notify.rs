@@ -57,44 +57,6 @@ impl<'a> Notification<'a> {
         }
         Ok(f(&v))
     }
-    pub(crate) fn to_vec(
-        &self,
-        code: abi::fuse_notify_code,
-    ) -> Result<SmallVec<[Vec<u8>; 4]>, TryFromIntError> {
-        let datalen = match &self {
-            Notification::Bare(b) => b.len(),
-            Notification::WithData(b, d) => b.len() + d.len(),
-            Notification::WithName(b, n) => b.len() + n.len() + 1, // +1 because we need to NUL-terminate the name
-        };
-        let header = abi::fuse_out_header {
-            unique: 0,
-            error: code as i32,
-            len: (size_of::<abi::fuse_out_header>() + datalen).try_into()?,
-        };
-        let mut v: SmallVec<[Vec<u8>; 4]> = smallvec![header.as_bytes().into()];
-        match &self {
-            Notification::Bare(b) => v.push(b.to_vec()),
-            Notification::WithData(b, d) => {
-                v.push(b.to_vec());
-                v.push(d.to_vec());
-            }
-            Notification::WithName(b, n) => {
-                v.push(b.to_vec());
-                v.push(n.to_vec());
-                v.push(vec![0u8]); // NUL terminator required by fuse
-            }
-        }
-        Ok(v)
-    }
-
-    pub(crate) fn with_vec<F: FnOnce(&[Vec<u8>]) -> T, T>(
-        &self,
-        code: abi::fuse_notify_code,
-        f: F,
-    ) -> Result<T, TryFromIntError> {
-        let v = self.to_vec(code)?;
-        Ok(f(&v))
-    }
 
     #[cfg(feature = "abi-7-12")]
     pub(crate) fn new_inval_entry(parent: u64, name: &'a [u8]) -> Result<Self, TryFromIntError> {

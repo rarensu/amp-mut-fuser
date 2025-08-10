@@ -12,8 +12,11 @@ pub enum AnyFS<L, S, A> where
     S: SyncFS,
     A: AsyncFS
 {
+    /// Holds a variant of Filesystem that uses the Legacy API
     Legacy(L),
+    /// Holds a variant of Filesystem that uses the Synchronous API
     Sync(S),
+    /// Holds a variant of Filesystem that uses the Asynchronous API
     Async(A),
 }
 

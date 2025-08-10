@@ -7,7 +7,7 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FileAttr,
-    Filesystem, FileType, Ioctl, MountOption, RequestMeta,
+    trait_sync::Filesystem, FileType, Ioctl, MountOption, RequestMeta,
 };
 use bytes::Bytes;
 use log::{debug, info};
