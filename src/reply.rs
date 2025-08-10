@@ -522,8 +522,8 @@ impl ReplyHandler {
     pub fn dir(
         self,
         entries_list: &DirentList,
-        size: usize,
         min_offset: i64,
+        size: usize,
     ) {
         let mut buf = DirentBuf::new(size);
         let entries_safe_borrow = match entries_list.lock(){
@@ -561,11 +561,11 @@ impl ReplyHandler {
     pub fn dir_or_err(
         self,
         result: Result<DirentList, Errno>,
-        size: usize,
         min_offset: i64,
+        size: usize,
     ) {
         match result {
-            Ok(entries) => self.dir(&entries, size, min_offset),
+            Ok(entries) => self.dir(&entries, min_offset, size),
             Err(err) => self.error(err),
         }
     }
@@ -575,8 +575,8 @@ impl ReplyHandler {
     pub fn dirplus(
         self,
         entries_plus_list: &DirentPlusList,
-        size: usize,
         min_offset: i64,
+        size: usize,
     ) {
         let mut buf = DirentPlusBuf::new(size);
         let entries_safe_borrow = match entries_plus_list.lock(){
@@ -615,11 +615,11 @@ impl ReplyHandler {
     pub fn dirplus_or_err(
         self,
         result: Result<DirentPlusList, Errno>,
-        size: usize,
         min_offset: i64,
+        size: usize,
     ) {
         match result {
-            Ok(entries) => self.dirplus(&entries, size, min_offset),
+            Ok(entries) => self.dirplus(&entries, min_offset, size),
             Err(err) => self.error(err),
         }
     }
@@ -1159,7 +1159,7 @@ mod test {
                 name: Bytes::from_static(b"world.rs"),
             }
         );
-        replyhandler.dir(&entries.into(), std::mem::size_of::<u8>()*128, 0);
+        replyhandler.dir(&entries.into(), 0, std::mem::size_of::<u8>()*128);
     }
 
     #[test]
@@ -1296,7 +1296,7 @@ mod test {
                 }
             )
         );
-        replyhandler.dirplus(&entries.into(), std::mem::size_of::<u8>()*4096, 0);
+        replyhandler.dirplus(&entries.into(), 0, std::mem::size_of::<u8>()*4096);
     }
 
     #[test]

@@ -17,13 +17,29 @@ impl RequestHandler {
     /// request and sends back the returned reply to the kernel
     pub(crate) async fn dispatch_async<FS: Filesystem>(self, fs: &FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
+        macro_rules! reply {
+            // must not include items borrowed from Request<'_> in these arguments!
+            ($method:ident $(, $args:expr )* ) => {
+                let replyhandler = self.replyhandler;
+                #[cfg(not(feature = "threaded"))]
+                replyhandler.$method( $( $args ),* );
+                #[cfg(all(feature = "threaded", not(feature = "tokio")))]
+                std::thread::spawn( move || {
+                    replyhandler.$method( $( $args ),* );
+                });
+                #[cfg(all(feature = "threaded", feature = "tokio"))]
+                tokio::task::spawn_blocking( move || {
+                    replyhandler.$method( $( $args ),* );
+                });
+            };
+        }
         let op = if let Ok(op) = self.request.operation() { op }
         else {
-            self.replyhandler.error(Errno::ENOSYS);
+            reply!(error, Errno::ENOSYS);
             return;
         };
         if self.access_denied(&op, se_meta) {
-            self.replyhandler.error(Errno::EACCES);
+            reply!(error, Errno::EACCES);
             return;
         }
         match op {
@@ -33,7 +49,7 @@ impl RequestHandler {
                 let v = x.version();
                 if v < ll::Version(7, 6) {
                     error!("Unsupported FUSE ABI version {v}");
-                    self.replyhandler.error(Errno::EPROTO);
+                    reply!(error, Errno::EPROTO);
                     return;
                 }
                 // Remember ABI version supported by kernel
@@ -48,6 +64,7 @@ impl RequestHandler {
                         // Reply with our desired version and settings. If the kernel supports a
                         // larger major version, it'll re-send a matching init message. If it
                         // supports only lower major versions, we replied with an error above.
+                        let capabilities = x.capabilities();
                         debug!(
                             "INIT response: ABI {}.{}, flags {:#x}, max readahead {}, max write {}",
                             abi::FUSE_KERNEL_VERSION,
@@ -57,33 +74,33 @@ impl RequestHandler {
                             config.max_write
                         );
                         se_meta.initialized.store(true, Relaxed);
-                        self.replyhandler.config(x.capabilities(), config);
+                        reply!(config, capabilities, config);
                     },
-                    Err(errno) => {
+                    Err(e) => {
                         // Filesystem refused the config.
-                        self.replyhandler.error(errno);
+                        reply!(error, e);
                     }
                 }
             }
             // Any operation is invalid before initialization
             _ if !se_meta.initialized.load(Relaxed) => {
                 warn!("Ignoring FUSE operation before init: {}", self.request);
-                self.replyhandler.error(Errno::EIO);
+                reply!(error, Errno::EIO);
             }
             // Filesystem destroyed
             Operation::Destroy(_x) => {
                 fs.destroy().await;
                 se_meta.destroyed.store(true, Relaxed);
-                self.replyhandler.ok();
+                reply!(ok);
             }
             // Any operation is invalid after destroy
             _ if se_meta.destroyed.load(Relaxed) => {
                 warn!("Ignoring FUSE operation after destroy: {}", self.request);
-                self.replyhandler.error(Errno::EIO);
+                reply!(error, Errno::EIO);
             }
             Operation::Interrupt(_) => {
                 // TODO: handle FUSE_INTERRUPT
-                self.replyhandler.error(Errno::ENOSYS);
+                reply!(error, Errno::ENOSYS);
             }
             /* ------ Regular Operations ------ */
             Operation::Lookup(x) => {
@@ -92,7 +109,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name()
                 ).await;
-                self.replyhandler.entry_or_err(result);
+                reply!(entry_or_err, result);
             }
             Operation::Forget(x) => {
                 let target = Forget {
@@ -116,7 +133,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     None,
                 ).await;
-                self.replyhandler.attr_or_err(result);
+                reply!(attr_or_err, result);
             }
             Operation::SetAttr(x) => {
                 let result = fs.setattr(
@@ -135,14 +152,14 @@ impl RequestHandler {
                     x.bkuptime(),
                     x.flags()
                 ).await;
-                self.replyhandler.attr_or_err(result);
+                reply!(attr_or_err, result);
             }
             Operation::ReadLink(_) => {
                 let result = fs.readlink(
                     self.meta,
                     self.request.nodeid().into()
                 ).await;
-                self.replyhandler.data_or_err(result);
+                reply!(data_or_err, result);
             }
             Operation::MkNod(x) => {
                 let result = fs.mknod(
@@ -153,7 +170,7 @@ impl RequestHandler {
                     x.umask(),
                     x.rdev()
                 ).await;
-                self.replyhandler.entry_or_err(result);
+                reply!(entry_or_err, result);
             }
             Operation::MkDir(x) => {
                 let result = fs.mkdir(
@@ -163,7 +180,7 @@ impl RequestHandler {
                     x.mode(),
                     x.umask()
                 ).await;
-                self.replyhandler.entry_or_err(result);
+                reply!(entry_or_err, result);
             }
             Operation::Unlink(x) => {
                 let result = fs.unlink(
@@ -171,7 +188,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::RmDir(x) => {
                 let result = fs.rmdir(
@@ -179,7 +196,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::SymLink(x) => {
                 let result = fs.symlink(
@@ -188,7 +205,7 @@ impl RequestHandler {
                     x.link_name(),
                     x.target()
                 ).await;
-                self.replyhandler.entry_or_err(result);
+                reply!(entry_or_err, result);
             }
             Operation::Rename(x) => {
                 let result = fs.rename(
@@ -199,7 +216,7 @@ impl RequestHandler {
                     x.dest().name,
                     0
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::Link(x) => {
                 let result = fs.link(
@@ -208,7 +225,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.dest().name
                 ).await;
-                self.replyhandler.entry_or_err(result);
+                reply!(entry_or_err, result);
             }
             Operation::Open(x) => {
                 let result = fs.open(
@@ -216,7 +233,7 @@ impl RequestHandler {
                     self.request.nodeid().into(), 
                     x.flags()
                 ).await;
-                self.replyhandler.opened_or_err(result);
+                reply!(opened_or_err, result);
             }
             Operation::Read(x) => {
                 let result = fs.read(
@@ -228,7 +245,7 @@ impl RequestHandler {
                     x.flags(),
                     x.lock_owner().map(Into::into)
                 ).await;
-                self.replyhandler.data_or_err(result);
+                reply!(data_or_err, result);
             }
             Operation::Write(x) => {
                 let result = fs.write(
@@ -241,7 +258,7 @@ impl RequestHandler {
                     x.flags(),
                     x.lock_owner().map(Into::into)
                 ).await;
-                self.replyhandler.written_or_err(result);
+                reply!(written_or_err, result);
             }
             Operation::Flush(x) => {
                 let result = fs.flush(
@@ -250,7 +267,7 @@ impl RequestHandler {
                     x.file_handle().into(),
                     x.lock_owner().into()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::Release(x) => {
                 let result = fs.release(
@@ -261,7 +278,7 @@ impl RequestHandler {
                     x.lock_owner().map(Into::into),
                     x.flush()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::FSync(x) => {
                 let result = fs.fsync(
@@ -270,7 +287,7 @@ impl RequestHandler {
                     x.file_handle().into(),
                     x.fdatasync()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::OpenDir(x) => {
                 let result = fs.opendir(
@@ -278,20 +295,22 @@ impl RequestHandler {
                     self.request.nodeid().into(), 
                     x.flags()
                 ).await;
-                self.replyhandler.opened_or_err(result);
+                reply!(opened_or_err, result);
             }
             Operation::ReadDir(x) => {
+                let max_bytes = x.size();
+                let offset = x.offset();
                 let result = fs.readdir(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.offset(),
-                    x.size()
+                    offset,
+                    max_bytes
                 ).await;
-                self.replyhandler.dir_or_err(
+                reply!(dir_or_err,
                     result,
-                    x.size() as usize,
-                    x.offset(),
+                    offset,
+                    max_bytes as usize
                 );
             }
             Operation::ReleaseDir(x) => {
@@ -301,7 +320,7 @@ impl RequestHandler {
                     x.file_handle().into(),
                     x.flags()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::FSyncDir(x) => {
                 let result = fs.fsyncdir(
@@ -310,14 +329,14 @@ impl RequestHandler {
                     x.file_handle().into(),
                     x.fdatasync()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::StatFs(_) => {
                 let result = fs.statfs(
                     self.meta,
                     self.request.nodeid().into()
                 ).await;
-                self.replyhandler.statfs_or_err(result);
+                reply!(statfs_or_err, result);
             }
             Operation::SetXAttr(x) => {
                 let result = fs.setxattr(
@@ -328,7 +347,7 @@ impl RequestHandler {
                     x.flags(),
                     x.position()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::GetXAttr(x) => {
                 let result = fs.getxattr(
@@ -337,7 +356,7 @@ impl RequestHandler {
                     x.name(),
                     x.size_u32()
                 ).await;
-                self.replyhandler.xattr_or_err(result);
+                reply!(xattr_or_err, result);
             }
             Operation::ListXAttr(x) => {
                 let result = fs.listxattr(
@@ -345,7 +364,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.size()
                 ).await;
-                self.replyhandler.xattr_or_err(result);
+                reply!(xattr_or_err, result);
             }
             Operation::RemoveXAttr(x) => {
                 let result = fs.removexattr(
@@ -353,7 +372,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::Access(x) => {
                 let result = fs.access(
@@ -361,7 +380,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.mask()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::Create(x) => {
                 let result = fs.create(
@@ -372,7 +391,7 @@ impl RequestHandler {
                     x.umask(),
                     x.flags()
                 ).await;
-                self.replyhandler.created_or_err(result);
+                reply!(created_or_err, result);
             }
             Operation::GetLk(x) => {
                 let result = fs.getlk(
@@ -385,7 +404,7 @@ impl RequestHandler {
                     x.lock().typ,
                     x.lock().pid
                 ).await;
-                self.replyhandler.locked_or_err(result);
+                reply!(locked_or_err, result);
             }
             Operation::SetLk(x) => {
                 let result = fs.setlk(
@@ -399,7 +418,7 @@ impl RequestHandler {
                     x.lock().pid,
                     false
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::SetLkW(x) => {
                 let result = fs.setlk(
@@ -413,7 +432,7 @@ impl RequestHandler {
                     x.lock().pid,
                     true
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             Operation::BMap(x) => {
                 let result = fs.bmap(
@@ -422,13 +441,13 @@ impl RequestHandler {
                     x.block_size(),
                     x.block()
                 ).await;
-                self.replyhandler.bmap_or_err(result);
+                reply!(bmap_or_err, result);
             }
 
             #[cfg(feature = "abi-7-11")]
             Operation::IoCtl(x) => {
                 if x.unrestricted() {
-                    self.replyhandler.error(Errno::ENOSYS);
+                    reply!(error, Errno::ENOSYS);
                 } else {
                     let result = fs.ioctl(
                         self.meta,
@@ -439,7 +458,7 @@ impl RequestHandler {
                         x.in_data(),
                         x.out_size()
                     ).await;
-                    self.replyhandler.ioctl_or_err(result);
+                    reply!(ioctl_or_err, result);
                 }
             }
             #[cfg(feature = "abi-7-11")]
@@ -452,12 +471,12 @@ impl RequestHandler {
                     x.events(),
                     x.flags()
                 ).await;
-                self.replyhandler.poll_or_err(result);
+                reply!(poll_or_err, result);
             }
             #[cfg(feature = "abi-7-15")]
             Operation::NotifyReply(_) => {
                 // TODO: handle FUSE_NOTIFY_REPLY
-                self.replyhandler.error(Errno::ENOSYS);
+                reply!(error, Errno::ENOSYS);
             }
             #[cfg(feature = "abi-7-16")]
             Operation::BatchForget(x) => {
@@ -474,21 +493,23 @@ impl RequestHandler {
                     x.len(),
                     x.mode()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             #[cfg(feature = "abi-7-21")]
             Operation::ReadDirPlus(x) => {
+                let max_bytes = x.size();
+                let offset = x.offset();
                 let result = fs.readdirplus(
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.offset(),
-                    x.size()
+                    offset,
+                    max_bytes
                 ).await;
-                self.replyhandler.dirplus_or_err(
+                reply!(dirplus_or_err,
                     result,
-                    x.size() as usize,
-                    x.offset()
+                    offset,
+                    max_bytes as usize
                 );
             }
             #[cfg(feature = "abi-7-23")]
@@ -501,7 +522,7 @@ impl RequestHandler {
                     x.to().name,
                     x.flags()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             #[cfg(feature = "abi-7-24")]
             Operation::Lseek(x) => {
@@ -512,7 +533,7 @@ impl RequestHandler {
                     x.offset(),
                     x.whence()
                 ).await;
-                self.replyhandler.offset_or_err(result);
+                reply!(offset_or_err, result);
             }
             #[cfg(feature = "abi-7-28")]
             Operation::CopyFileRange(x) => {
@@ -528,7 +549,7 @@ impl RequestHandler {
                     x.len(),
                     x.flags().try_into().unwrap()
                 ).await;
-                self.replyhandler.written_or_err(result);
+                reply!(written_or_err, result);
             }
             #[cfg(target_os = "macos")]
             Operation::SetVolName(x) => {
@@ -536,7 +557,7 @@ impl RequestHandler {
                     self.meta,
                     x.name()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
             #[cfg(target_os = "macos")]
             Operation::GetXTimes(x) => {
@@ -544,7 +565,7 @@ impl RequestHandler {
                     self.meta,
                     x.nodeid().into()
                 ).await;
-                self.replyhandler.xtimes_or_err(result);
+                reply!(xtimes_or_err, result);
             }
             #[cfg(target_os = "macos")]
             Operation::Exchange(x) => {
@@ -556,13 +577,13 @@ impl RequestHandler {
                     x.to().name,
                     x.options()
                 ).await;
-                self.replyhandler.ok_or_err(result);
+                reply!(ok_or_err, result);
             }
 
             #[cfg(feature = "abi-7-12")]
             Operation::CuseInit(_) => {
                 // TODO: handle CUSE_INIT
-                self.replyhandler.error(Errno::ENOSYS);
+                reply!(error, Errno::ENOSYS);
             }
         }
     }

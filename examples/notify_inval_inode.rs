@@ -324,8 +324,11 @@ fn main() {
     // The simplest for now is to let the user unmount the FS to stop.
     // Or, if the session itself handles Ctrl-C, that's also fine.
 
-    let mut session = fuser::Session::new(fs, &opts.mount_point, &mount_options)
-        .expect("Failed to create FUSE session.");
+    let mut session = fuser::Session::new_mounted(
+        fs.into(),
+        &opts.mount_point,
+        &mount_options
+    ).expect("Failed to create FUSE session.");
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(1).build().unwrap();

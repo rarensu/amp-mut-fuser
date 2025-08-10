@@ -226,8 +226,11 @@ fn main() {
 
     let fs = FiocFS::new();
     // fuser::mount2(fs, mountpoint, &options).unwrap();
-    let se = fuser::Session::new(fs, mountpoint, &options)
-        .expect("Failed to create Session");
+    let se = fuser::Session::new_mounted(
+        fs.into(),
+        mountpoint,
+        &options
+    ).expect("Failed to create Session");
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     match rt.block_on(async { se.run_concurrently_sequential_full().await }) {
         Ok(_se) => info!("Session ended safely"),

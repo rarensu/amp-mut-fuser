@@ -24,7 +24,7 @@ use clap::Parser;
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
-    Dirent, DirentList, Entry, Errno, FileAttr, FileType, Filesystem, Forget,
+    Dirent, DirentList, Entry, Errno, FileAttr, FileType, trait_sync::Filesystem, Forget,
     FsStatus, InvalEntry, MountOption, Notification, RequestMeta, FUSE_ROOT_ID,
 };
 struct ClockFS {
@@ -259,13 +259,16 @@ fn main() {
         notification_reply: Mutex::new(None),
     };
     let mount_options = vec![MountOption::RO, MountOption::FSName("clock_entry".to_string())];
-    let session = fuser::Session::new(fs, &mount_point, &mount_options)
-        .unwrap_or_else(|e| panic!("Failed to create FUSE session: {e}"));
+    let session = fuser::Session::new_mounted(
+        fs.into(),
+        &mount_point,
+        &mount_options
+    ).expect("Failed to create FUSE session.");
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     match rt.block_on(async { session.run().await }) {
-        Ok(()) => info!("Session ended safely"),
+        Ok(()) => info!("Session ended safely."),
         Err(e) => info!("Session ended with error: {e:?}"),
     }
 

@@ -25,7 +25,7 @@ use poll_data::PollData;
 
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
-    Dirent, DirentList, Entry, Errno, FileAttr, Filesystem,
+    Dirent, DirentList, Entry, Errno, FileAttr, trait_async::Filesystem,
     FileType, MountOption, Notification, Open, RequestMeta,
     FUSE_ROOT_ID,
 };
@@ -380,8 +380,8 @@ fn main() {
         open_mask: AtomicU16::new(0),
     };
     let mntpt = std::env::args().nth(1).expect("Expected mountpoint argument");
-    let session = fuser::Session::new(
-        fs,
+    let session = fuser::Session::new_mounted(
+        fs.into(),
         &mntpt,
         &options
     ).expect("Failed to create FUSE session.");
@@ -421,7 +421,7 @@ mod test {
     #[test]
     fn test_fs_poll_registers_handle_no_initial_event() {
         log::info!("test_fs_poll_registers_handle_no_initial_event: starting");
-        let (fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
+        let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         assert!(futures::executor::block_on(fs.init_notification_sender(tx_to_fs))); // Link FS's PollData to our test sender
 
         let req = RequestMeta { unique: 0, uid: 0, gid: 0, pid: 0 };
@@ -451,7 +451,7 @@ mod test {
     #[test]
     fn test_fs_poll_registers_handle_with_initial_event() {
         log::info!("test_fs_poll_registers_handle_with_initial_event: starting");
-        let (fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
+        let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         assert!(futures::executor::block_on(
             fs.init_notification_sender(tx_to_fs))
         );
@@ -489,7 +489,7 @@ mod test {
     fn test_producer_marks_inode_ready_triggers_event() {
         log::info!("test_producer_marks_inode_ready_triggers_event: starting");
         // For this test, we need an Arc<Mutex<FSelFS>> because producer runs in a separate thread.
-        let (fs_instance, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
+        let (mut fs_instance, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
         assert!(
             futures::executor::block_on(
                 fs_instance.init_notification_sender(tx_to_fs)

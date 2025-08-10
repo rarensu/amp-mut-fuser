@@ -11,7 +11,7 @@ use clap::{crate_version, Arg, ArgAction, Command};
 use crossbeam_channel::{Sender, Receiver};
 use fuser::{
     consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
-    Filesystem, KernelConfig, MountOption, Open, Notification, RequestMeta,
+    trait_async::Filesystem, KernelConfig, MountOption, Open, Notification, RequestMeta,
 };
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -450,7 +450,11 @@ fn main() {
     }
 
     let fs = PassthroughFs::new();
-    let session = fuser::Session::new(fs, Path::new(mountpoint), &options).unwrap();
+    let session = fuser::Session::new_mounted(
+        fs.into(),
+        Path::new(mountpoint),
+        &options
+    ).expect("Failed to create Session.");
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();

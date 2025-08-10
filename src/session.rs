@@ -144,6 +144,7 @@ impl<L, S, A> Session<L, S, A> where
     }
 
     /// Assemble a Session from raw parts. Not recommended for regular users. 
+    #[allow(unused_mut)] // The filesystem mutates, but only under some combinations of features
     pub(crate) fn new(mut filesystem: AnyFS<L, S, A>, ch: Channel, allowed: SessionACL, mount: Option<(PathBuf, Mount)>) -> Self {
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.

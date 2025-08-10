@@ -290,8 +290,8 @@ impl RequestHandler {
                 );
                 self.replyhandler.dir_or_err(
                     result,
-                    x.size() as usize,
                     x.offset(),
+                    x.size() as usize,
                 );
             }
             Operation::ReleaseDir(x) => {
@@ -487,8 +487,8 @@ impl RequestHandler {
                 );
                 self.replyhandler.dirplus_or_err(
                     result,
+                    x.offset(),
                     x.size() as usize,
-                    x.offset()
                 );
             }
             #[cfg(feature = "abi-7-23")]

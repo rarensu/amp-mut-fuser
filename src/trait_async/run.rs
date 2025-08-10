@@ -31,7 +31,11 @@ impl<L, S, A> Session<L, S, A> where
         };
         let se = Arc::new(self);
         // ch_idx=0 for the single-threaded case
-        if init_fs_status != FsStatus::Default || se.meta.notify.load(Relaxed) {
+        #[cfg(not(feature = "abi-7-11"))]
+        let notify = false;
+        #[cfg(feature = "abi-7-11")]
+        let notify = se.meta.notify.load(Relaxed);
+        if init_fs_status != FsStatus::Default || notify {
             Session::do_all_events_async(se.clone(), 0).await
         } else {
             Session::do_requests_async(se.clone(), 0).await

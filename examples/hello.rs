@@ -1,7 +1,7 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
     FileAttr, Dirent, DirentList, Entry, Errno,
-    Filesystem, FileType, MountOption, RequestMeta,
+    trait_sync::Filesystem, FileType, MountOption, RequestMeta,
 };
 use bytes::Bytes;
 use std::path::Path;
