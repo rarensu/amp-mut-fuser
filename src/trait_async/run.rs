@@ -1,6 +1,7 @@
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
+#[cfg(feature = "abi-7-11")]
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::io;

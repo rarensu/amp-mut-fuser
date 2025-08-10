@@ -21,11 +21,14 @@ pub enum AnyFS<L, S, A> where
 }
 
 // Compiler trickery to enable useful blanket traits
-pub(crate) struct _Nl {}
+#[derive(Debug)]
+pub struct _Nl {}
 impl LegacyFS for _Nl {}
-pub(crate) struct _Ns {}
+#[derive(Debug)]
+pub struct _Ns {}
 impl SyncFS for _Ns {}
-pub(crate) struct _Na {}
+#[derive(Debug)]
+pub struct _Na {}
 impl AsyncFS for _Na {}
 
 // Useful blanket traits

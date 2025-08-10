@@ -90,7 +90,7 @@ required-features = ["abi-7-12"]
 
 [[example]]
 name = "notify_inval_inode"
-required-features = ["abi-7-15"]
+required-features = ["abi-7-15", "tokio"]
 
 [[example]]
 name = "ioctl"

@@ -21,7 +21,7 @@ use clap::Parser;
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
-    consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType, Filesystem,
+    consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType, trait_async::Filesystem,
     Forget, FsStatus, InvalInode, MountOption, Notification, Open, Store, RequestMeta,
     FUSE_ROOT_ID,
 };
@@ -75,15 +75,15 @@ impl ClockFS<'_> {
 #[async_trait]
 impl Filesystem for ClockFS<'_> {
     #[cfg(feature = "abi-7-11")]
-    async fn init_notification_sender(
-        &self,
+    fn init_notification_sender(
+        &mut self,
         sender: Sender<Notification>,
     ) -> bool {
         *self.notification_sender.lock().unwrap() = Some(sender);
         true
     }
 
-    async fn heartbeat(&self) -> Result<FsStatus, Errno> {
+    async fn heartbeat(&self) -> FsStatus {
         if let Some(r) = self.notification_reply.lock().unwrap().take() {
             if let Ok(result) = r.try_recv() {
                 match result {
@@ -137,7 +137,7 @@ impl Filesystem for ClockFS<'_> {
             }
             *last_update_guard = now;
         }
-        Ok(FsStatus::Ready)
+        FsStatus::Ready
     }
 
     async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
@@ -333,7 +333,7 @@ fn main() {
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(1).build().unwrap();
     session.set_channels(2).unwrap();
-    match rt.block_on(async { session.run_concurrently_sequential_parts().await }) {
+    match rt.block_on(session.run_concurrently_parts()) {
         Ok(()) => log::info!("Session ended safely"),
         Err(e) => log::info!("Session ended with error: {e:?}"),
     }

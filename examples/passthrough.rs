@@ -11,7 +11,7 @@ use clap::{crate_version, Arg, ArgAction, Command};
 use crossbeam_channel::{Sender, Receiver};
 use fuser::{
     consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
-    trait_async::Filesystem, KernelConfig, MountOption, Open, Notification, RequestMeta,
+    trait_async::Filesystem, FsStatus, KernelConfig, MountOption, Open, Notification, RequestMeta,
 };
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -273,8 +273,8 @@ impl Filesystem for PassthroughFs {
     }
 
     #[cfg(feature = "abi-7-11")]
-    async fn init_notification_sender(
-        &self,
+    fn init_notification_sender(
+        &mut self,
         sender: Sender<Notification>,
     ) -> bool {
         log::info!("init_notification_sender");
@@ -353,12 +353,12 @@ impl Filesystem for PassthroughFs {
 
     // The heartbeat function is called periodically by the FUSE session.
     // We use it to ensure that the cache entries have accurate timestamps.
-    async fn heartbeat(&self) -> Result<fuser::FsStatus, Errno> {
+    async fn heartbeat(&self) -> FsStatus {
         if let Some(notifier) = self.notification_sender.lock().unwrap().as_ref().cloned() {
             let mut cache = self.backing_cache.lock().unwrap();
             cache.retain(|_, v| PassthroughFs::backing_status_is_ok(v, &notifier, false));
         }
-        Ok(fuser::FsStatus::Ready)
+        FsStatus::Ready
     }
 
     // This deliberately unimplemented read() function proves that the example demonstrates passthrough.
@@ -458,7 +458,7 @@ fn main() {
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    match rt.block_on(async { session.run().await}) {
+    match rt.block_on(session.run_async()) {
         Ok(()) => log::info!("Session ended safely"),
         Err(e) => log::info!("Session ended with error: {e:?}"),
     }

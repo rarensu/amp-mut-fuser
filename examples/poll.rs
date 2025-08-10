@@ -25,7 +25,7 @@ use poll_data::PollData;
 
 use fuser::{
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
-    Dirent, DirentList, Entry, Errno, FileAttr, trait_async::Filesystem,
+    Dirent, DirentList, Entry, Errno, FileAttr, trait_async::Filesystem, FsStatus,
     FileType, MountOption, Notification, Open, RequestMeta,
     FUSE_ROOT_ID,
 };
@@ -129,13 +129,13 @@ impl FSelFS {
 
 #[async_trait]
 impl Filesystem for FSelFS {
-    async fn heartbeat(&self) -> Result<fuser::FsStatus, Errno> {
+    async fn heartbeat(&self) -> FsStatus {
         self.poll_handler.lock().unwrap().check_replies();
         if self.producer.lock().unwrap().is_ready() {
             self.produce_data();
             self.producer.lock().unwrap().advance();
         }
-        Ok(fuser::FsStatus::Ready)
+        FsStatus::Ready
     }
 
     async fn lookup(
@@ -352,7 +352,7 @@ impl Filesystem for FSelFS {
     }
 
     #[cfg(feature = "abi-7-11")]
-    async fn init_notification_sender(&self, sender: Sender<Notification>) -> bool {
+    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
         log::info!("init_poll_sender() called");
         self.poll_handler.lock().unwrap().set_sender(sender);
         true
@@ -389,7 +389,7 @@ fn main() {
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    match rt.block_on(async { session.run().await }) {
+    match rt.block_on( session.run_async() ) {
         Ok(()) => log::info!("Session ended safely"),
         Err(e) => log::info!("Session ended with error: {e:?}"),
     }

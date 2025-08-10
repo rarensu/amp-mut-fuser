@@ -214,7 +214,9 @@ impl<L, S, A> Session<L, S, A> where
         Ok(new_channels)
     }
 
+    #[cfg(feature = "abi-7-11")]
     /// returns a copy of the channel associated with a specific channel index.
+    /// used to assist with constructing notifiers and the like.
     pub(crate) fn get_ch(&self, ch_idx: usize) -> Channel {
         self.chs[ch_idx].clone()
     }

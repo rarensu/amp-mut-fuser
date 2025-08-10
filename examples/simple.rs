@@ -14,7 +14,7 @@ use fuser::consts::FUSE_WRITE_KILL_PRIV;
 */
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Dirent, DirentList, Entry, Errno, FileAttr, trait_sync::Filesystem,
+    Dirent, DirentList, Entry, Errno, FileAttr, trait_async::Filesystem,
     Forget, KernelConfig, MountOption, Open, RequestMeta, Statfs, TimeOrNow, Xattr,
     FUSE_ROOT_ID,
 };
@@ -2117,7 +2117,7 @@ fn main() {
             matches.get_flag("direct-io"),
             matches.get_flag("suid"),
             matches.get_flag("user")
-        ),
+        ).into(),
         mountpoint,
         &options,
     );

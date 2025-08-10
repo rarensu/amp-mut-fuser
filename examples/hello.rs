@@ -1,7 +1,7 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::{
     FileAttr, Dirent, DirentList, Entry, Errno,
-    trait_sync::Filesystem, FileType, MountOption, RequestMeta,
+    trait_async::Filesystem, FileType, MountOption, RequestMeta,
 };
 use bytes::Bytes;
 use std::path::Path;
@@ -229,7 +229,7 @@ fn main() {
         options.push(MountOption::AllowRoot);
     }
     let hellofs = HelloFS::new();
-    fuser::mount2(hellofs, mountpoint, &options).unwrap();
+    fuser::mount2(hellofs.into(), mountpoint, &options).unwrap();
 }
 
 #[cfg(test)]

@@ -10,7 +10,6 @@ use libc::{c_int, ENOSYS, EPERM};
 use log::warn;
 use std::ffi::OsStr;
 use std::path::Path;
-#[cfg(feature = "abi-7-23")]
 use std::time::SystemTime;
 use crate::{KernelConfig, FsStatus, TimeOrNow};
 #[cfg(feature = "abi-7-16")]
@@ -20,20 +19,29 @@ use crate::notify::{Notification};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{Sender};
 
-
+use super::Request;
+use super::{
+    ReplyBmap,
+    ReplyCreate,
+    ReplyDirectory,
+    ReplyLock,
+    ReplyStatfs,
+    ReplyWrite,
+    ReplyAttr,
+    ReplyData,
+    ReplyEmpty,
+    ReplyEntry,
+    ReplyOpen,
+    ReplyXattr
+};
 #[cfg(feature = "abi-7-11")]
-use super::ReplyPoll;
+use super::{ReplyPoll, PollHandle, ReplyIoctl};
+#[cfg(feature = "abi-7-21")]
+use super::ReplyDirectoryPlus;
+#[cfg(feature = "abi-7-24")]
+use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
-use super::ReplyXattr;
-use super::{ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen};
-use super::{
-    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyDirectoryPlus, ReplyIoctl, ReplyLock, ReplyLseek,
-    ReplyStatfs, ReplyWrite,
-};
-
-use super::Request;
-use super::PollHandle;
 
 /// Filesystem trait.
 ///
@@ -412,6 +420,7 @@ pub trait Filesystem {
     /// requested size. Send an empty buffer on end of stream. fh will contain the
     /// value set by the opendir method, or will be undefined if the opendir method
     /// didn't set any value.
+    #[cfg(feature = "abi-7-21")]
     fn readdirplus(
         &mut self,
         req: &Request<'_>,
@@ -621,7 +630,8 @@ pub trait Filesystem {
         reply.error(ENOSYS);
     }
 
-    /// control device
+    /// Control device
+    #[cfg(feature = "abi-7-11")]
     fn ioctl(
         &mut self,
         req: &Request<'_>,
@@ -685,6 +695,7 @@ pub trait Filesystem {
     }
 
     /// Reposition read/write file offset
+    #[cfg(feature = "abi-7-24")]
     fn lseek(
         &mut self,
         req: &Request<'_>,

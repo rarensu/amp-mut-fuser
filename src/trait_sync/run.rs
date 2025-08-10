@@ -1,6 +1,7 @@
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
+#[cfg(feature = "abi-7-11")]
 use std::sync::atomic::Ordering::Relaxed;
 use std::io;
 
@@ -47,8 +48,12 @@ impl<L, S, A> Session<L, S, A> where
         }
         #cfg[not((feature = "threaded"))]
         */
+        #[cfg(not(feature = "abi-7-11"))]
+        let notify = false;
+        #[cfg(feature = "abi-7-11")]
+        let notify = self.meta.notify.load(Relaxed);
         // ch_idx=0 for the single-threaded case
-        if init_fs_status != FsStatus::Default || self.meta.notify.load(Relaxed) {
+        if init_fs_status != FsStatus::Default || notify {
             self.do_all_events_sync(0)
         } else {
             self.do_requests_sync(0)
@@ -115,7 +120,7 @@ impl<L, S, A> Session<L, S, A> where
     }
     
     /// Process notifications, blocking a single thread.
-    #[cfg(all(feature = "abi-7-11", ))]
+    #[cfg(all(feature = "abi-7-11"))]
     #[allow(unused)] // this function is reserved for future multithreaded implementations
     pub fn do_notifications_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
         let sender = self.get_ch(ch_idx);
@@ -194,12 +199,12 @@ impl<L, S, A> Session<L, S, A> where
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
 
-        #[cfg(all(feature = "abi-7-11", ))]
+        #[cfg(feature = "abi-7-11")]
         let notifier = Notifier::new(self.get_ch(ch_idx));
 
         info!("Starting full task loop on channel {ch_idx}");
         loop {
-            #[cfg(all(feature = "abi-7-11", ))]
+            #[cfg(feature = "abi-7-11")]
             if self.meta.notify.load(Relaxed) {
                 // Check for outgoing notifications
                 // try_recv() returns immediately

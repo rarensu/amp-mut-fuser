@@ -196,6 +196,7 @@ pub struct Dirent {
 /// A list of directory entries.
 pub type DirentList = Container<Dirent>;
 
+#[cfg(feature = "abi-7-21")]
 /// A list of directory entries, plus additional file data for the kernel cache.
 pub type DirentPlusList = Container<(Dirent, Entry)>;
 
@@ -656,6 +657,7 @@ impl ReplyHandler {
         self.send_ll(&ll::Response::new_lseek(offset));
     }
 
+    #[cfg(feature = "abi-7-24")]
     /// Reply to a request with a seeked offset or an error
     pub fn offset_or_err(self, result: Result<i64, Errno>) {
         match result {

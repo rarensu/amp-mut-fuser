@@ -7,11 +7,8 @@ use crate::session::SessionMeta;
 use crate::request::RequestHandler;
 use crate::ll::{self, Operation, request::Request as AnyRequest};
 
-use super::{Filesystem, PollHandle};
-use super::callback::DirectoryHandler;
-#[cfg(feature = "abi-7-21")]
-use super::callback::DirectoryPlusHandler;
 use super::{
+    Filesystem,
     ReplyEmpty,
     ReplyData,
     ReplyEntry,
@@ -22,13 +19,17 @@ use super::{
     ReplyCreate,
     ReplyLock,
     ReplyBmap,
-    ReplyIoctl,
-    ReplyPoll,
-    ReplyDirectory,
-    ReplyDirectoryPlus,
+    ReplyDirectory, callback::DirectoryHandler,
     ReplyXattr,
-    ReplyLseek,
 };
+#[cfg(feature = "abi-7-11")]
+use super::{ReplyIoctl, ReplyPoll, PollHandle};
+#[cfg(feature = "abi-7-21")]
+use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
+#[cfg(feature = "abi-7-24")]
+use super::ReplyLseek;
+#[cfg(target_os = "macos")]
+use super::ReplyXTimes;
 
 #[derive(Debug)]
 /// Userspace metadata for a given request

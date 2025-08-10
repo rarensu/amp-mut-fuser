@@ -24,7 +24,7 @@ use clap::Parser;
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
-    Dirent, DirentList, Entry, Errno, FileAttr, FileType, trait_sync::Filesystem, Forget,
+    Dirent, DirentList, Entry, Errno, FileAttr, FileType, trait_async::Filesystem, Forget,
     FsStatus, InvalEntry, MountOption, Notification, RequestMeta, FUSE_ROOT_ID,
 };
 struct ClockFS {
@@ -76,15 +76,15 @@ impl ClockFS {
 #[async_trait]
 impl Filesystem for ClockFS {
     #[cfg(feature = "abi-7-11")]
-    async fn init_notification_sender(
-        &self,
+    fn init_notification_sender(
+        &mut self,
         sender: Sender<Notification>,
     ) -> bool {
         *self.notification_sender.lock().unwrap() = Some(sender);
         true
     }
 
-    async fn heartbeat(&self) -> Result<FsStatus, Errno> {
+    async fn heartbeat(&self) -> FsStatus {
         // log the reply, if there is one.
         if let Some(r) = self.notification_reply.lock().unwrap().take() {
             if let Ok(result) = r.try_recv() {
@@ -145,7 +145,7 @@ impl Filesystem for ClockFS {
                 }
             }
         }
-        Ok(FsStatus::Ready)
+        FsStatus::Ready
     }
 
     async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {

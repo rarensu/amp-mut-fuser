@@ -35,8 +35,9 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 use std::convert::AsRef;
+#[cfg(feature = "abi-7-23")]
+use std::time::Duration;
 #[cfg(feature = "threaded")]
 use std::io::ErrorKind;
 #[allow(clippy::wildcard_imports)] // avoid duplicating feature gates
@@ -60,7 +61,9 @@ pub use reply::Ioctl;
 #[cfg(target_os = "macos")]
 pub use reply::XTimes;
 pub use bytes::Bytes;
-pub use reply::{Dirent, DirentList, DirentPlusList, Entry, FileAttr, FileType, Open, Statfs, Xattr, Lock};
+pub use reply::{Dirent, DirentList, Entry, FileAttr, FileType, Open, Statfs, Xattr, Lock};
+#[cfg(feature = "abi-7-21")]
+pub use reply::DirentPlusList;
 pub use request::{Forget, RequestMeta};
 pub use session::{Session, SessionACL, SessionUnmounter};
 #[cfg(feature = "threaded")]
