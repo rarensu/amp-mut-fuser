@@ -69,6 +69,11 @@ impl Request<'_> {
     pub fn pid(&self) -> u32 {
         self.meta.pid
     }
+    /// Returns a copy of this Request's data as a RequestMeta
+    pub fn meta(&self) -> RequestMeta {
+        self.meta.clone()
+    }
+
 }
 
 impl RequestHandler {

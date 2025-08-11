@@ -111,7 +111,7 @@ const fn default_init_flags(capabilities: u64) -> u64 {
 }
 
 /// Configuration of the fuse kernel module connection
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct KernelConfig {
     capabilities: u64,
     requested: u64,
@@ -282,6 +282,24 @@ impl KernelConfig {
     #[allow(clippy::cast_possible_truncation)] // truncation is a feature of this computation
     fn max_pages(&self) -> u16 {
         ((max(self.max_write, self.max_readahead) - 1) / page_size::get() as u32) as u16 + 1
+    }
+    
+    /// Transfer the contents of this KernelConfig into another.
+    pub fn move_into(self, config: &mut KernelConfig) {
+        config.capabilities = self.capabilities;
+        config.requested = self.requested;
+        config.max_readahead = self.max_readahead;
+        config.max_max_readahead = self.max_max_readahead;
+        #[cfg(feature = "abi-7-13")]
+        {
+        config.max_background = self.max_background;
+        config.congestion_threshold = self.congestion_threshold;
+        }
+        config.max_write = self.max_write;
+        #[cfg(feature = "abi-7-23")]
+        {config.time_gran = self.time_gran;}
+        #[cfg(feature = "abi-7-40")]
+        {config.max_stack_depth = self.max_stack_depth;}
     }
 }
 
