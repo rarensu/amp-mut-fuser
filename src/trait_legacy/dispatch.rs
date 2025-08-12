@@ -148,6 +148,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     reply,
+                    /* blank space */
                 );
             }
             Operation::Forget(x) => {
@@ -162,6 +163,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into),
                     reply,
+                    /* blank space */
                 );
                 // Pre-abi-7-9 does not support providing a file handle.
                 #[cfg(not(feature = "abi-7-9"))]
@@ -170,6 +172,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     None,
                     reply,
+                    /* blank space */
                 );
             }
             Operation::SetAttr(x) => {
@@ -226,6 +229,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     reply,
+                    /* blank space */
                 );
             }
             Operation::RmDir(x) => {
@@ -339,6 +343,7 @@ impl RequestHandler {
                     self.request.nodeid().into(), 
                     x.flags(),
                     reply,
+                    /* blank space */
                 );
             }
             Operation::ReadDir(x) => {
@@ -405,6 +410,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.size(),
                     reply,
+                    /* blank space */
                 );
             }
             Operation::RemoveXAttr(x) => {
@@ -414,6 +420,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name(),
                     reply,
+                    /* blank space */
                 );
             }
             Operation::Access(x) => {
@@ -423,6 +430,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.mask(),
                     reply,
+                    /* blank space */
                 );
             }
             Operation::Create(x) => {
@@ -607,6 +615,7 @@ impl RequestHandler {
                     &req,
                     x.name(),
                     reply,
+                    /* blank space */
                 );
             }
             #[cfg(target_os = "macos")]
@@ -616,6 +625,7 @@ impl RequestHandler {
                     &req,
                     x.nodeid().into(),
                     reply,
+                    /* blank space */
                 );
             }
             #[cfg(target_os = "macos")]

@@ -167,7 +167,7 @@ impl Filesystem for FiocFS {
         }
         // Static data can be borrowed to prevent unnecessary copying
         // In this example, return a borrowed reference to the (static) list of dir entries.
-        Ok(DirentList::Ref(&DIRENTS))
+        Ok(DirentList::Static(&DIRENTS))
     }
 
     #[cfg(feature = "abi-7-11")]

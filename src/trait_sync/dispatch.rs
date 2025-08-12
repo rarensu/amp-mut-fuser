@@ -92,6 +92,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
+                    /* blank space */
                 );
                 self.replyhandler.entry_or_err(result);
             }
@@ -109,6 +110,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into),
+                    /* blank space */
                 );
                 // Pre-abi-7-9 does not support providing a file handle.
                 #[cfg(not(feature = "abi-7-9"))]
@@ -116,6 +118,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     None,
+                    /* blank space */
                 );
                 self.replyhandler.attr_or_err(result);
             }
@@ -168,6 +171,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
+                    /* blank space */
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -176,6 +180,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
+                    /* blank space */
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -213,6 +218,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(), 
                     x.flags(),
+                    /* blank space */
                 );
                 self.replyhandler.opened_or_err(result);
             }
@@ -275,6 +281,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(), 
                     x.flags(),
+                    /* blank space */
                 );
                 self.replyhandler.opened_or_err(result);
             }
@@ -340,6 +347,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.size(),
+                    /* blank space */
                 );
                 self.replyhandler.xattr_or_err(result);
             }
@@ -348,6 +356,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
+                    /* blank space */
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -356,6 +365,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.mask(),
+                    /* blank space */
                 );
                 self.replyhandler.ok_or_err(result);
             }
