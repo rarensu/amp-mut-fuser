@@ -24,10 +24,10 @@ mod poll_data;
 use poll_data::PollData;
 
 use fuser::{
+    FUSE_ROOT_ID,
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
     Dirent, DirentList, Entry, Errno, FileAttr, trait_async::Filesystem, FsStatus,
     FileType, MountOption, Notification, Open, RequestMeta,
-    FUSE_ROOT_ID,
 };
 use async_trait::async_trait;
 use bytes::Bytes;

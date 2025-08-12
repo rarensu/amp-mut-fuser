@@ -7,7 +7,7 @@
 //     sudo pkill passthrough
 //     sudo umount /tmp/mnt
 
-use clap::{crate_version, Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, crate_version};
 use crossbeam_channel::{Sender, Receiver};
 use fuser::{
     consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType,

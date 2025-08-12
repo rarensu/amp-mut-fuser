@@ -3,7 +3,7 @@
 //! A request represents information about a filesystem operation the kernel driver wants us to
 //! perform.
 
-use super::fuse_abi::{fuse_in_header, fuse_opcode, InvalidOpcodeError};
+use super::fuse_abi::{InvalidOpcodeError, fuse_in_header, fuse_opcode};
 
 use super::{fuse_abi as abi};
 #[cfg(feature = "serializable")]
@@ -261,7 +261,7 @@ macro_rules! impl_request {
 
 mod op {
     use super::{
-        super::{argument::ArgumentIterator, TimeOrNow},
+        super::{TimeOrNow, argument::ArgumentIterator},
         FilenameInDir, Request,
     };
     #[allow(clippy::wildcard_imports)]

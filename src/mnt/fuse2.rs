@@ -1,4 +1,4 @@
-use super::{fuse2_sys::*, with_fuse_args, MountOption};
+use super::{MountOption, fuse2_sys::*, with_fuse_args};
 use crate::channel::Channel;
 use log::warn;
 use std::{

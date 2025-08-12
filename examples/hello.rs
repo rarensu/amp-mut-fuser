@@ -1,4 +1,4 @@
-use clap::{crate_version, Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::{
     FileAttr, Dirent, DirentList, Entry, Errno,
     trait_async::Filesystem, FileType, MountOption, RequestMeta,

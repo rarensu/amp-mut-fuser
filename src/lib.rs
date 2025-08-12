@@ -43,8 +43,7 @@ use std::io::ErrorKind;
 #[allow(clippy::wildcard_imports)] // avoid duplicating feature gates
 use crate::ll::fuse_abi::consts::*;
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
-pub use crate::ll::{fuse_abi::consts, TimeOrNow};
-pub use ll::Errno;
+pub use crate::ll::{Errno, fuse_abi::consts, TimeOrNow};
 use crate::mnt::mount_options::check_option_conflicts;
 use crate::session::MAX_WRITE_SIZE;
 pub use mnt::mount_options::MountOption;

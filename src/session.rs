@@ -117,7 +117,9 @@ impl<L, S, A> Session<L, S, A> where
             // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
             // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
             // to handle the auto_unmount option
-            warn!("Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling");
+            warn!(
+                "Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling"
+            );
             let mut modified_options = options.to_vec();
             modified_options.push(MountOption::AllowOther);
             Mount::new(mountpoint, &modified_options)?

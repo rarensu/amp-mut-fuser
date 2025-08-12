@@ -4,7 +4,7 @@
 
 #![allow(clippy::cast_possible_truncation)] // many conversions with unhandled errors
 
-use clap::{crate_version, Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FileAttr,
     trait_async::Filesystem, FileType, Ioctl, MountOption, RequestMeta,

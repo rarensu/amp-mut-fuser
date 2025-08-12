@@ -11,8 +11,8 @@ use std::{
     ffi::OsStr,
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering::SeqCst},
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering::SeqCst},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
