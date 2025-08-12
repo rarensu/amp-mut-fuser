@@ -10,8 +10,8 @@
 use std::{
     ffi::OsStr,
     sync::{
-        atomic::{AtomicU64, Ordering::SeqCst},
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering::SeqCst},
     },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -22,8 +22,8 @@ use libc::{ENOBUFS, ENOENT, ENOTDIR};
 use clap::Parser;
 
 use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyDirectory, ReplyEntry, Request,
-    FUSE_ROOT_ID,
+    FUSE_ROOT_ID, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyDirectory,
+    ReplyEntry, Request,
 };
 
 struct ClockFS<'a> {
@@ -32,7 +32,7 @@ struct ClockFS<'a> {
     timeout: Duration,
 }
 
-impl<'a> ClockFS<'a> {
+impl ClockFS<'_> {
     const FILE_INO: u64 = 2;
 
     fn get_filename(&self) -> String {
@@ -67,7 +67,7 @@ impl<'a> ClockFS<'a> {
     }
 }
 
-impl<'a> Filesystem for ClockFS<'a> {
+impl Filesystem for ClockFS<'_> {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         if parent != FUSE_ROOT_ID || name != AsRef::<OsStr>::as_ref(&self.get_filename()) {
             reply.error(ENOENT);
@@ -112,7 +112,7 @@ impl<'a> Filesystem for ClockFS<'a> {
                 ClockFS::FILE_INO,
                 offset + 1,
                 FileType::RegularFile,
-                &self.get_filename(),
+                self.get_filename(),
             )
         {
             reply.error(ENOBUFS);
