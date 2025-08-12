@@ -5,7 +5,7 @@
 
 use super::fuse_abi::{InvalidOpcodeError, fuse_in_header, fuse_opcode};
 
-use super::{fuse_abi as abi};
+use super::fuse_abi as abi;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom, fmt::Display, path::Path};
@@ -266,8 +266,7 @@ mod op {
     };
     #[allow(clippy::wildcard_imports)]
     use super::{
-        abi::consts::*, abi::*, 
-        FileHandle, INodeNo, Lock, LockOwner, Operation, RequestId,
+        FileHandle, INodeNo, Lock, LockOwner, Operation, RequestId, abi::consts::*, abi::*,
     };
     use std::{
         convert::TryInto,
@@ -1334,7 +1333,11 @@ mod op {
             // the kernel implies interest in basic readiness.
             // Commonly, this means POLLIN, POLLOUT, and POLLPRI.
             // POLLRDNORM and POLLWRNORM are often included with POLLIN/POLLOUT.
-            return (libc::POLLIN | libc::POLLRDNORM | libc::POLLOUT | libc::POLLWRNORM | libc::POLLPRI) as u32;
+            return (libc::POLLIN
+                | libc::POLLRDNORM
+                | libc::POLLOUT
+                | libc::POLLWRNORM
+                | libc::POLLPRI) as u32;
         }
 
         /// The poll request's flags
@@ -1375,16 +1378,15 @@ mod op {
     #[cfg(feature = "abi-7-16")]
     use crate::Forget as ForgetAPI; // to distinguish from op::Forget (above)
     #[cfg(feature = "abi-7-16")]
-    #[allow(clippy::from_over_into)]
-    /// just a convenience function 
+    #[allow(clippy::from_over_into)] // because just a convenience function
     impl Into<Vec<ForgetAPI>> for BatchForget<'_> {
         fn into(self) -> Vec<ForgetAPI> {
             let mut buf = Vec::new();
             for node in self.nodes {
                 buf.push({
-                    ForgetAPI{
+                    ForgetAPI {
                         ino: node.nodeid,
-                        nlookup: node.nlookup
+                        nlookup: node.nlookup,
                     }
                 });
             }
@@ -2162,7 +2164,12 @@ impl<'a> AnyRequest {
         let opcode = fuse_opcode::try_from(self.header.opcode)
             .map_err(|_: InvalidOpcodeError| RequestError::UnknownOperation(self.header.opcode))?;
         // Parse/check operation arguments
-        op::parse(&self.header, &opcode, &self.raw[self.body_start..self.body_end]).ok_or(RequestError::InsufficientData)
+        op::parse(
+            &self.header,
+            &opcode,
+            &self.raw[self.body_start..self.body_end],
+        )
+        .ok_or(RequestError::InsufficientData)
     }
 }
 
@@ -2336,9 +2343,9 @@ mod tests {
     #[test]
     fn init() {
         let req = AnyRequest::try_from(INIT_REQUEST[..].to_vec()).unwrap();
-        #[cfg(not(feature="abi-7-36"))]
+        #[cfg(not(feature = "abi-7-36"))]
         assert_eq!(req.header.len, 56);
-        #[cfg(feature="abi-7-36")]
+        #[cfg(feature = "abi-7-36")]
         assert_eq!(req.header.len, 104);
         assert_eq!(req.header.opcode, 26);
         assert_eq!(req.unique(), RequestId(0xdead_beef_baad_f00d));

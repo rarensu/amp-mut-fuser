@@ -3,9 +3,9 @@
 #![allow(clippy::match_wild_err_arm)] // any error fails the test
 
 use crate::container::Container;
-use std::sync::Arc;
 #[cfg(not(feature = "no-rc"))]
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[cfg(test)]
 mod t_u8 {
@@ -18,24 +18,34 @@ mod t_u8 {
         let container2 = container1.clone();
         assert_eq!(&*container1.lock().unwrap(), &*container2.lock().unwrap());
         match (&container1, &container2) {
-            (Container::Vec(v1), Container::Vec(v2)) => { // Expect Vec after cloning Vec
-                assert_ne!(v1.as_ptr(), v2.as_ptr(), "Cloned Vec<u8> should have different pointers");
+            (Container::Vec(v1), Container::Vec(v2)) => {
+                // Expect Vec after cloning Vec
+                assert_ne!(
+                    v1.as_ptr(),
+                    v2.as_ptr(),
+                    "Cloned Vec<u8> should have different pointers"
+                );
             }
             _ => panic!("Expected Vec variants for Container::from(Vec<u8>) clone"),
         }
 
-        let borrowed_slice: &[u8] = &[4,5,6];
-        let c_borrowed1 : Container<u8> = Container::Ref(borrowed_slice);
+        let borrowed_slice: &[u8] = &[4, 5, 6];
+        let c_borrowed1: Container<u8> = Container::Ref(borrowed_slice);
         let c_borrowed2 = c_borrowed1.clone();
         assert_eq!(*c_borrowed1.lock().unwrap(), *c_borrowed2.lock().unwrap());
-        assert_eq!((*c_borrowed1.lock().unwrap()).as_ptr(), (*c_borrowed2.lock().unwrap()).as_ptr());
+        assert_eq!(
+            (*c_borrowed1.lock().unwrap()).as_ptr(),
+            (*c_borrowed2.lock().unwrap()).as_ptr()
+        );
 
-        let shared_slice_arc: Arc<[u8]> = Arc::new([7,8,9]);
-        let c_shared1 : Container<u8> = Container::Arc(shared_slice_arc.clone());
+        let shared_slice_arc: Arc<[u8]> = Arc::new([7, 8, 9]);
+        let c_shared1: Container<u8> = Container::Arc(shared_slice_arc.clone());
         let c_shared2 = c_shared1.clone();
         if let Container::Arc(s2_arc) = &c_shared2 {
             assert!(Arc::ptr_eq(s2_arc, &shared_slice_arc));
-        } else { panic!("Expected shared after clone"); }
+        } else {
+            panic!("Expected shared after clone");
+        }
     }
 
     #[test]
@@ -49,13 +59,9 @@ mod t_u8 {
 
     use once_cell::sync::Lazy;
 
-    static DATA_BOX: Lazy<Box<[u8]>> = Lazy::new(|| {
-        Box::new([4, 5, 6])
-    });
+    static DATA_BOX: Lazy<Box<[u8]>> = Lazy::new(|| Box::new([4, 5, 6]));
 
-    static DATA_VEC: Lazy<Vec<u8>> = Lazy::new(|| {
-        vec![7, 8, 9]
-    });
+    static DATA_VEC: Lazy<Vec<u8>> = Lazy::new(|| vec![7, 8, 9]);
 
     #[test]
     fn borrowed_variants() {
@@ -79,11 +85,17 @@ mod t_u8 {
 
         // Container::CowBox (borrowed)
         let container_cow_box_borrowed = Container::CowBox(std::borrow::Cow::Borrowed(&DATA_BOX));
-        assert_eq!(&*container_cow_box_borrowed.lock().unwrap(), DATA_BOX.as_ref());
+        assert_eq!(
+            &*container_cow_box_borrowed.lock().unwrap(),
+            DATA_BOX.as_ref()
+        );
 
         // Container::CowVec (borrowed)
         let container_cow_vec_borrowed = Container::CowVec(std::borrow::Cow::Borrowed(&DATA_VEC));
-        assert_eq!(&*container_cow_vec_borrowed.lock().unwrap(), DATA_VEC.as_slice());
+        assert_eq!(
+            &*container_cow_vec_borrowed.lock().unwrap(),
+            DATA_VEC.as_slice()
+        );
     }
 
     #[test]
@@ -101,12 +113,20 @@ mod t_u8 {
         assert_eq!(&*container_vec.lock().unwrap(), data_vec_orig.as_slice());
 
         // Container::Cow (owned from Vec)
-        let container_cow_owned_vec = Container::Cow(std::borrow::Cow::Owned(data_vec_orig.clone()));
-        assert_eq!(&*container_cow_owned_vec.lock().unwrap(), data_vec_orig.as_slice());
+        let container_cow_owned_vec =
+            Container::Cow(std::borrow::Cow::Owned(data_vec_orig.clone()));
+        assert_eq!(
+            &*container_cow_owned_vec.lock().unwrap(),
+            data_vec_orig.as_slice()
+        );
 
         // Container::Cow (owned from Box) - Note: Cow doesn't directly take Box<[T]>, so we convert to Vec<T> first for owned Cow
-        let container_cow_owned_box_as_vec = Container::Cow(std::borrow::Cow::Owned(data_box_orig.to_vec()));
-        assert_eq!(&*container_cow_owned_box_as_vec.lock().unwrap(), data_box_orig.as_ref());
+        let container_cow_owned_box_as_vec =
+            Container::Cow(std::borrow::Cow::Owned(data_box_orig.to_vec()));
+        assert_eq!(
+            &*container_cow_owned_box_as_vec.lock().unwrap(),
+            data_box_orig.as_ref()
+        );
 
         #[cfg(not(feature = "no-rc"))]
         {
@@ -137,7 +157,10 @@ mod t_u8 {
 
         // Container::ArcVec
         let container_arc_vec = Container::ArcVec(Arc::new(data_vec_orig.clone()));
-        assert_eq!(&*container_arc_vec.lock().unwrap(), data_vec_orig.as_slice());
+        assert_eq!(
+            &*container_arc_vec.lock().unwrap(),
+            data_vec_orig.as_slice()
+        );
     }
 
     #[cfg(feature = "locking")]
@@ -145,7 +168,7 @@ mod t_u8 {
     fn locking_variants_read() {
         let data_box_orig: Box<[u8]> = Box::new([1, 2, 3]);
         let data_vec_orig: Vec<u8> = vec![4, 5, 6];
-        
+
         #[cfg(not(feature = "no-rc"))]
         {
             // Container::RcRefCellBox

@@ -23,9 +23,9 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 
- // Generate wrappers matching examples/ioctl.rs
- nix::ioctl_read!(ioctl_get_size, 'E', 0, usize);
- nix::ioctl_write_ptr!(ioctl_set_size, 'E', 1, usize);
+// Generate wrappers matching examples/ioctl.rs
+nix::ioctl_read!(ioctl_get_size, 'E', 0, usize);
+nix::ioctl_write_ptr!(ioctl_set_size, 'E', 1, usize);
 
 fn main() -> io::Result<()> {
     // Open the example file in the current directory mount
@@ -55,14 +55,20 @@ fn main() -> io::Result<()> {
         Ok(sz) => println!("Initial size: {sz} bytes"),
         Err(e) => {
             eprintln!("FIOC_GET_SIZE failed: {e}");
-            return Err(io::Error::new(io::ErrorKind::Other, format!("ioctl get failed: {e}")));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("ioctl get failed: {e}"),
+            ));
         }
     }
 
     // 2) Set size to 4096
     if let Err(e) = set_size(4096) {
         eprintln!("FIOC_SET_SIZE(4096) failed: {e}");
-        return Err(io::Error::new(io::ErrorKind::Other, format!("ioctl set failed: {e}")));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("ioctl set failed: {e}"),
+        ));
     } else {
         println!("Set size to 4096 bytes");
     }
@@ -81,14 +87,20 @@ fn main() -> io::Result<()> {
         }
         Err(e) => {
             eprintln!("FIOC_GET_SIZE failed after set(4096): {e}");
-            return Err(io::Error::new(io::ErrorKind::Other, format!("ioctl get failed: {e}")));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("ioctl get failed: {e}"),
+            ));
         }
     }
 
     // 4) Set size to 0
     if let Err(e) = set_size(0) {
         eprintln!("FIOC_SET_SIZE(0) failed: {e}");
-        return Err(io::Error::new(io::ErrorKind::Other, format!("ioctl set failed: {e}")));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("ioctl set failed: {e}"),
+        ));
     } else {
         println!("Set size to 0 bytes");
     }
@@ -107,7 +119,10 @@ fn main() -> io::Result<()> {
         }
         Err(e) => {
             eprintln!("FIOC_GET_SIZE failed after set(0): {e}");
-            return Err(io::Error::new(io::ErrorKind::Other, format!("ioctl get failed: {e}")));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("ioctl get failed: {e}"),
+            ));
         }
     }
 

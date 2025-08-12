@@ -1,9 +1,9 @@
+use bytes::Bytes;
 use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::{
-    FileAttr, Dirent, DirentList, Entry, Errno,
-    trait_async::Filesystem, FileType, MountOption, RequestMeta,
+    Dirent, DirentList, Entry, Errno, FileAttr, FileType, MountOption, RequestMeta,
+    trait_async::Filesystem,
 };
-use bytes::Bytes;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -50,7 +50,7 @@ const HELLO_TXT_ATTR: FileAttr = FileAttr {
 };
 
 // An example of reusable Borrowed data.
-// This entry derives its lifetime from string literal, 
+// This entry derives its lifetime from string literal,
 // which is 'static.
 const DOT_DIRENT: Dirent = Dirent {
     ino: 1,
@@ -65,9 +65,8 @@ struct HelloFS {
 }
 
 impl HelloFS {
-
     fn new() -> Self {
-        HelloFS{
+        HelloFS {
             // An example of reusable Shared data.
             // The filename for Dirent #3 is allocated here once.
             // It is persistent until replaced.
@@ -78,15 +77,14 @@ impl HelloFS {
 
 #[async_trait]
 impl Filesystem for HelloFS {
-
     async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         if parent == 1 && name.as_os_str().as_encoded_bytes() == self.hello_filename {
-            Ok(Entry{
+            Ok(Entry {
                 ino: 2,
                 generation: None,
                 file_ttl: TTL,
-                attr: HELLO_TXT_ATTR, 
-                attr_ttl: TTL, 
+                attr: HELLO_TXT_ATTR,
+                attr_ttl: TTL,
             })
         } else {
             Err(Errno::ENOENT)
@@ -146,28 +144,28 @@ impl Filesystem for HelloFS {
             return Err(Errno::ENOENT);
         }
 
-        // This example builds the list of 3 dirents from scratch 
+        // This example builds the list of 3 dirents from scratch
         // on each call to readdir().
-        let mut entries= Vec::new();
+        let mut entries = Vec::new();
 
         // Entry 1: example of borrowed data.
         // - name: "."
-        // - Dirent is constructed in the global scope. 
+        // - Dirent is constructed in the global scope.
         // - lifetime of the `name` field is 'static by definition.
         // - the vector will hold a reference to the `name` field.
         entries.push(DOT_DIRENT);
 
         // Entry 2: example of single-use Owned data.
         // - name: ".."
-        // - dirent is constructed during each call to readdir(). 
+        // - dirent is constructed during each call to readdir().
         let dotdot_dirent = Dirent {
-                ino: 1, // Parent of root is itself for simplicity. 
-                        // Note: this can cause some weird behavior for an observer.
-                offset: 2,
-                kind: FileType::Directory,
-                // ownership of this new byte vector is moved into the new Dirent
-                name: Bytes::from_owner(Vec::from(".."))
-            };
+            ino: 1, // Parent of root is itself for simplicity.
+            // Note: this can cause some weird behavior for an observer.
+            offset: 2,
+            kind: FileType::Directory,
+            // ownership of this new byte vector is moved into the new Dirent
+            name: Bytes::from_owner(Vec::from("..")),
+        };
         // Ownership of the entry is passed along
         entries.push(dotdot_dirent);
 
@@ -176,22 +174,22 @@ impl Filesystem for HelloFS {
         // - A clone of a Bytes is a reference counted pointer, not a deep copy.
         // - Therefore, the Dirent and HelloFS share ownership.
         let hello_dirent = Dirent {
-                ino: 2,
-                offset: 3,
-                kind: FileType::RegularFile,
-                // a copy of the smart pointer is moved into the Dirent
-                name: self.hello_filename.clone()
-            };
+            ino: 2,
+            offset: 3,
+            kind: FileType::RegularFile,
+            // a copy of the smart pointer is moved into the Dirent
+            name: self.hello_filename.clone(),
+        };
         entries.push(hello_dirent);
 
         // Slice the collected dirents based on the requested offset.
         let entries: Vec<Dirent> = entries.into_iter().skip(offset as usize).collect();
         // ( Only references and smart pointers are being reorganized at this time;
         // the underlying filename data should stay where it is.)
-        
+
         // A DirentList itself may also be returned as borrowed, owned, or shared.
         // In this example, it is owned (Vec).
-        // From<...> and Into<...> methods can be used to help construct the return type.  
+        // From<...> and Into<...> methods can be used to help construct the return type.
         Ok(entries.into())
     }
 }
@@ -234,27 +232,41 @@ fn main() {
 
 #[cfg(test)]
 mod test {
-    use fuser::{trait_async::Filesystem, RequestMeta, Errno, FileType};
+    use fuser::{Errno, FileType, RequestMeta, trait_async::Filesystem};
     use std::ffi::OsStr;
-    use std::path::PathBuf;
     use std::os::unix::ffi::OsStrExt;
+    use std::path::PathBuf;
 
     fn dummy_meta() -> RequestMeta {
-        RequestMeta { unique: 0, uid: 1000, gid: 1000, pid: 2000 }
+        RequestMeta {
+            unique: 0,
+            uid: 1000,
+            gid: 1000,
+            pid: 2000,
+        }
     }
 
     #[test]
     fn test_lookup_hello_txt() {
         let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = futures::executor::block_on(
-            hellofs.lookup(req, 1, &PathBuf::from("hello.txt"))
-        );
+        let result =
+            futures::executor::block_on(hellofs.lookup(req, 1, &PathBuf::from("hello.txt")));
         assert!(result.is_ok(), "Lookup for hello.txt should succeed");
         if let Ok(entry) = result {
-            assert_eq!(entry.attr.ino, 2, "Lookup should return inode 2 for hello.txt");
-            assert_eq!(entry.attr.kind, FileType::RegularFile, "hello.txt should be a regular file");
-            assert_eq!(entry.attr.perm, 0o644, "hello.txt should have permissions 0o644");
+            assert_eq!(
+                entry.attr.ino, 2,
+                "Lookup should return inode 2 for hello.txt"
+            );
+            assert_eq!(
+                entry.attr.kind,
+                FileType::RegularFile,
+                "hello.txt should be a regular file"
+            );
+            assert_eq!(
+                entry.attr.perm, 0o644,
+                "hello.txt should have permissions 0o644"
+            );
         }
     }
 
@@ -262,12 +274,14 @@ mod test {
     fn test_read_hello_txt() {
         let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = futures::executor::block_on(
-            hellofs.read(req, 2, 0, 0, 13, 0, None)
-        );
+        let result = futures::executor::block_on(hellofs.read(req, 2, 0, 0, 13, 0, None));
         assert!(result.is_ok(), "Read for hello.txt should succeed");
         if let Ok(content) = result {
-            assert_eq!(String::from_utf8_lossy(content.as_ref()), "Hello World!\n", "Content of hello.txt should be 'Hello World!\\n'");
+            assert_eq!(
+                String::from_utf8_lossy(content.as_ref()),
+                "Hello World!\n",
+                "Content of hello.txt should be 'Hello World!\\n'"
+            );
         }
     }
 
@@ -275,36 +289,62 @@ mod test {
     fn test_readdir_root() {
         let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = futures::executor::block_on(
-            hellofs.readdir(req, 1, 0, 0, 4096)
-        );
+        let result = futures::executor::block_on(hellofs.readdir(req, 1, 0, 0, 4096));
         assert!(result.is_ok(), "Readdir on root should succeed");
         if let Ok(entries_list) = result {
             // using lock().unwrap() in case locking variants are enabled in the current build.
             // otherwise, one could simply use as_ref() or &
             let entries_slice = entries_list.lock().unwrap();
-            assert_eq!(entries_slice.len(), 3, "Root directory should contain exactly 3 entries");
+            assert_eq!(
+                entries_slice.len(),
+                3,
+                "Root directory should contain exactly 3 entries"
+            );
 
             // Check entry 0: "."
             let entry0_data = &entries_slice[0];
-            assert_eq!(entry0_data.name.as_ref(), OsStr::new(".").as_bytes(), "First entry should be '.'");
+            assert_eq!(
+                entry0_data.name.as_ref(),
+                OsStr::new(".").as_bytes(),
+                "First entry should be '.'"
+            );
             assert_eq!(entry0_data.ino, 1, "Inode for '.' should be 1");
             assert_eq!(entry0_data.offset, 1, "Offset for '.' should be 1");
-            assert_eq!(entry0_data.kind, FileType::Directory, "'.' should be a directory");
+            assert_eq!(
+                entry0_data.kind,
+                FileType::Directory,
+                "'.' should be a directory"
+            );
 
             // Check entry 1: ".."
             let entry1_data = &entries_slice[1];
-            assert_eq!(entry1_data.name.as_ref(), OsStr::new("..").as_bytes(), "Second entry should be '..'");
+            assert_eq!(
+                entry1_data.name.as_ref(),
+                OsStr::new("..").as_bytes(),
+                "Second entry should be '..'"
+            );
             assert_eq!(entry1_data.ino, 1, "Inode for '..' should be 1");
             assert_eq!(entry1_data.offset, 2, "Offset for '..' should be 2");
-            assert_eq!(entry1_data.kind, FileType::Directory, "'..' should be a directory");
+            assert_eq!(
+                entry1_data.kind,
+                FileType::Directory,
+                "'..' should be a directory"
+            );
 
             // Check entry 2: "hello.txt"
             let entry2_data = &entries_slice[2];
-            assert_eq!(entry2_data.name.as_ref(), OsStr::new("hello.txt").as_bytes(), "Third entry should be 'hello.txt'");
+            assert_eq!(
+                entry2_data.name.as_ref(),
+                OsStr::new("hello.txt").as_bytes(),
+                "Third entry should be 'hello.txt'"
+            );
             assert_eq!(entry2_data.ino, 2, "Inode for 'hello.txt' should be 2");
             assert_eq!(entry2_data.offset, 3, "Offset for 'hello.txt' should be 3");
-            assert_eq!(entry2_data.kind, FileType::RegularFile, "'hello.txt' should be a regular file");
+            assert_eq!(
+                entry2_data.kind,
+                FileType::RegularFile,
+                "'hello.txt' should be a regular file"
+            );
         }
     }
 
@@ -312,12 +352,25 @@ mod test {
     fn test_create_fails_readonly() {
         let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = futures::executor::block_on(
-            fuser::trait_async::Filesystem::create(&hellofs, req, 1, &PathBuf::from("newfile.txt"), 0o644, 0, 0)
+        let result = futures::executor::block_on(fuser::trait_async::Filesystem::create(
+            &hellofs,
+            req,
+            1,
+            &PathBuf::from("newfile.txt"),
+            0o644,
+            0,
+            0,
+        ));
+        assert!(
+            result.is_err(),
+            "Create should fail for read-only filesystem"
         );
-        assert!(result.is_err(), "Create should fail for read-only filesystem");
         if let Err(e) = result {
-            assert_eq!(e, Errno::ENOSYS, "Create should return ENOSYS for unsupported operation");
+            assert_eq!(
+                e,
+                Errno::ENOSYS,
+                "Create should return ENOSYS for unsupported operation"
+            );
         }
     }
 }

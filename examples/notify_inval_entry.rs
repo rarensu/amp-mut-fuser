@@ -13,20 +13,21 @@ use std::{
     ffi::OsString,
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering}, Mutex,
+        Mutex,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-#[allow(unused_imports)]
-use log::{error, warn, info, debug};
-use clap::Parser;
 use async_trait::async_trait;
+use clap::Parser;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
-    Dirent, DirentList, Entry, Errno, FileAttr, FileType, trait_async::Filesystem, Forget,
-    FsStatus, InvalEntry, MountOption, Notification, RequestMeta, FUSE_ROOT_ID,
+    Dirent, DirentList, Entry, Errno, FUSE_ROOT_ID, FileAttr, FileType, Forget, FsStatus,
+    InvalEntry, MountOption, Notification, RequestMeta, trait_async::Filesystem,
 };
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
 struct ClockFS {
     file_name: Mutex<OsString>,
     lookup_cnt: AtomicU64,
@@ -76,10 +77,7 @@ impl ClockFS {
 #[async_trait]
 impl Filesystem for ClockFS {
     #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
-        sender: Sender<Notification>,
-    ) -> bool {
+    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
         *self.notification_sender.lock().unwrap() = Some(sender);
         true
     }
@@ -174,7 +172,12 @@ impl Filesystem for ClockFS {
         }
     }
 
-    async fn getattr(&self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<(FileAttr, Duration), Errno> {
+    async fn getattr(
+        &self,
+        _req: RequestMeta,
+        ino: u64,
+        _fh: Option<u64>,
+    ) -> Result<(FileAttr, Duration), Errno> {
         match ClockFS::stat(ino) {
             Some(attr) => Ok((attr, self.timeout)),
             None => Err(Errno::ENOENT),
@@ -194,7 +197,7 @@ impl Filesystem for ClockFS {
         }
         // In this example, construct and return an owned vector,
         // containing owned bytes.
-        let mut entries= Vec::new();
+        let mut entries = Vec::new();
         if offset == 0 {
             let entry = Dirent {
                 ino: ClockFS::FILE_INO,
@@ -242,7 +245,10 @@ struct Options {
 fn main() {
     env_logger::init();
     let opts = Options::parse();
-    eprintln!("Mounting ClockFS (entry invalidation) at {}", &opts.mount_point);
+    eprintln!(
+        "Mounting ClockFS (entry invalidation) at {}",
+        &opts.mount_point
+    );
     eprintln!("Press Ctrl-C to unmount and exit.");
 
     let mount_point = OsString::from(&opts.mount_point);
@@ -258,15 +264,18 @@ fn main() {
         notification_sender: Mutex::new(None),
         notification_reply: Mutex::new(None),
     };
-    let mount_options = vec![MountOption::RO, MountOption::FSName("clock_entry".to_string())];
-    let session = fuser::Session::new_mounted(
-        fs.into(),
-        &mount_point,
-        &mount_options
-    ).expect("Failed to create FUSE session.");
+    let mount_options = vec![
+        MountOption::RO,
+        MountOption::FSName("clock_entry".to_string()),
+    ];
+    let session = fuser::Session::new_mounted(fs.into(), &mount_point, &mount_options)
+        .expect("Failed to create FUSE session.");
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     match rt.block_on(session.run_async()) {
         Ok(()) => info!("Session ended safely."),
         Err(e) => info!("Session ended with error: {e:?}"),

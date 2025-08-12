@@ -87,7 +87,6 @@ impl<'a> ArgumentIterator<'a> {
 
 #[cfg(test)]
 pub mod tests {
-    
 
     use super::super::test::AlignedData;
     use super::*;

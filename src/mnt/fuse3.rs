@@ -3,6 +3,7 @@ use super::fuse3_sys::{
     fuse_session_unmount,
 };
 use super::{MountOption, with_fuse_args};
+use crate::channel::Channel;
 use std::{
     ffi::{CString, c_void},
     fs::File,
@@ -11,7 +12,6 @@ use std::{
     path::Path,
     ptr,
 };
-use crate::channel::Channel;
 
 /// Ensures that an os error is never 0/Success
 fn ensure_last_os_error() -> io::Error {

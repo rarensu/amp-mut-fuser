@@ -833,18 +833,24 @@ mod test {
             0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
         ];
         let mut buf = DirentBuf::new(4096);
-        assert!(!buf.push(&crate::Dirent {
-            ino: 0xaabb,
-            offset: 1,
-            kind: FileType::Directory,
-            name: "hello".into()
-        }).unwrap());
-        assert!(!buf.push(&crate::Dirent {
-            ino: 0xccdd,
-            offset: 2,
-            kind: FileType::RegularFile,
-            name: "world.rs".into()
-        }).unwrap());
+        assert!(
+            !buf.push(&crate::Dirent {
+                ino: 0xaabb,
+                offset: 1,
+                kind: FileType::Directory,
+                name: "hello".into()
+            })
+            .unwrap()
+        );
+        assert!(
+            !buf.push(&crate::Dirent {
+                ino: 0xccdd,
+                offset: 2,
+                kind: FileType::RegularFile,
+                name: "world.rs".into()
+            })
+            .unwrap()
+        );
         let r: Response<'_> = buf.into();
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),

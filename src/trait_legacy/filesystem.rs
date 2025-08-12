@@ -6,42 +6,32 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use libc::{c_int, ENOSYS, EPERM};
+#[cfg(feature = "abi-7-16")]
+use super::fuse_forget_one;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::Notification;
+use crate::{FsStatus, KernelConfig, TimeOrNow};
+#[cfg(feature = "abi-7-11")]
+use crossbeam_channel::Sender;
+use libc::{ENOSYS, EPERM, c_int};
 use log::warn;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::SystemTime;
-use crate::{KernelConfig, FsStatus, TimeOrNow};
-#[cfg(feature = "abi-7-16")]
-use super::fuse_forget_one;
-#[cfg(feature = "abi-7-11")]
-use crate::notify::{Notification};
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::{Sender};
 
-use super::Request;
-use super::{
-    ReplyBmap,
-    ReplyCreate,
-    ReplyDirectory,
-    ReplyLock,
-    ReplyStatfs,
-    ReplyWrite,
-    ReplyAttr,
-    ReplyData,
-    ReplyEmpty,
-    ReplyEntry,
-    ReplyOpen,
-    ReplyXattr
-};
-#[cfg(feature = "abi-7-11")]
-use super::{ReplyPoll, PollHandle, ReplyIoctl};
 #[cfg(feature = "abi-7-21")]
 use super::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
 use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
+use super::Request;
+#[cfg(feature = "abi-7-11")]
+use super::{PollHandle, ReplyIoctl, ReplyPoll};
+use super::{
+    ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+};
 
 /// Filesystem trait.
 ///
@@ -50,7 +40,8 @@ use super::ReplyXTimes;
 /// implementations are provided here to get a mountable filesystem that does
 /// nothing.
 #[allow(clippy::too_many_arguments)]
-#[allow(unused_variables)] // This is the main API, so variables are named without the underscore even though the defaults may not use them.
+#[allow(unused_variables)]
+// This is the main API, so variables are named without the underscore even though the defaults may not use them.
 #[allow(clippy::missing_errors_doc)] // These default implementations do not define the conditions that cause errors
 pub trait Filesystem {
     /// Initialize filesystem.
@@ -63,10 +54,7 @@ pub trait Filesystem {
     /// Initializes the notification event sender for the filesystem.
     /// The boolean indicates whether the filesystem supports it.
     #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
-        sender: Sender<Notification>,
-    ) -> bool {
+    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
         false // Default: not supported
     }
 

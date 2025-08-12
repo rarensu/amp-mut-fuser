@@ -6,13 +6,13 @@
 //! TODO: This module is meant to go away soon in favor of `ll::Request`.
 
 #[allow(unused_imports)]
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 use std::convert::Into;
 
 use crate::channel::Channel;
+use crate::ll::{AnyRequest, Operation, Request as RequestTrait};
 use crate::reply::ReplyHandler;
 use crate::session::{SessionACL, SessionMeta};
-use crate::ll::{Operation, AnyRequest, Request as RequestTrait};
 
 /// Request data structure
 #[derive(Debug)]
@@ -35,7 +35,7 @@ pub struct RequestMeta {
     /// The gid of this request
     pub gid: u32,
     /// The pid of this request
-    pub pid: u32
+    pub pid: u32,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -46,7 +46,7 @@ pub struct Forget {
     /// The number of times the file has been looked up (and not yet forgotten).
     /// When a `forget` operation is received, the filesystem should typically
     /// decrement its internal reference count for the inode by `nlookup`.
-    pub nlookup: u64
+    pub nlookup: u64,
 }
 
 impl RequestHandler {
@@ -63,23 +63,23 @@ impl RequestHandler {
             unique: request.unique().into(),
             uid: request.uid(),
             gid: request.gid(),
-            pid: request.pid()
+            pid: request.pid(),
         };
         let replyhandler = ReplyHandler::new(request.unique().into(), ch);
-        Some(Self { request, meta, replyhandler })
+        Some(Self {
+            request,
+            meta,
+            replyhandler,
+        })
     }
 
     /// Implementation to allow_root & access check for auto_unmount
     pub(crate) fn access_denied(&self, op: &Operation<'_>, se_meta: &SessionMeta) -> bool {
-        if 
-        (
-            se_meta.allowed == SessionACL::RootAndOwner &&
-            self.request.uid() != se_meta.session_owner &&
-            self.request.uid() != 0
-        ) || (
-            se_meta.allowed == SessionACL::Owner && 
-            self.request.uid() != se_meta.session_owner
-        ){
+        if (se_meta.allowed == SessionACL::RootAndOwner
+            && self.request.uid() != se_meta.session_owner
+            && self.request.uid() != 0)
+            || (se_meta.allowed == SessionACL::Owner && self.request.uid() != se_meta.session_owner)
+        {
             match op {
                 // Only allow operations that the kernel may issue without a uid set
                 Operation::Init(_)

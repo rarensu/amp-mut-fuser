@@ -1,10 +1,10 @@
 use std::io;
 
-#[allow(unused)]
-use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
-use crossbeam_channel::{SendError, Sender};
 #[cfg(feature = "abi-7-12")]
 use bytes::Bytes;
+use crossbeam_channel::{SendError, Sender};
+#[allow(unused)]
+use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
 
 use crate::{
     channel::Channel,
@@ -22,7 +22,7 @@ pub struct Poll {
     /// Poll handle: the unique idenifier from a previous poll request
     pub ph: u64,
     /// Events flag: binary encoded information about resource availability
-    pub events: u32
+    pub events: u32,
 }
 
 /// Invalid entry notification to be sent to the kernel
@@ -32,7 +32,7 @@ pub struct InvalEntry {
     /// Parent: the inode of the parent of the invalid entry
     pub parent: u64,
     /// Name: the file name of the invalid entry
-    pub name: Bytes
+    pub name: Bytes,
 }
 
 /// Invalid inode notification to be sent to the kernel
@@ -44,7 +44,7 @@ pub struct InvalInode {
     /// Start of invalid metadata
     pub offset: i64,
     /// Length of invalid metadata
-    pub len: i64
+    pub len: i64,
 }
 
 /// Store inode notification to be sent to the kernel
@@ -56,7 +56,7 @@ pub struct Store {
     /// The start location of the metadata to be updated
     pub offset: u64,
     /// The new metadata
-    pub data: Bytes
+    pub data: Bytes,
 }
 
 /// Deleted file notification to be sent to the kernel
@@ -68,7 +68,7 @@ pub struct Delete {
     /// ino: the inode of the deleted file
     pub ino: u64,
     /// Name: the file name of the deleted entry
-    pub name: Bytes
+    pub name: Bytes,
 }
 
 /// The list of supported notification types
@@ -96,7 +96,7 @@ pub enum Notification {
     #[cfg(feature = "abi-7-40")]
     CloseBacking((u32, Option<Sender<io::Result<u32>>>)),
     /// (Internal) Disable notifications for this session
-    Stop
+    Stop,
 }
 
 impl Notification {
@@ -123,15 +123,35 @@ impl Notification {
 }
 
 #[cfg(feature = "abi-7-11")]
-impl From<Poll>       for Notification {fn from(notification: Poll)       -> Self{Notification::Poll((notification, None))}}
+impl From<Poll> for Notification {
+    fn from(notification: Poll) -> Self {
+        Notification::Poll((notification, None))
+    }
+}
 #[cfg(feature = "abi-7-12")]
-impl From<InvalEntry> for Notification {fn from(notification: InvalEntry) -> Self{Notification::InvalEntry((notification, None))}}
+impl From<InvalEntry> for Notification {
+    fn from(notification: InvalEntry) -> Self {
+        Notification::InvalEntry((notification, None))
+    }
+}
 #[cfg(feature = "abi-7-12")]
-impl From<InvalInode> for Notification {fn from(notification: InvalInode) -> Self{Notification::InvalInode((notification, None))}}
+impl From<InvalInode> for Notification {
+    fn from(notification: InvalInode) -> Self {
+        Notification::InvalInode((notification, None))
+    }
+}
 #[cfg(feature = "abi-7-15")]
-impl From<Store>      for Notification {fn from(notification: Store)      -> Self{Notification::Store((notification, None))}}
+impl From<Store> for Notification {
+    fn from(notification: Store) -> Self {
+        Notification::Store((notification, None))
+    }
+}
 #[cfg(feature = "abi-7-18")]
-impl From<Delete>     for Notification {fn from(notification: Delete)     -> Self{Notification::Delete((notification, None))}}
+impl From<Delete> for Notification {
+    fn from(notification: Delete) -> Self {
+        Notification::Delete((notification, None))
+    }
+}
 //TODO: strong typing on fd(u32) and backing_id(u32) to enable From<> trait
 
 /// A handle by which the application can send notifications to the server
@@ -166,7 +186,7 @@ impl Notifier {
                     return Ok(());
                 }
                 res
-            },
+            }
             #[cfg(feature = "abi-7-12")]
             Notification::InvalEntry((data, sender)) => {
                 let res = self.inval_entry(data);
@@ -178,7 +198,7 @@ impl Notifier {
                     return Ok(());
                 }
                 res
-            },
+            }
             #[cfg(feature = "abi-7-12")]
             Notification::InvalInode((data, sender)) => {
                 let res = self.inval_inode(data);
@@ -190,7 +210,7 @@ impl Notifier {
                     return Ok(());
                 }
                 res
-            },
+            }
             #[cfg(feature = "abi-7-15")]
             Notification::Store((data, sender)) => {
                 let res = self.store(data);
@@ -202,7 +222,7 @@ impl Notifier {
                     return Ok(());
                 }
                 res
-            },
+            }
             #[cfg(feature = "abi-7-18")]
             Notification::Delete((data, sender)) => {
                 let res = self.delete(data);
@@ -214,33 +234,37 @@ impl Notifier {
                     return Ok(());
                 }
                 res
-            },
+            }
             #[cfg(feature = "abi-7-40")]
             Notification::OpenBacking((data, sender)) => {
                 let res = self.open_backing(data);
                 if let Some(sender) = sender {
                     if let Err(SendError(res)) = sender.send(res) {
-                        log::warn!("OpenBacking notification reply {res:?} could not be delivered.");
-                        return res.map(|_|{} );
+                        log::warn!(
+                            "OpenBacking notification reply {res:?} could not be delivered."
+                        );
+                        return res.map(|_| {});
                     }
                     return Ok(());
                 }
-                res.map(|_|{} )
-            },
+                res.map(|_| {})
+            }
             #[cfg(feature = "abi-7-40")]
             Notification::CloseBacking((data, sender)) => {
                 let res = self.close_backing(data);
                 if let Some(sender) = sender {
                     if let Err(SendError(res)) = sender.send(res) {
-                        log::warn!("CloseBacking notification reply {res:?} could not be delivered.");
-                        return res.map(|_|{} );
+                        log::warn!(
+                            "CloseBacking notification reply {res:?} could not be delivered."
+                        );
+                        return res.map(|_| {});
                     }
                     return Ok(());
                 }
-                res.map(|_|{} )
-            },
+                res.map(|_| {})
+            }
             // For completeness
-            Notification::Stop => Ok(())
+            Notification::Stop => Ok(()),
         }
     }
 
@@ -254,22 +278,33 @@ impl Notifier {
     /// Invalidate the kernel cache for a given directory entry
     #[cfg(feature = "abi-7-12")]
     pub fn inval_entry(&self, notification: InvalEntry) -> io::Result<()> {
-        let notif = NotificationBuf::new_inval_entry(notification.parent, notification.name.as_ref()).map_err(Self::too_big_err)?;
+        let notif =
+            NotificationBuf::new_inval_entry(notification.parent, notification.name.as_ref())
+                .map_err(Self::too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_INVAL_ENTRY, &notif)
     }
 
     /// Invalidate the kernel cache for a given inode (metadata and
     /// data in the given range)
     #[cfg(feature = "abi-7-12")]
-    pub fn inval_inode(&self, notification: InvalInode ) -> io::Result<()> {
-        let notif = NotificationBuf::new_inval_inode(notification.ino, notification.offset, notification.len);
+    pub fn inval_inode(&self, notification: InvalInode) -> io::Result<()> {
+        let notif = NotificationBuf::new_inval_inode(
+            notification.ino,
+            notification.offset,
+            notification.len,
+        );
         self.send_inval(notify_code::FUSE_NOTIFY_INVAL_INODE, &notif)
     }
 
     /// Update the kernel's cached copy of a given inode's data
     #[cfg(feature = "abi-7-15")]
     pub fn store(&self, notification: Store) -> io::Result<()> {
-        let notif = NotificationBuf::new_store(notification.ino, notification.offset, notification.data.as_ref()).map_err(Self::too_big_err)?;
+        let notif = NotificationBuf::new_store(
+            notification.ino,
+            notification.offset,
+            notification.data.as_ref(),
+        )
+        .map_err(Self::too_big_err)?;
         // Not strictly an invalidate, but the inode we're operating
         // on may have been evicted anyway, so treat is as such
         self.send_inval(notify_code::FUSE_NOTIFY_STORE, &notif)
@@ -279,7 +314,9 @@ impl Notifier {
     /// inotify watchers of a file deletion.
     #[cfg(feature = "abi-7-18")]
     pub fn delete(&self, notification: Delete) -> io::Result<()> {
-        let notif = NotificationBuf::new_delete(notification.parent, notification.ino, &notification.name).map_err(Self::too_big_err)?;
+        let notif =
+            NotificationBuf::new_delete(notification.parent, notification.ino, &notification.name)
+                .map_err(Self::too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif)
     }
 
@@ -293,7 +330,7 @@ impl Notifier {
             x => x,
         }
     }
-    
+
     #[cfg(feature = "abi-7-40")]
     /// Registers a file descriptor with the kernel for passthrough.
     /// If the kernel accepts, it returns a backing ID.

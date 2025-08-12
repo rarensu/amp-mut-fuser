@@ -47,24 +47,19 @@ nix::ioctl_write_ptr!(
     u32
 );
 
-pub(crate) fn ioctl_clone_fuse_fd(
-    channel_fd: i32,
-    main_fuse_fd: u32
-) -> std::io::Result<()> {
+pub(crate) fn ioctl_clone_fuse_fd(channel_fd: i32, main_fuse_fd: u32) -> std::io::Result<()> {
     // For some reason I don't undersand, this argument must be declared as mutable.
     let mut mut_main_fuse_fd: u32 = main_fuse_fd;
-    unsafe {
-        fuse_dev_ioc_clone(channel_fd, &mut mut_main_fuse_fd)
-    }?;
-    assert_eq!(main_fuse_fd, mut_main_fuse_fd, "fuse_dev_ioc_clone should not alter the main fuse fd");
+    unsafe { fuse_dev_ioc_clone(channel_fd, &mut mut_main_fuse_fd) }?;
+    assert_eq!(
+        main_fuse_fd, mut_main_fuse_fd,
+        "fuse_dev_ioc_clone should not alter the main fuse fd"
+    );
     Ok(())
 }
 
 #[cfg(feature = "abi-7-40")]
-pub(crate) fn ioctl_open_backing(
-    channel_fd: i32,
-    backing_fd: u32,
-) -> std::io::Result<u32> {
+pub(crate) fn ioctl_open_backing(channel_fd: i32, backing_fd: u32) -> std::io::Result<u32> {
     let map = fuse_backing_map_out {
         fd: backing_fd,
         flags: 0,
@@ -75,10 +70,7 @@ pub(crate) fn ioctl_open_backing(
 }
 
 #[cfg(feature = "abi-7-40")]
-pub(crate) fn ioctl_close_backing(
-        channel_fd: i32,
-        backing_id: u32,
-    ) -> std::io::Result<u32> {
+pub(crate) fn ioctl_close_backing(channel_fd: i32, backing_id: u32) -> std::io::Result<u32> {
     let code = unsafe { fuse_dev_ioc_backing_close(channel_fd, &backing_id) }?;
     Ok(code as u32)
 }

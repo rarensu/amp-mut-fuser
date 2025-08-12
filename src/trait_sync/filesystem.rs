@@ -7,30 +7,30 @@
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 #[allow(unused_imports)]
-use log::{debug, info, warn, error};
-/* 
+use log::{debug, error, info, warn};
+/*
 #[cfg(feature = "serializable")]
 use serde::de::value::F64Deserializer;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 */
+#[cfg(feature = "abi-7-11")]
+use crate::notify::Notification;
+#[cfg(feature = "abi-7-21")]
+use crate::reply::DirentPlusList;
+#[cfg(feature = "abi-7-11")]
+use crate::reply::Ioctl;
+#[cfg(target_os = "macos")]
+use crate::reply::XTimes;
+use crate::reply::{DirentList, Entry, FileAttr, Lock, Open, Statfs, Xattr};
+use crate::request::{Forget, RequestMeta};
+use crate::{Errno, FsStatus, KernelConfig, TimeOrNow};
+use bytes::Bytes;
+#[cfg(feature = "abi-7-11")]
+use crossbeam_channel::Sender;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-use bytes::Bytes;
-use crate::{KernelConfig, FsStatus, Errno, TimeOrNow};
-use crate::request::{Forget, RequestMeta};
-use crate::reply::{Entry, FileAttr, DirentList, Open, Statfs, Xattr, Lock};
-#[cfg(feature = "abi-7-11")]
-use crate::reply::Ioctl;
-#[cfg(feature = "abi-7-21")]
-use crate::reply::DirentPlusList;
-#[cfg(target_os = "macos")]
-use crate::reply::XTimes;
-#[cfg(feature = "abi-7-11")]
-use crate::notify::{Notification};
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::{Sender};
 
 /// Filesystem trait.
 ///
@@ -39,7 +39,8 @@ use crossbeam_channel::{Sender};
 /// implementations are provided here to get a mountable filesystem that does
 /// nothing.
 #[allow(clippy::too_many_arguments)]
-#[allow(unused_variables)] // This is the main API, so variables are named without the underscore even though the defaults may not use them.
+#[allow(unused_variables)]
+// This is the main API, so variables are named without the underscore even though the defaults may not use them.
 #[allow(clippy::missing_errors_doc)] // These default implementations do not define the conditions that cause errors
 pub trait Filesystem {
     /// Initialize filesystem.
@@ -53,10 +54,7 @@ pub trait Filesystem {
     /// Initializes the notification event sender for the filesystem.
     /// The boolean indicates whether the filesystem supports it.
     #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
-        sender: Sender<Notification>,
-    ) -> bool {
+    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
         false // Default: not supported
     }
 
@@ -97,7 +95,12 @@ pub trait Filesystem {
 
     /// Get file attributes.
     /// The method should return `Ok(Attr)` with the file attributes, or `Err(Errno)` otherwise.
-    fn getattr(&mut self, req: RequestMeta, ino: u64, fh: Option<u64>) -> Result<(FileAttr, Duration), Errno> {
+    fn getattr(
+        &mut self,
+        req: RequestMeta,
+        ino: u64,
+        fh: Option<u64>,
+    ) -> Result<(FileAttr, Duration), Errno> {
         warn!("[Not Implemented] getattr(ino: {ino:#x?}, fh: {fh:#x?})");
         Err(Errno::ENOSYS)
     }
@@ -119,7 +122,7 @@ pub trait Filesystem {
         crtime: Option<SystemTime>,
         chgtime: Option<SystemTime>,
         bkuptime: Option<SystemTime>,
-        flags: Option<u32>
+        flags: Option<u32>,
     ) -> Result<(FileAttr, std::time::Duration), Errno> {
         warn!(
             "[Not Implemented] setattr(ino: {ino:#x?}, mode: {mode:?}, uid: {uid:?}, \
@@ -166,7 +169,9 @@ pub trait Filesystem {
         mode: u32,
         umask: u32,
     ) -> Result<Entry, Errno> {
-        warn!("[Not Implemented] mkdir(parent: {parent:#x?}, name: {name:?}, mode: {mode}, umask: {umask:#x?})");
+        warn!(
+            "[Not Implemented] mkdir(parent: {parent:#x?}, name: {name:?}, mode: {mode}, umask: {umask:#x?})"
+        );
         Err(Errno::ENOSYS)
     }
 
@@ -193,7 +198,9 @@ pub trait Filesystem {
         link_name: &Path,
         target: &Path,
     ) -> Result<Entry, Errno> {
-        warn!("[Not Implemented] symlink(parent: {parent:#x?}, link_name: {link_name:?}, target: {target:?})");
+        warn!(
+            "[Not Implemented] symlink(parent: {parent:#x?}, link_name: {link_name:?}, target: {target:?})"
+        );
         Err(Errno::EPERM) // why isn't this ENOSYS?
     }
 
@@ -225,7 +232,9 @@ pub trait Filesystem {
         newparent: u64,
         newname: &Path,
     ) -> Result<Entry, Errno> {
-        warn!("[Not Implemented] link(ino: {ino:#x?}, newparent: {newparent:#x?}, newname: {newname:?})");
+        warn!(
+            "[Not Implemented] link(ino: {ino:#x?}, newparent: {newparent:#x?}, newname: {newname:?})"
+        );
         Err(Errno::EPERM) // why isn't this ENOSYS?
     }
 
@@ -382,9 +391,11 @@ pub trait Filesystem {
         ino: u64,
         fh: u64,
         offset: i64,
-        max_bytes: u32
+        max_bytes: u32,
     ) -> Result<DirentList, Errno> {
-        warn!("[Not Implemented] readdir(ino: {ino:#x?}, fh: {fh}, offset: {offset}, max_bytes: {max_bytes})");
+        warn!(
+            "[Not Implemented] readdir(ino: {ino:#x?}, fh: {fh}, offset: {offset}, max_bytes: {max_bytes})"
+        );
         Err(Errno::ENOSYS)
     }
 
@@ -461,7 +472,9 @@ pub trait Filesystem {
         flags: i32,
         position: u32,
     ) -> Result<(), Errno> {
-        warn!("[Not Implemented] setxattr(ino: {ino:#x?}, name: {name:?}, flags: {flags:#x?}, position: {position})");
+        warn!(
+            "[Not Implemented] setxattr(ino: {ino:#x?}, name: {name:?}, flags: {flags:#x?}, position: {position})"
+        );
         Err(Errno::ENOSYS)
     }
 
@@ -681,7 +694,9 @@ pub trait Filesystem {
         offset: i64,
         whence: i32,
     ) -> Result<i64, Errno> {
-        warn!("[Not Implemented] lseek(ino: {ino:#x?}, fh: {fh}, offset: {offset}, whence: {whence})");
+        warn!(
+            "[Not Implemented] lseek(ino: {ino:#x?}, fh: {fh}, offset: {offset}, whence: {whence})"
+        );
         Err(Errno::ENOSYS)
     }
 
@@ -726,7 +741,7 @@ pub trait Filesystem {
         name: &Path,
         newparent: u64,
         newname: &Path,
-        options: u64
+        options: u64,
     ) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] exchange(parent: {parent:#x?}, name: {name:?}, \

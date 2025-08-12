@@ -4,18 +4,18 @@
 
 #![allow(clippy::cast_possible_truncation)] // many conversions with unhandled errors
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::{
-    Dirent, DirentList, Entry, Errno, FileAttr,
-    trait_async::Filesystem, FileType, Ioctl, MountOption, RequestMeta,
+    Dirent, DirentList, Entry, Errno, FileAttr, FileType, Ioctl, MountOption, RequestMeta,
+    trait_async::Filesystem,
 };
-use bytes::Bytes;
 use log::{debug, info};
 use std::ffi::OsStr;
 use std::path::Path;
-use std::time::{Duration, UNIX_EPOCH};
 use std::sync::Mutex;
-use async_trait::async_trait;
+use std::time::{Duration, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
@@ -29,9 +29,24 @@ struct FiocFS {
 }
 
 static DIRENTS: [Dirent; 3] = [
-    Dirent { ino: 1, offset: 1, kind: FileType::Directory,   name: Bytes::from_static(b".") },
-    Dirent { ino: 1, offset: 2, kind: FileType::Directory,   name: Bytes::from_static(b"..") },
-    Dirent { ino: 2, offset: 3, kind: FileType::RegularFile, name: Bytes::from_static(b"fioc")},
+    Dirent {
+        ino: 1,
+        offset: 1,
+        kind: FileType::Directory,
+        name: Bytes::from_static(b"."),
+    },
+    Dirent {
+        ino: 1,
+        offset: 2,
+        kind: FileType::Directory,
+        name: Bytes::from_static(b".."),
+    },
+    Dirent {
+        ino: 2,
+        offset: 3,
+        kind: FileType::RegularFile,
+        name: Bytes::from_static(b"fioc"),
+    },
 ];
 
 impl FiocFS {
@@ -84,7 +99,7 @@ impl FiocFS {
 }
 
 #[async_trait]
-impl Filesystem for FiocFS{
+impl Filesystem for FiocFS {
     async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
         if parent == 1 && name == OsStr::new("fioc") {
             Ok(Entry {
@@ -99,7 +114,12 @@ impl Filesystem for FiocFS{
         }
     }
 
-    async fn getattr(&self, _req: RequestMeta, ino: u64, _fh: Option<u64>) -> Result<(FileAttr, Duration), Errno> {
+    async fn getattr(
+        &self,
+        _req: RequestMeta,
+        ino: u64,
+        _fh: Option<u64>,
+    ) -> Result<(FileAttr, Duration), Errno> {
         match ino {
             1 => Ok((self.root_attr, TTL)),
             2 => Ok((self.fioc_file_attr, TTL)),
@@ -226,15 +246,14 @@ fn main() {
 
     let fs = FiocFS::new();
     // fuser::mount2(fs, mountpoint, &options).unwrap();
-    let se = fuser::Session::new_mounted(
-        fs.into(),
-        mountpoint,
-        &options
-    ).expect("Failed to create Session");
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let se = fuser::Session::new_mounted(fs.into(), mountpoint, &options)
+        .expect("Failed to create Session");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     match rt.block_on(se.run_async()) {
         Ok(_se) => info!("Session ended safely"),
-        Err(e) => info!("Session ended with error {e:?}")
+        Err(e) => info!("Session ended with error {e:?}"),
     }
-
 }

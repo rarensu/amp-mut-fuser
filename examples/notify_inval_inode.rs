@@ -17,16 +17,16 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use clap::Parser;
 use async_trait::async_trait;
+use bytes::Bytes;
+use clap::Parser;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
-    consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType, trait_async::Filesystem,
-    Forget, FsStatus, InvalInode, MountOption, Notification, Open, Store, RequestMeta,
-    FUSE_ROOT_ID,
+    Dirent, DirentList, Entry, Errno, FUSE_ROOT_ID, FileAttr, FileType, Forget, FsStatus,
+    InvalInode, MountOption, Notification, Open, RequestMeta, Store, consts,
+    trait_async::Filesystem,
 };
-use bytes::Bytes;
-use log::{warn,info};
+use log::{info, warn};
 
 struct ClockFS<'a> {
     file_contents: Arc<Mutex<String>>,
@@ -75,10 +75,7 @@ impl ClockFS<'_> {
 #[async_trait]
 impl Filesystem for ClockFS<'_> {
     #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
-        sender: Sender<Notification>,
-    ) -> bool {
+    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
         *self.notification_sender.lock().unwrap() = Some(sender);
         true
     }
@@ -94,7 +91,9 @@ impl Filesystem for ClockFS<'_> {
         }
         let mut last_update_guard = self.last_update.lock().unwrap();
         let now = SystemTime::now();
-        if now.duration_since(*last_update_guard).unwrap_or_default() >= Duration::from_secs_f32(self.opts.update_interval) {
+        if now.duration_since(*last_update_guard).unwrap_or_default()
+            >= Duration::from_secs_f32(self.opts.update_interval)
+        {
             let mut s = self.file_contents.lock().unwrap();
             let olddata = std::mem::replace(&mut *s, now_string());
             drop(s); // Release lock on file_contents
@@ -107,7 +106,13 @@ impl Filesystem for ClockFS<'_> {
                             Store {
                                 ino: Self::FILE_INO,
                                 offset: 0,
-                                data: self.file_contents.lock().unwrap().as_bytes().to_vec().into(),
+                                data: self
+                                    .file_contents
+                                    .lock()
+                                    .unwrap()
+                                    .as_bytes()
+                                    .to_vec()
+                                    .into(),
                             },
                             Some(s),
                         ));
@@ -292,7 +297,10 @@ struct Options {
 
 fn main() {
     let opts = Arc::new(Options::parse());
-    let mount_options = vec![MountOption::RO, MountOption::FSName("clock_inode".to_string())];
+    let mount_options = vec![
+        MountOption::RO,
+        MountOption::FSName("clock_inode".to_string()),
+    ];
     let fdata = Arc::new(Mutex::new(now_string()));
     let lookup_cnt = Box::leak(Box::new(AtomicU64::new(0))); // Keep as is for simplicity, though not ideal
 
@@ -314,7 +322,10 @@ fn main() {
     // Ctrl-C will be handled by the FUSE session ending, or manually if needed.
     // For now, relying on unmount or external Ctrl-C to stop.
 
-    eprintln!("Mounting ClockFS (inode invalidation) at {}", opts.mount_point);
+    eprintln!(
+        "Mounting ClockFS (inode invalidation) at {}",
+        opts.mount_point
+    );
     eprintln!("Press Ctrl-C to unmount and exit.");
 
     // Setup Ctrl-C handler to gracefully unmount (optional but good practice)
@@ -324,14 +335,15 @@ fn main() {
     // The simplest for now is to let the user unmount the FS to stop.
     // Or, if the session itself handles Ctrl-C, that's also fine.
 
-    let mut session = fuser::Session::new_mounted(
-        fs.into(),
-        &opts.mount_point,
-        &mount_options
-    ).expect("Failed to create FUSE session.");
+    let mut session = fuser::Session::new_mounted(fs.into(), &opts.mount_point, &mount_options)
+        .expect("Failed to create FUSE session.");
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(1).build().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .build()
+        .unwrap();
     session.set_channels(2).unwrap();
     match rt.block_on(session.run_concurrently_parts()) {
         Ok(()) => log::info!("Session ended safely"),

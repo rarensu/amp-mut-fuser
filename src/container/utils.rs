@@ -1,12 +1,12 @@
 use super::core::Container;
-use std::sync::Arc;
 use std::borrow::Cow;
-#[cfg(not(feature = "no-rc"))]
-use std::rc::Rc;
 #[cfg(all(feature = "locking", not(feature = "no-rc")))]
 use std::cell::RefCell;
+#[cfg(not(feature = "no-rc"))]
+use std::rc::Rc;
+use std::sync::Arc;
 #[cfg(feature = "locking")]
-use std::sync::{Mutex,RwLock};
+use std::sync::{Mutex, RwLock};
 
 // --- From Raw ---
 
@@ -49,7 +49,7 @@ impl<T: Clone> From<Arc<RwLock<Vec<T>>>> for Container<T> {fn from(value: Arc<Rw
 
 // Clone for Container<T> where T is Clone
 impl<T: Clone> Clone for Container<T> {
-    /// Creates a new container by cheaply copying a smart pointer if possible. 
+    /// Creates a new container by cheaply copying a smart pointer if possible.
     fn clone(&self) -> Self {
         match self {
             // ----- Simple Variants -----
@@ -110,7 +110,10 @@ impl<T: Clone> Container<T> {
     /// Only available if locking variants are disabled.
     #[must_use]
     pub fn to_vec(&self) -> Vec<T> {
-        self.as_ref().iter().map(|t: &T|{t.clone()}).collect::<Vec<T>>()
+        self.as_ref()
+            .iter()
+            .map(|t: &T| t.clone())
+            .collect::<Vec<T>>()
     }
 
     /// Converts the container to an Owned `Container<T>` by cloning each `item: T`.
@@ -127,16 +130,17 @@ mod serialize {
     use super::super::Container;
     use super::super::SafeBorrow;
     use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
-    /// Serialize a Borrow. 
+    /// Serialize a Borrow.
     impl<T: Serialize + Clone> Serialize for SafeBorrow<'_, T> {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer {
-                let mut seq = serializer.serialize_seq(Some(self.len()))?;
-                for e in self.as_ref() {
-                    seq.serialize_element(e)?;
-                }
-                seq.end()    
+        where
+            S: Serializer,
+        {
+            let mut seq = serializer.serialize_seq(Some(self.len()))?;
+            for e in self.as_ref() {
+                seq.serialize_element(e)?;
+            }
+            seq.end()
         }
     }
     /// Serialize a Container by borrowing.
@@ -144,13 +148,14 @@ mod serialize {
     #[cfg(not(feature = "locking"))]
     impl<T: Serialize + Clone> Serialize for Container<T> {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: Serializer {
-                let mut seq = serializer.serialize_seq(Some(self.len()))?;
-                for e in self.as_ref() {
-                    seq.serialize_element(e)?;
-                }
-                seq.end()
+        where
+            S: Serializer,
+        {
+            let mut seq = serializer.serialize_seq(Some(self.len()))?;
+            for e in self.as_ref() {
+                seq.serialize_element(e)?;
+            }
+            seq.end()
         }
     }
     /// Deserialize into a Container.

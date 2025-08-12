@@ -214,8 +214,7 @@ mod test {
             DirSync,
             Sync,
             Async,
-        ]
-        {
+        ] {
             assert_eq!(*x, MountOption::from_str(option_to_string(x).as_ref()));
         }
     }

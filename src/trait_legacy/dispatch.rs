@@ -1,35 +1,25 @@
 #[allow(unused_imports)]
-use log::{error, warn, info, debug};
+use log::{debug, error, info, warn};
 use std::sync::atomic::Ordering::Relaxed;
 
-use crate::{RequestMeta, Errno, KernelConfig};
-use crate::session::SessionMeta;
-use crate::request::RequestHandler;
 use crate::ll::{self, Operation, request::Request as AnyRequest};
+use crate::request::RequestHandler;
+use crate::session::SessionMeta;
+use crate::{Errno, KernelConfig, RequestMeta};
 
-use super::{
-    Filesystem,
-    ReplyEmpty,
-    ReplyData,
-    ReplyEntry,
-    ReplyAttr,
-    ReplyOpen,
-    ReplyWrite,
-    ReplyStatfs,
-    ReplyCreate,
-    ReplyLock,
-    ReplyBmap,
-    ReplyDirectory, callback::DirectoryHandler,
-    ReplyXattr,
-};
-#[cfg(feature = "abi-7-11")]
-use super::{ReplyIoctl, ReplyPoll, PollHandle};
-#[cfg(feature = "abi-7-21")]
-use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
 #[cfg(feature = "abi-7-24")]
 use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
+use super::{
+    Filesystem, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
+    ReplyEntry, ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+};
+use super::callback::DirectoryHandler;
+#[cfg(feature = "abi-7-11")]
+use super::{PollHandle, ReplyIoctl, ReplyPoll};
+#[cfg(feature = "abi-7-21")]
+use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
 
 #[derive(Debug)]
 /// Userspace metadata for a given request
@@ -73,7 +63,6 @@ impl Request<'_> {
     pub fn meta(&self) -> RequestMeta {
         self.meta.clone()
     }
-
 }
 
 impl RequestHandler {
@@ -82,8 +71,9 @@ impl RequestHandler {
     /// request and sends back the returned reply to the kernel
     pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
-        let op = if let Ok(op) = self.request.operation() { op }
-        else {
+        let op = if let Ok(op) = self.request.operation() {
+            op
+        } else {
             self.replyhandler.error(Errno::ENOSYS);
             return;
         };
@@ -106,7 +96,7 @@ impl RequestHandler {
                 se_meta.proto_major.store(v.major(), Relaxed);
                 se_meta.proto_minor.store(v.minor(), Relaxed);
                 let mut config = KernelConfig::new(x.capabilities(), x.max_readahead());
-                // Call filesystem init method and give it a chance to 
+                // Call filesystem init method and give it a chance to
                 // propose a different config or return an error
                 match fs.init(&req, &mut config) {
                     Ok(()) => {
@@ -123,7 +113,7 @@ impl RequestHandler {
                         );
                         se_meta.initialized.store(true, Relaxed);
                         self.replyhandler.config(x.capabilities(), config);
-                    },
+                    }
                     Err(errno) => {
                         // Filesystem refused the config.
                         self.replyhandler.error(Errno::from_i32(errno));
@@ -157,7 +147,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
-                    reply
+                    reply,
                 );
             }
             Operation::Forget(x) => {
@@ -171,7 +161,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into),
-                    reply
+                    reply,
                 );
                 // Pre-abi-7-9 does not support providing a file handle.
                 #[cfg(not(feature = "abi-7-9"))]
@@ -179,7 +169,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     None,
-                    reply
+                    reply,
                 );
             }
             Operation::SetAttr(x) => {
@@ -199,16 +189,12 @@ impl RequestHandler {
                     x.chgtime(),
                     x.bkuptime(),
                     x.flags(),
-                    reply
+                    reply,
                 );
             }
             Operation::ReadLink(_) => {
                 let reply = ReplyData::new(Box::new(Some(self.replyhandler)));
-                fs.readlink(
-                    &req,
-                    self.request.nodeid().into(),
-                    reply
-                );
+                fs.readlink(&req, self.request.nodeid().into(), reply);
             }
             Operation::MkNod(x) => {
                 let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
@@ -219,7 +205,7 @@ impl RequestHandler {
                     x.mode(),
                     x.umask(),
                     x.rdev(),
-                    reply
+                    reply,
                 );
             }
             Operation::MkDir(x) => {
@@ -230,7 +216,7 @@ impl RequestHandler {
                     x.name().as_os_str(),
                     x.mode(),
                     x.umask(),
-                    reply
+                    reply,
                 );
             }
             Operation::Unlink(x) => {
@@ -239,7 +225,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
-                    reply
+                    reply,
                 );
             }
             Operation::RmDir(x) => {
@@ -248,7 +234,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
-                    reply
+                    reply,
                 );
             }
             Operation::SymLink(x) => {
@@ -258,7 +244,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.link_name().as_os_str(),
                     x.target(),
-                    reply
+                    reply,
                 );
             }
             Operation::Rename(x) => {
@@ -270,7 +256,7 @@ impl RequestHandler {
                     x.dest().dir.into(),
                     x.dest().name.as_os_str(),
                     0,
-                    reply
+                    reply,
                 );
             }
             Operation::Link(x) => {
@@ -280,17 +266,12 @@ impl RequestHandler {
                     x.inode_no().into(),
                     self.request.nodeid().into(),
                     x.dest().name.as_os_str(),
-                    reply
+                    reply,
                 );
             }
             Operation::Open(x) => {
                 let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
-                fs.open(
-                    &req,
-                    self.request.nodeid().into(), 
-                    x.flags(),
-                    reply
-                );
+                fs.open(&req, self.request.nodeid().into(), x.flags(), reply);
             }
             Operation::Read(x) => {
                 let reply = ReplyData::new(Box::new(Some(self.replyhandler)));
@@ -302,7 +283,7 @@ impl RequestHandler {
                     x.size(),
                     x.flags(),
                     x.lock_owner().map(Into::into),
-                    reply
+                    reply,
                 );
             }
             Operation::Write(x) => {
@@ -316,7 +297,7 @@ impl RequestHandler {
                     x.write_flags(),
                     x.flags(),
                     x.lock_owner().map(Into::into),
-                    reply
+                    reply,
                 );
             }
             Operation::Flush(x) => {
@@ -326,7 +307,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.lock_owner().into(),
-                    reply
+                    reply,
                 );
             }
             Operation::Release(x) => {
@@ -338,7 +319,7 @@ impl RequestHandler {
                     x.flags(),
                     x.lock_owner().map(Into::into),
                     x.flush(),
-                    reply
+                    reply,
                 );
             }
             Operation::FSync(x) => {
@@ -348,7 +329,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync(),
-                    reply
+                    reply,
                 );
             }
             Operation::OpenDir(x) => {
@@ -357,7 +338,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(), 
                     x.flags(),
-                    reply
+                    reply,
                 );
             }
             Operation::ReadDir(x) => {
@@ -368,7 +349,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    reply
+                    reply,
                 );
             }
             Operation::ReleaseDir(x) => {
@@ -378,7 +359,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.flags(),
-                    reply
+                    reply,
                 );
             }
             Operation::FSyncDir(x) => {
@@ -388,16 +369,12 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync(),
-                    reply
+                    reply,
                 );
             }
             Operation::StatFs(_) => {
                 let reply = ReplyStatfs::new(Box::new(Some(self.replyhandler)));
-                fs.statfs(
-                    &req,
-                    self.request.nodeid().into(),
-                    reply
-                );
+                fs.statfs(&req, self.request.nodeid().into(), reply);
             }
             Operation::SetXAttr(x) => {
                 let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
@@ -408,7 +385,7 @@ impl RequestHandler {
                     x.value(),
                     x.flags(),
                     x.position(),
-                    reply
+                    reply,
                 );
             }
             Operation::GetXAttr(x) => {
@@ -418,7 +395,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name(),
                     x.size_u32(),
-                    reply
+                    reply,
                 );
             }
             Operation::ListXAttr(x) => {
@@ -427,7 +404,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.size(),
-                    reply
+                    reply,
                 );
             }
             Operation::RemoveXAttr(x) => {
@@ -436,7 +413,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.name(),
-                    reply
+                    reply,
                 );
             }
             Operation::Access(x) => {
@@ -445,7 +422,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.mask(),
-                    reply
+                    reply,
                 );
             }
             Operation::Create(x) => {
@@ -457,7 +434,7 @@ impl RequestHandler {
                     x.mode(),
                     x.umask(),
                     x.flags(),
-                    reply
+                    reply,
                 );
             }
             Operation::GetLk(x) => {
@@ -471,7 +448,7 @@ impl RequestHandler {
                     x.lock().range.1,
                     x.lock().typ,
                     x.lock().pid,
-                    reply
+                    reply,
                 );
             }
             Operation::SetLk(x) => {
@@ -486,7 +463,7 @@ impl RequestHandler {
                     x.lock().typ,
                     x.lock().pid,
                     false,
-                    reply
+                    reply,
                 );
             }
             Operation::SetLkW(x) => {
@@ -501,7 +478,7 @@ impl RequestHandler {
                     x.lock().typ,
                     x.lock().pid,
                     true,
-                    reply
+                    reply,
                 );
             }
             Operation::BMap(x) => {
@@ -511,7 +488,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.block_size(),
                     x.block(),
-                    reply
+                    reply,
                 );
             }
 
@@ -529,7 +506,7 @@ impl RequestHandler {
                         x.command(),
                         x.in_data(),
                         x.out_size(),
-                        reply
+                        reply,
                     );
                 }
             }
@@ -543,7 +520,7 @@ impl RequestHandler {
                     PollHandle(x.kernel_handle()),
                     x.events(),
                     x.flags(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(feature = "abi-7-15")]
@@ -566,7 +543,7 @@ impl RequestHandler {
                     x.offset(),
                     x.len(),
                     x.mode(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(feature = "abi-7-21")]
@@ -578,7 +555,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(feature = "abi-7-23")]
@@ -591,7 +568,7 @@ impl RequestHandler {
                     x.to().dir.into(),
                     x.to().name.as_os_str(),
                     x.flags(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(feature = "abi-7-24")]
@@ -603,7 +580,7 @@ impl RequestHandler {
                     x.file_handle().into(),
                     x.offset(),
                     x.whence(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(feature = "abi-7-28")]
@@ -620,7 +597,7 @@ impl RequestHandler {
                     o.offset,
                     x.len(),
                     x.flags().try_into().unwrap(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(target_os = "macos")]
@@ -629,7 +606,7 @@ impl RequestHandler {
                 fs.setvolname(
                     &req,
                     x.name(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(target_os = "macos")]
@@ -638,7 +615,7 @@ impl RequestHandler {
                 fs.getxtimes(
                     &req,
                     x.nodeid().into(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(target_os = "macos")]
@@ -651,7 +628,7 @@ impl RequestHandler {
                     x.to().dir.into(),
                     x.to().name.as_os_str(),
                     x.options(),
-                    reply
+                    reply,
                 );
             }
             #[cfg(feature = "abi-7-12")]

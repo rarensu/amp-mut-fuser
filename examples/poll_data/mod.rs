@@ -1,6 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
-use std::collections::{HashMap, HashSet};
 use fuser::{Notification, Poll};
+use std::collections::{HashMap, HashSet};
 use std::io;
 
 /// `PollData` holds the state required for managing asynchronous poll notifications.
@@ -93,7 +93,9 @@ impl PollData {
                         Some(tx),
                     ));
                     if sender.send(notification).is_err() {
-                        log::warn!("PollData: Failed to send initial poll readiness event for ph {ph}. Channel might be disconnected.");
+                        log::warn!(
+                            "PollData: Failed to send initial poll readiness event for ph {ph}. Channel might be disconnected."
+                        );
                     } else {
                         self.pending_replies.insert(ph, rx);
                     }
@@ -108,7 +110,7 @@ impl PollData {
     }
 
     // NOTE: the example does not currently process poll cancellations.
-    // If it did, it would use this convenience function. 
+    // If it did, it would use this convenience function.
     #[allow(unused)]
     /// Unregisters a poll handle.
     ///
@@ -149,7 +151,9 @@ impl PollData {
         if let Some(sender) = &self.ready_events_sender {
             if let Some(poll_handles) = self.inode_poll_handles.get(&ino) {
                 for &ph in poll_handles {
-                    if let Some((_ino_of_ph, requested_events_for_ph)) = self.registered_poll_handles.get(&ph) {
+                    if let Some((_ino_of_ph, requested_events_for_ph)) =
+                        self.registered_poll_handles.get(&ph)
+                    {
                         // Notify if any of the newly ready events are requested by this handle.
                         let events_to_send = *requested_events_for_ph & ready_events_mask;
                         if events_to_send != 0 {
@@ -165,7 +169,9 @@ impl PollData {
                                 Some(tx),
                             ));
                             if sender.send(notification).is_err() {
-                                log::warn!("PollData: Failed to send poll readiness event for ino {ino}, ph {ph}. Channel might be disconnected.");
+                                log::warn!(
+                                    "PollData: Failed to send poll readiness event for ino {ino}, ph {ph}. Channel might be disconnected."
+                                );
                             } else {
                                 self.pending_replies.insert(ph, rx);
                                 handles_to_unregister.push(ph);
@@ -255,8 +261,17 @@ mod tests {
             let mut poll_data = poll_data_arc.lock().unwrap();
             poll_data.register_poll_handle(ph1, ino1, events1);
 
-            assert_eq!(poll_data.registered_poll_handles.get(&ph1), Some(&(ino1, events1)));
-            assert!(poll_data.inode_poll_handles.get(&ino1).unwrap().contains(&ph1));
+            assert_eq!(
+                poll_data.registered_poll_handles.get(&ph1),
+                Some(&(ino1, events1))
+            );
+            assert!(
+                poll_data
+                    .inode_poll_handles
+                    .get(&ino1)
+                    .unwrap()
+                    .contains(&ph1)
+            );
         }
 
         {
@@ -323,7 +338,10 @@ mod tests {
             // Mark inode ready for POLLOUT. ph1 should not be notified.
             poll_data.mark_inode_ready(ino1, libc::POLLOUT as u32);
         }
-        assert!(rx.try_recv().is_err(), "Should not receive event if not requested");
+        assert!(
+            rx.try_recv().is_err(),
+            "Should not receive event if not requested"
+        );
 
         {
             let mut poll_data = poll_data_arc.lock().unwrap();
@@ -366,7 +384,11 @@ mod tests {
             initial_event_mask = poll_data.register_poll_handle(ph1, ino1, events1);
         }
 
-        assert_eq!(initial_event_mask, Some(libc::POLLIN as u32), "Initial event mask should be POLLIN");
+        assert_eq!(
+            initial_event_mask,
+            Some(libc::POLLIN as u32),
+            "Initial event mask should be POLLIN"
+        );
 
         match rx.try_recv() {
             Ok(Notification::Poll((poll, Some(reply_tx)))) => {
@@ -375,7 +397,10 @@ mod tests {
                 reply_tx.send(Ok(())).unwrap();
             }
             Ok(_) => panic!("Unexpected notification type"),
-            Err(e) => panic!("Expected to receive an initial poll event, but got error: {}", e),
+            Err(e) => panic!(
+                "Expected to receive an initial poll event, but got error: {}",
+                e
+            ),
         }
     }
 
@@ -390,7 +415,10 @@ mod tests {
             let mut poll_data = poll_data_arc.lock().unwrap();
             // Mark ready for POLLIN and POLLOUT
             poll_data.mark_inode_ready(ino1, poll_in_event | poll_out_event);
-            assert_eq!(poll_data.ready_inodes.get(&ino1), Some(&(poll_in_event | poll_out_event)));
+            assert_eq!(
+                poll_data.ready_inodes.get(&ino1),
+                Some(&(poll_in_event | poll_out_event))
+            );
         }
 
         {
@@ -411,7 +439,8 @@ mod tests {
     }
 
     #[test]
-    fn test_set_sender() { // Renamed test function
+    fn test_set_sender() {
+        // Renamed test function
         let poll_data_arc = Arc::new(Mutex::new(PollData::new(None)));
         assert!(poll_data_arc.lock().unwrap().ready_events_sender.is_none());
 

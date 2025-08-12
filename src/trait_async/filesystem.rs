@@ -1,33 +1,30 @@
-
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 #[allow(unused_imports)]
-use log::{debug, info, warn, error};
-/* 
+use log::{debug, error, info, warn};
+/*
 #[cfg(feature = "serializable")]
 use serde::de::value::F64Deserializer;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 */
-use std::ffi::OsStr;
-use std::path::Path;
-use std::time::{Duration, SystemTime};
-use bytes::Bytes;
-use crate::{KernelConfig, FsStatus, Errno, TimeOrNow};
-use crate::request::{Forget, RequestMeta};
-use crate::reply::{
-    Entry, FileAttr, DirentList, Open, Statfs, Xattr, Lock, 
-};
 #[cfg(feature = "abi-7-11")]
 use crate::Ioctl;
 #[cfg(target_os = "macos")]
 use crate::XTimes;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::Notification;
 #[cfg(feature = "abi-7-21")]
 use crate::reply::DirentPlusList;
+use crate::reply::{DirentList, Entry, FileAttr, Lock, Open, Statfs, Xattr};
+use crate::request::{Forget, RequestMeta};
+use crate::{Errno, FsStatus, KernelConfig, TimeOrNow};
+use bytes::Bytes;
 #[cfg(feature = "abi-7-11")]
-use crate::notify::{Notification};
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::{Sender};
+use crossbeam_channel::Sender;
+use std::ffi::OsStr;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 
@@ -38,8 +35,8 @@ use async_trait::async_trait;
 /// implementations are provided here to get a mountable filesystem that does
 /// nothing.
 #[allow(clippy::too_many_arguments)]
-#[allow(unused_variables)] // This is the main API, so variables are named without the underscore even though the defaults may not use them.
-#[allow(clippy::missing_errors_doc)] // These default implementations do not define the conditions that cause errors
+#[allow(unused_variables)] // Default impl do not use their arguments.
+#[allow(clippy::missing_errors_doc)] // Default impl do not have conditional errors.
 #[async_trait]
 pub trait Filesystem: Send + Sync {
     /// Initialize filesystem.
@@ -54,10 +51,7 @@ pub trait Filesystem: Send + Sync {
     /// The boolean indicates whether the filesystem supports it.
     /// Note: this method is not async!
     #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
-        sender: Sender<Notification>,
-    ) -> bool {
+    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
         false // Default: not supported
     }
 
@@ -98,7 +92,12 @@ pub trait Filesystem: Send + Sync {
 
     /// Get file attributes.
     /// The method should return `Ok(Attr)` with the file attributes, or `Err(Errno)` otherwise.
-    async fn getattr(&self, req: RequestMeta, ino: u64, fh: Option<u64>) -> Result<(FileAttr, Duration), Errno> {
+    async fn getattr(
+        &self,
+        req: RequestMeta,
+        ino: u64,
+        fh: Option<u64>,
+    ) -> Result<(FileAttr, Duration), Errno> {
         warn!("[Not Implemented] getattr(ino: {ino:#x?}, fh: {fh:#x?})");
         Err(Errno::ENOSYS)
     }
@@ -120,7 +119,7 @@ pub trait Filesystem: Send + Sync {
         crtime: Option<SystemTime>,
         chgtime: Option<SystemTime>,
         bkuptime: Option<SystemTime>,
-        flags: Option<u32>
+        flags: Option<u32>,
     ) -> Result<(FileAttr, std::time::Duration), Errno> {
         warn!(
             "[Not Implemented] setattr(ino: {ino:#x?}, mode: {mode:?}, uid: {uid:?}, \
@@ -167,7 +166,9 @@ pub trait Filesystem: Send + Sync {
         mode: u32,
         umask: u32,
     ) -> Result<Entry, Errno> {
-        warn!("[Not Implemented] mkdir(parent: {parent:#x?}, name: {name:?}, mode: {mode}, umask: {umask:#x?})");
+        warn!(
+            "[Not Implemented] mkdir(parent: {parent:#x?}, name: {name:?}, mode: {mode}, umask: {umask:#x?})"
+        );
         Err(Errno::ENOSYS)
     }
 
@@ -194,7 +195,9 @@ pub trait Filesystem: Send + Sync {
         link_name: &Path,
         target: &Path,
     ) -> Result<Entry, Errno> {
-        warn!("[Not Implemented] symlink(parent: {parent:#x?}, link_name: {link_name:?}, target: {target:?})");
+        warn!(
+            "[Not Implemented] symlink(parent: {parent:#x?}, link_name: {link_name:?}, target: {target:?})"
+        );
         Err(Errno::EPERM) // why isn't this ENOSYS?
     }
 
@@ -226,7 +229,9 @@ pub trait Filesystem: Send + Sync {
         newparent: u64,
         newname: &Path,
     ) -> Result<Entry, Errno> {
-        warn!("[Not Implemented] link(ino: {ino:#x?}, newparent: {newparent:#x?}, newname: {newname:?})");
+        warn!(
+            "[Not Implemented] link(ino: {ino:#x?}, newparent: {newparent:#x?}, newname: {newname:?})"
+        );
         Err(Errno::EPERM) // why isn't this ENOSYS?
     }
 
@@ -322,7 +327,13 @@ pub trait Filesystem: Send + Sync {
     /// filesystem wants to return write errors. If the filesystem supports file locking
     /// operations (setlk, getlk) it should remove all locks belonging to `lock_owner`.
     /// The method should return `Ok(())` on success, or `Err(Errno)` otherwise.
-    async fn flush(&self, req: RequestMeta, ino: u64, fh: u64, lock_owner: u64) -> Result<(), Errno> {
+    async fn flush(
+        &self,
+        req: RequestMeta,
+        ino: u64,
+        fh: u64,
+        lock_owner: u64,
+    ) -> Result<(), Errno> {
         warn!("[Not Implemented] flush(ino: {ino:#x?}, fh: {fh}, lock_owner: {lock_owner:?})");
         Err(Errno::ENOSYS)
     }
@@ -352,7 +363,13 @@ pub trait Filesystem: Send + Sync {
     /// If the `datasync` parameter is non-zero, then only the user data should be flushed,
     /// not the meta data.
     /// The method should return `Ok(())` on success, or `Err(Errno)` otherwise.
-    async fn fsync(&self, req: RequestMeta, ino: u64, fh: u64, datasync: bool) -> Result<(), Errno> {
+    async fn fsync(
+        &self,
+        req: RequestMeta,
+        ino: u64,
+        fh: u64,
+        datasync: bool,
+    ) -> Result<(), Errno> {
         warn!("[Not Implemented] fsync(ino: {ino:#x?}, fh: {fh}, datasync: {datasync})");
         Err(Errno::ENOSYS)
     }
@@ -383,9 +400,11 @@ pub trait Filesystem: Send + Sync {
         ino: u64,
         fh: u64,
         offset: i64,
-        max_bytes: u32
+        max_bytes: u32,
     ) -> Result<DirentList, Errno> {
-        warn!("[Not Implemented] readdir(ino: {ino:#x?}, fh: {fh}, offset: {offset}, max_bytes: {max_bytes})");
+        warn!(
+            "[Not Implemented] readdir(ino: {ino:#x?}, fh: {fh}, offset: {offset}, max_bytes: {max_bytes})"
+        );
         Err(Errno::ENOSYS)
     }
 
@@ -462,7 +481,9 @@ pub trait Filesystem: Send + Sync {
         flags: i32,
         position: u32,
     ) -> Result<(), Errno> {
-        warn!("[Not Implemented] setxattr(ino: {ino:#x?}, name: {name:?}, flags: {flags:#x?}, position: {position})");
+        warn!(
+            "[Not Implemented] setxattr(ino: {ino:#x?}, name: {name:?}, flags: {flags:#x?}, position: {position})"
+        );
         Err(Errno::ENOSYS)
     }
 
@@ -540,7 +561,7 @@ pub trait Filesystem: Send + Sync {
         mode: u32,
         umask: u32,
         flags: i32,
-    ) -> Result<(Entry,Open), Errno> {
+    ) -> Result<(Entry, Open), Errno> {
         warn!(
             "[Not Implemented] create(parent: {parent:#x?}, name: {name:?}, \
             mode: {mode}, umask: {umask:#x?}, flags: {flags:#x?})"
@@ -599,7 +620,13 @@ pub trait Filesystem: Send + Sync {
     /// Note: This makes sense only for block device backed filesystems mounted
     /// with the 'blkdev' option.
     /// The method should return `Ok(u64)` with the device block index, or `Err(Errno)` otherwise.
-    async fn bmap(&self, req: RequestMeta, ino: u64, blocksize: u32, idx: u64) -> Result<u64, Errno> {
+    async fn bmap(
+        &self,
+        req: RequestMeta,
+        ino: u64,
+        blocksize: u32,
+        idx: u64,
+    ) -> Result<u64, Errno> {
         warn!("[Not Implemented] bmap(ino: {ino:#x?}, blocksize: {blocksize}, idx: {idx})");
         Err(Errno::ENOSYS)
     }
@@ -682,7 +709,9 @@ pub trait Filesystem: Send + Sync {
         offset: i64,
         whence: i32,
     ) -> Result<i64, Errno> {
-        warn!("[Not Implemented] lseek(ino: {ino:#x?}, fh: {fh}, offset: {offset}, whence: {whence})");
+        warn!(
+            "[Not Implemented] lseek(ino: {ino:#x?}, fh: {fh}, offset: {offset}, whence: {whence})"
+        );
         Err(Errno::ENOSYS)
     }
 
@@ -727,7 +756,7 @@ pub trait Filesystem: Send + Sync {
         name: &Path,
         newparent: u64,
         newname: &Path,
-        options: u64
+        options: u64,
     ) -> Result<(), Errno> {
         warn!(
             "[Not Implemented] exchange(parent: {parent:#x?}, name: {name:?}, \

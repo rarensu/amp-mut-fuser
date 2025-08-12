@@ -1,13 +1,13 @@
+use crate::ll::{self, Errno, Operation, Request as AnyRequest, fuse_abi as abi};
+use crate::request::RequestHandler;
+use crate::session::SessionMeta;
+use crate::{Forget, KernelConfig};
 #[allow(unused_imports)]
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 use std::convert::Into;
 #[cfg(feature = "abi-7-28")]
 use std::convert::TryInto;
 use std::sync::atomic::Ordering::Relaxed;
-use crate::{Forget, KernelConfig};
-use crate::session::SessionMeta;
-use crate::request::RequestHandler;
-use crate::ll::{self, Operation, fuse_abi as abi, Request as AnyRequest, Errno};
 
 use super::Filesystem;
 
@@ -17,8 +17,9 @@ impl RequestHandler {
     /// request and sends back the returned reply to the kernel
     pub(crate) fn dispatch_sync<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
-        let op = if let Ok(op) = self.request.operation() { op }
-        else {
+        let op = if let Ok(op) = self.request.operation() {
+            op
+        } else {
             self.replyhandler.error(Errno::ENOSYS);
             return;
         };
@@ -41,7 +42,7 @@ impl RequestHandler {
                 se_meta.proto_minor.store(v.minor(), Relaxed);
                 // Encapsulate kernel capabilities into config object
                 let config = KernelConfig::new(x.capabilities(), x.max_readahead());
-                // Call filesystem init method and give it a chance to 
+                // Call filesystem init method and give it a chance to
                 // propose a different config or return an error
                 match fs.init(self.meta, config) {
                     Ok(config) => {
@@ -58,7 +59,7 @@ impl RequestHandler {
                         );
                         se_meta.initialized.store(true, Relaxed);
                         self.replyhandler.config(x.capabilities(), config);
-                    },
+                    }
                     Err(errno) => {
                         // Filesystem refused the config.
                         self.replyhandler.error(errno);
@@ -90,7 +91,7 @@ impl RequestHandler {
                 let result = fs.lookup(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name()
+                    x.name(),
                 );
                 self.replyhandler.entry_or_err(result);
             }
@@ -107,7 +108,7 @@ impl RequestHandler {
                 let result = fs.getattr(
                     self.meta,
                     self.request.nodeid().into(),
-                    _attr.file_handle().map(Into::into)
+                    _attr.file_handle().map(Into::into),
                 );
                 // Pre-abi-7-9 does not support providing a file handle.
                 #[cfg(not(feature = "abi-7-9"))]
@@ -133,15 +134,12 @@ impl RequestHandler {
                     x.crtime(),
                     x.chgtime(),
                     x.bkuptime(),
-                    x.flags()
+                    x.flags(),
                 );
                 self.replyhandler.attr_or_err(result);
             }
             Operation::ReadLink(_) => {
-                let result = fs.readlink(
-                    self.meta,
-                    self.request.nodeid().into()
-                );
+                let result = fs.readlink(self.meta, self.request.nodeid().into());
                 self.replyhandler.data_or_err(result);
             }
             Operation::MkNod(x) => {
@@ -151,7 +149,7 @@ impl RequestHandler {
                     x.name(),
                     x.mode(),
                     x.umask(),
-                    x.rdev()
+                    x.rdev(),
                 );
                 self.replyhandler.entry_or_err(result);
             }
@@ -161,7 +159,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.name(),
                     x.mode(),
-                    x.umask()
+                    x.umask(),
                 );
                 self.replyhandler.entry_or_err(result);
             }
@@ -169,7 +167,7 @@ impl RequestHandler {
                 let result = fs.unlink(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name()
+                    x.name(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -177,7 +175,7 @@ impl RequestHandler {
                 let result = fs.rmdir(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name()
+                    x.name(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -186,7 +184,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.link_name(),
-                    x.target()
+                    x.target(),
                 );
                 self.replyhandler.entry_or_err(result);
             }
@@ -197,7 +195,7 @@ impl RequestHandler {
                     x.src().name,
                     x.dest().dir.into(),
                     x.dest().name,
-                    0
+                    0,
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -206,7 +204,7 @@ impl RequestHandler {
                     self.meta,
                     x.inode_no().into(),
                     self.request.nodeid().into(),
-                    x.dest().name
+                    x.dest().name,
                 );
                 self.replyhandler.entry_or_err(result);
             }
@@ -214,7 +212,7 @@ impl RequestHandler {
                 let result = fs.open(
                     self.meta,
                     self.request.nodeid().into(), 
-                    x.flags()
+                    x.flags(),
                 );
                 self.replyhandler.opened_or_err(result);
             }
@@ -226,7 +224,7 @@ impl RequestHandler {
                     x.offset(),
                     x.size(),
                     x.flags(),
-                    x.lock_owner().map(Into::into)
+                    x.lock_owner().map(Into::into),
                 );
                 self.replyhandler.data_or_err(result);
             }
@@ -239,7 +237,7 @@ impl RequestHandler {
                     x.data(),
                     x.write_flags(),
                     x.flags(),
-                    x.lock_owner().map(Into::into)
+                    x.lock_owner().map(Into::into),
                 );
                 self.replyhandler.written_or_err(result);
             }
@@ -248,7 +246,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.lock_owner().into()
+                    x.lock_owner().into(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -259,7 +257,7 @@ impl RequestHandler {
                     x.file_handle().into(),
                     x.flags(),
                     x.lock_owner().map(Into::into),
-                    x.flush()
+                    x.flush(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -268,7 +266,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.fdatasync()
+                    x.fdatasync(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -276,7 +274,7 @@ impl RequestHandler {
                 let result = fs.opendir(
                     self.meta,
                     self.request.nodeid().into(), 
-                    x.flags()
+                    x.flags(),
                 );
                 self.replyhandler.opened_or_err(result);
             }
@@ -286,7 +284,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    x.size()
+                    x.size(),
                 );
                 self.replyhandler.dir_or_err(
                     result,
@@ -299,7 +297,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.flags()
+                    x.flags(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -308,15 +306,12 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.fdatasync()
+                    x.fdatasync(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
             Operation::StatFs(_) => {
-                let result = fs.statfs(
-                    self.meta,
-                    self.request.nodeid().into()
-                );
+                let result = fs.statfs(self.meta, self.request.nodeid().into());
                 self.replyhandler.statfs_or_err(result);
             }
             Operation::SetXAttr(x) => {
@@ -326,7 +321,7 @@ impl RequestHandler {
                     x.name(),
                     x.value(),
                     x.flags(),
-                    x.position()
+                    x.position(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -335,7 +330,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.name(),
-                    x.size_u32()
+                    x.size_u32(),
                 );
                 self.replyhandler.xattr_or_err(result);
             }
@@ -343,7 +338,7 @@ impl RequestHandler {
                 let result = fs.listxattr(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.size()
+                    x.size(),
                 );
                 self.replyhandler.xattr_or_err(result);
             }
@@ -351,7 +346,7 @@ impl RequestHandler {
                 let result = fs.removexattr(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name()
+                    x.name(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -359,7 +354,7 @@ impl RequestHandler {
                 let result = fs.access(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.mask()
+                    x.mask(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -370,7 +365,7 @@ impl RequestHandler {
                     x.name(),
                     x.mode(),
                     x.umask(),
-                    x.flags()
+                    x.flags(),
                 );
                 self.replyhandler.created_or_err(result);
             }
@@ -383,7 +378,7 @@ impl RequestHandler {
                     x.lock().range.0,
                     x.lock().range.1,
                     x.lock().typ,
-                    x.lock().pid
+                    x.lock().pid,
                 );
                 self.replyhandler.locked_or_err(result);
             }
@@ -397,7 +392,7 @@ impl RequestHandler {
                     x.lock().range.1,
                     x.lock().typ,
                     x.lock().pid,
-                    false
+                    false,
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -411,7 +406,7 @@ impl RequestHandler {
                     x.lock().range.1,
                     x.lock().typ,
                     x.lock().pid,
-                    true
+                    true,
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -420,7 +415,7 @@ impl RequestHandler {
                     self.meta,
                     self.request.nodeid().into(),
                     x.block_size(),
-                    x.block()
+                    x.block(),
                 );
                 self.replyhandler.bmap_or_err(result);
             }
@@ -437,7 +432,7 @@ impl RequestHandler {
                         x.flags(),
                         x.command(),
                         x.in_data(),
-                        x.out_size()
+                        x.out_size(),
                     );
                     self.replyhandler.ioctl_or_err(result);
                 }
@@ -450,7 +445,7 @@ impl RequestHandler {
                     x.file_handle().into(),
                     x.kernel_handle(),
                     x.events(),
-                    x.flags()
+                    x.flags(),
                 );
                 self.replyhandler.poll_or_err(result);
             }
@@ -472,7 +467,7 @@ impl RequestHandler {
                     x.file_handle().into(),
                     x.offset(),
                     x.len(),
-                    x.mode()
+                    x.mode(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -483,7 +478,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    x.size()
+                    x.size(),
                 );
                 self.replyhandler.dirplus_or_err(
                     result,
@@ -499,7 +494,7 @@ impl RequestHandler {
                     x.from().name,
                     x.to().dir.into(),
                     x.to().name,
-                    x.flags()
+                    x.flags(),
                 );
                 self.replyhandler.ok_or_err(result);
             }
@@ -510,7 +505,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    x.whence()
+                    x.whence(),
                 );
                 self.replyhandler.offset_or_err(result);
             }
@@ -526,24 +521,18 @@ impl RequestHandler {
                     o.file_handle.into(),
                     o.offset,
                     x.len(),
-                    x.flags().try_into().unwrap()
+                    x.flags().try_into().unwrap(),
                 );
                 self.replyhandler.written_or_err(result);
             }
             #[cfg(target_os = "macos")]
             Operation::SetVolName(x) => {
-                let result = fs.setvolname(
-                    self.meta,
-                    x.name()
-                );
+                let result = fs.setvolname(self.meta, x.name());
                 self.replyhandler.ok_or_err(result);
             }
             #[cfg(target_os = "macos")]
             Operation::GetXTimes(x) => {
-                let result = fs.getxtimes(
-                    self.meta,
-                    x.nodeid().into()
-                );
+                let result = fs.getxtimes(self.meta, x.nodeid().into());
                 self.replyhandler.xtimes_or_err(result);
             }
             #[cfg(target_os = "macos")]
@@ -554,7 +543,7 @@ impl RequestHandler {
                     x.from().name,
                     x.to().dir.into(),
                     x.to().name,
-                    x.options()
+                    x.options(),
                 );
                 self.replyhandler.ok_or_err(result);
             }

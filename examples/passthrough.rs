@@ -7,18 +7,21 @@
 //     sudo pkill passthrough
 //     sudo umount /tmp/mnt
 
-use clap::{Arg, ArgAction, Command, crate_version};
-use crossbeam_channel::{Sender, Receiver};
-use fuser::{
-    consts, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
-    trait_async::Filesystem, FsStatus, KernelConfig, MountOption, Open, Notification, RequestMeta,
-};
 use bytes::Bytes;
+use clap::{Arg, ArgAction, Command, crate_version};
+use crossbeam_channel::{Receiver, Sender};
+use fuser::{
+    Dirent, DirentList, Entry, Errno, FileAttr, FileType, FsStatus, KernelConfig, MountOption,
+    Notification, Open, RequestMeta, consts, trait_async::Filesystem,
+};
 use std::collections::HashMap;
+use std::fs::File;
 use std::io;
 use std::path::Path;
-use std::fs::File;
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
@@ -85,9 +88,24 @@ struct PassthroughFs {
 }
 
 static ROOT_DIRENTS: [Dirent; 3] = [
-    Dirent { ino: 1, offset: 1, kind: FileType::Directory,   name: Bytes::from_static(b".") },
-    Dirent { ino: 1, offset: 2, kind: FileType::Directory,   name: Bytes::from_static(b"..") },
-    Dirent { ino: 2, offset: 3, kind: FileType::RegularFile, name: Bytes::from_static(b"passthrough") },
+    Dirent {
+        ino: 1,
+        offset: 1,
+        kind: FileType::Directory,
+        name: Bytes::from_static(b"."),
+    },
+    Dirent {
+        ino: 1,
+        offset: 2,
+        kind: FileType::Directory,
+        name: Bytes::from_static(b".."),
+    },
+    Dirent {
+        ino: 2,
+        offset: 3,
+        kind: FileType::RegularFile,
+        name: Bytes::from_static(b"passthrough"),
+    },
 ];
 
 impl PassthroughFs {
@@ -146,7 +164,8 @@ impl PassthroughFs {
 
     fn get_backing_id(&self, ino: u64) -> Option<u32> {
         self.update_backing_status(ino);
-        if let Some(BackingStatus::Ready(ready_backing_id)) = self.backing_cache.lock().unwrap().get(&ino)
+        if let Some(BackingStatus::Ready(ready_backing_id)) =
+            self.backing_cache.lock().unwrap().get(&ino)
         {
             Some(ready_backing_id.backing_id)
         } else {
@@ -260,23 +279,17 @@ use async_trait::async_trait;
 
 #[async_trait]
 impl Filesystem for PassthroughFs {
-    async fn init(
-        &self,
-        _req: RequestMeta,
-        config: KernelConfig,
-    ) -> Result<KernelConfig, Errno> {
+    async fn init(&self, _req: RequestMeta, config: KernelConfig) -> Result<KernelConfig, Errno> {
         let mut config = config;
-        config.add_capabilities(consts::FUSE_PASSTHROUGH)
-            .expect("FUSE Kernel did not advertise support for passthrough (required for this example).");
+        config.add_capabilities(consts::FUSE_PASSTHROUGH).expect(
+            "FUSE Kernel did not advertise support for passthrough (required for this example).",
+        );
         config.set_max_stack_depth(2).unwrap();
         Ok(config)
     }
 
     #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(
-        &mut self,
-        sender: Sender<Notification>,
-    ) -> bool {
+    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
         log::info!("init_notification_sender");
         *self.notification_sender.lock().unwrap() = Some(sender);
         true
@@ -303,7 +316,8 @@ impl Filesystem for PassthroughFs {
                             _file: Arc::new(file),
                         };
                         self.backing_cache
-                            .lock().unwrap()
+                            .lock()
+                            .unwrap()
                             .insert(2, BackingStatus::Pending(backing_id));
                     }
                 } else {
@@ -322,7 +336,8 @@ impl Filesystem for PassthroughFs {
         }
     }
 
-    async fn getattr(&self,
+    async fn getattr(
+        &self,
         _req: RequestMeta,
         ino: u64,
         _fh: Option<u64>,
@@ -330,7 +345,7 @@ impl Filesystem for PassthroughFs {
         match ino {
             1 => Ok((self.root_attr, TTL)),
             2 => Ok((self.passthrough_file_attr, TTL)),
-            _ =>Err(Errno::ENOENT),
+            _ => Err(Errno::ENOENT),
         }
     }
 
@@ -383,7 +398,7 @@ impl Filesystem for PassthroughFs {
         ino: u64,
         _fh: u64,
         offset: i64,
-        _max_bytes: u32
+        _max_bytes: u32,
     ) -> Result<DirentList, Errno> {
         if ino != 1 {
             return Err(Errno::ENOENT);
@@ -450,14 +465,14 @@ fn main() {
     }
 
     let fs = PassthroughFs::new();
-    let session = fuser::Session::new_mounted(
-        fs.into(),
-        Path::new(mountpoint),
-        &options
-    ).expect("Failed to create Session.");
+    let session = fuser::Session::new_mounted(fs.into(), Path::new(mountpoint), &options)
+        .expect("Failed to create Session.");
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs.
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     match rt.block_on(session.run_async()) {
         Ok(()) => log::info!("Session ended safely"),
         Err(e) => log::info!("Session ended with error: {e:?}"),
@@ -470,7 +485,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn dummy_meta() -> RequestMeta {
-        RequestMeta { unique: 0, uid: 1000, gid: 1000, pid: 2000 }
+        RequestMeta {
+            unique: 0,
+            uid: 1000,
+            gid: 1000,
+            pid: 2000,
+        }
     }
 
     #[test]
@@ -480,9 +500,8 @@ mod tests {
         assert!(fs.init_notification_sender(tx));
 
         // Should react to lookup with a pending entry and a notification
-        futures::executor::block_on(
-            fs.lookup(dummy_meta(), 1, &PathBuf::from("passthrough"))
-        ).unwrap();
+        futures::executor::block_on(fs.lookup(dummy_meta(), 1, &PathBuf::from("passthrough")))
+            .unwrap();
         assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(
             fs.backing_cache.lock().unwrap().get(&2).unwrap(),

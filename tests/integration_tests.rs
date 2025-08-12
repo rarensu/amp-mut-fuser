@@ -19,7 +19,8 @@ fn unmount_no_send() {
     impl Filesystem for NoSendFS {}
 
     let tmpdir: TempDir = tempfile::tempdir().unwrap();
-    let mut session = Session::new_mounted(NoSendFS(Rc::new(())).into(), tmpdir.path(), &[]).unwrap();
+    let mut session =
+        Session::new_mounted(NoSendFS(Rc::new(())).into(), tmpdir.path(), &[]).unwrap();
     let mut unmounter = session.unmount_callable();
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(1));

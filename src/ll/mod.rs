@@ -2,9 +2,9 @@
 
 mod argument;
 pub mod fuse_abi;
+pub(crate) mod ioctl;
 #[cfg(feature = "abi-7-11")]
 pub(crate) mod notify;
-pub(crate) mod ioctl;
 pub(crate) mod reply;
 pub(crate) mod request;
 

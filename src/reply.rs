@@ -5,19 +5,19 @@
 //! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
 
 use crate::channel::Channel;
-use crate::{Container, Errno, KernelConfig};
-use crate::ll::{self, reply::DirentBuf};
 #[cfg(feature = "abi-7-21")]
-use crate::ll::reply::{DirentPlusBuf};
+use crate::ll::reply::DirentPlusBuf;
+use crate::ll::{self, reply::DirentBuf};
+use crate::{Container, Errno, KernelConfig};
+use bytes::Bytes;
 #[allow(unused_imports)]
-use log::{error, warn, info, debug};
+use log::{debug, error, info, warn};
+#[cfg(feature = "serializable")]
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::IoSlice;
 use std::time::{Duration, SystemTime};
 use zerocopy::IntoBytes;
-#[cfg(feature = "serializable")]
-use serde::{Deserialize, Serialize};
-use bytes::Bytes;
 
 /// Generic method to send Filesystem replies
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
@@ -175,7 +175,7 @@ pub struct Open {
     /// Flags for the opened file
     pub flags: u32,
     /// Optional backing id for passthrough
-    pub backing_id: Option<u32>
+    pub backing_id: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -207,7 +207,7 @@ pub struct XTimes {
     /// Backup time
     pub bkuptime: SystemTime,
     /// Creation time
-    pub crtime: SystemTime
+    pub crtime: SystemTime,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -228,7 +228,7 @@ pub struct Statfs {
     /// Maximum filename length
     pub namelen: u32,
     /// Fundamental file system block size
-    pub frsize: u32
+    pub frsize: u32,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -266,7 +266,7 @@ pub struct Ioctl {
     /// Result of the ioctl operation
     pub result: i32,
     /// Data to be returned with the ioctl operation
-    pub data: Bytes
+    pub data: Bytes,
 }
 
 //
@@ -274,7 +274,6 @@ pub struct Ioctl {
 //
 
 impl ReplyHandler {
-
     /// Reply to a general request with an error code
     pub fn error(self, err: Errno) {
         self.send_ll(&ll::Response::new_error(err));
@@ -374,7 +373,7 @@ impl ReplyHandler {
     /// Reply to a request with file attributes or an error
     pub fn attr_or_err(self, result: Result<(FileAttr, Duration), Errno>) {
         match result {
-            Ok((attr,ttl)) => self.attr(&attr, &ttl),
+            Ok((attr, ttl)) => self.attr(&attr, &ttl),
             Err(err) => self.error(err),
         }
     }
@@ -427,7 +426,14 @@ impl ReplyHandler {
     /// Reply to a statfs request with filesystem information
     pub fn statfs(self, statfs: &Statfs) {
         self.send_ll(&ll::Response::new_statfs(
-            statfs.blocks, statfs.bfree, statfs.bavail, statfs.files, statfs.ffree, statfs.bsize, statfs.namelen, statfs.frsize,
+            statfs.blocks,
+            statfs.bfree,
+            statfs.bavail,
+            statfs.files,
+            statfs.ffree,
+            statfs.bsize,
+            statfs.namelen,
+            statfs.frsize,
         ));
     }
 
@@ -461,7 +467,7 @@ impl ReplyHandler {
 
     /// Reply to a request with a file lock
     pub fn locked(self, lock: &Lock) {
-        self.send_ll(&ll::Response::new_lock(&ll::Lock{
+        self.send_ll(&ll::Response::new_lock(&ll::Lock {
             range: (lock.start, lock.end),
             typ: lock.typ,
             pid: lock.pid,
@@ -527,7 +533,7 @@ impl ReplyHandler {
         size: usize,
     ) {
         let mut buf = DirentBuf::new(size);
-        let entries_safe_borrow = match entries_list.lock(){
+        let entries_safe_borrow = match entries_list.lock() {
             Ok(entries) => entries,
             Err(e) => {
                 log::error!("ReplyHandler::dir: Borrow Error: {e:?}");
@@ -538,10 +544,16 @@ impl ReplyHandler {
         };
         for item in entries_safe_borrow.iter() {
             if item.offset <= min_offset {
-                log::debug!("ReplyHandler::dir: skipping item with offset #{}", item.offset);
+                log::debug!(
+                    "ReplyHandler::dir: skipping item with offset #{}",
+                    item.offset
+                );
                 continue;
             }
-            log::debug!("ReplyHandler::dir: processing item with offset #{}", item.offset);
+            log::debug!(
+                "ReplyHandler::dir: processing item with offset #{}",
+                item.offset
+            );
             match buf.push(item) {
                 Ok(true) => {
                     log::debug!("ReplyHandler::dir: buffer full!");
@@ -580,7 +592,7 @@ impl ReplyHandler {
         size: usize,
     ) {
         let mut buf = DirentPlusBuf::new(size);
-        let entries_safe_borrow = match entries_plus_list.lock(){
+        let entries_safe_borrow = match entries_plus_list.lock() {
             Ok(entries) => entries,
             Err(e) => {
                 log::error!("ReplyHandler::dirplus: Borrow Error: {e:?}");
@@ -591,10 +603,16 @@ impl ReplyHandler {
         };
         for (dirent, entry) in entries_safe_borrow.iter() {
             if dirent.offset <= min_offset {
-                log::debug!("ReplyHandler::dirplus: skipping item with offset #{}", dirent.offset);
+                log::debug!(
+                    "ReplyHandler::dirplus: skipping item with offset #{}",
+                    dirent.offset
+                );
                 continue;
             }
-            log::debug!("ReplyHandler::dirplus: processing item with offset #{}", dirent.offset);
+            log::debug!(
+                "ReplyHandler::dirplus: processing item with offset #{}",
+                dirent.offset
+            );
             match buf.push(dirent, entry) {
                 Ok(true) => {
                     log::debug!("ReplyHandler::dirplus: buffer full!");
@@ -679,15 +697,15 @@ mod test {
     #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::{FileAttr, FileType};
+    #[cfg(feature = "abi-7-24")]
+    use std::ffi::OsStr;
     use std::io::IoSlice;
+    #[cfg(feature = "abi-7-24")]
+    use std::os::unix::ffi::OsStrExt;
     use std::sync::mpsc::{SyncSender, sync_channel};
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
     use zerocopy::{Immutable, IntoBytes};
-    #[cfg(feature = "abi-7-24")]
-    use std::ffi::OsStr;
-    #[cfg(feature = "abi-7-24")]
-    use std::os::unix::ffi::OsStrExt;
 
     #[derive(Debug, IntoBytes, Immutable)]
     #[repr(C)]
@@ -791,7 +809,7 @@ mod test {
         // prepare the expected message
         let mut expected = Vec::new();
         expected.extend_from_slice(&[
-                // header
+            // header
                 0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00,
                 // ino
@@ -802,33 +820,33 @@ mod test {
                 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                // file attributes
+            // file attributes
                 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                // file times (s)
+            // file times (s)
                 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         #[cfg(target_os = "macos")]
         expected.extend_from_slice(&[
-                // crtime (s)
-                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // crtime (s)
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         expected.extend_from_slice(&[
-                // file times (ns)
+            // file times (ns)
                 0x78, 0x56, 0x00, 0x00,
                 0x78, 0x56, 0x00, 0x00,
                 0x78, 0x56, 0x00, 0x00,
         ]);
         #[cfg(target_os = "macos")]
         expected.extend_from_slice(&[
-                // crtime (ns)
-                0x78, 0x56, 0x00, 0x00,
+            // crtime (ns)
+            0x78, 0x56, 0x00, 0x00,
         ]);
         expected.extend_from_slice(&[
-                // file permissions
+            // file permissions
                 0xa4, 0x81, 0x00, 0x00,
                 // file owners
                 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
@@ -836,13 +854,13 @@ mod test {
         ]);
         #[cfg(target_os = "macos")]
         expected.extend_from_slice(&[
-                // flags
-                0x99, 0x00, 0x00, 0x00,
+            // flags
+            0x99, 0x00, 0x00, 0x00,
         ]);
         #[cfg(feature = "abi-7-9")]
         expected.extend_from_slice(&[
-                // blksize
-                0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            // blksize
+            0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         // correct the header
         expected[0] = (expected.len()) as u8;
@@ -870,15 +888,13 @@ mod test {
             blksize: 0xbb,
         };
         // send the test reply
-        replyhandler.entry(
-            &Entry {
-                ino: attr.ino,
-                generation: Some(0xaa),
-                file_ttl: ttl,
-                attr,
-                attr_ttl: ttl,
-            }
-        );
+        replyhandler.entry(&Entry {
+            ino: attr.ino,
+            generation: Some(0xaa),
+            file_ttl: ttl,
+            attr,
+            attr_ttl: ttl,
+        });
     }
 
     #[test]
@@ -950,12 +966,10 @@ mod test {
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
-        replyhandler.xtimes(
-            XTimes{
-                bkuptime: time,
-                crtime: time,
-            }
-        );
+        replyhandler.xtimes(XTimes {
+            bkuptime: time,
+            crtime: time,
+        });
     }
 
     #[test]
@@ -1005,18 +1019,16 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.statfs(
-            &Statfs{
-                blocks: 0x11,
-                bfree: 0x22,
-                bavail: 0x33,
-                files: 0x44,
-                ffree: 0x55,
-                bsize: 0x66,
-                namelen: 0x77,
-                frsize: 0x88
-            }
-        );
+        replyhandler.statfs(&Statfs {
+            blocks: 0x11,
+            bfree: 0x22,
+            bavail: 0x33,
+            files: 0x44,
+            ffree: 0x55,
+            bsize: 0x66,
+            namelen: 0x77,
+            frsize: 0x88,
+        });
     }
 
     #[test]
@@ -1100,7 +1112,7 @@ mod test {
                 fh: 0xbb,
                 flags: 0x0f,
                 backing_id: Some(u32::from(backing_byte)),
-            }
+            },
         );
     }
 
@@ -1147,7 +1159,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        let entries = vec!(
+        let entries = vec![
             Dirent {
                 ino: 0xaabb,
                 offset: 1,
@@ -1159,9 +1171,9 @@ mod test {
                 offset: 2,
                 kind: FileType::RegularFile,
                 name: Bytes::from_static(b"world.rs"),
-            }
-        );
-        replyhandler.dir(&entries.into(), 0, std::mem::size_of::<u8>()*128);
+            },
+        ];
+        replyhandler.dir(&entries.into(), 0, std::mem::size_of::<u8>() * 128);
     }
 
     #[test]
@@ -1184,34 +1196,26 @@ mod test {
             0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         #[cfg(target_os = "macos")]
-        attr_bytes.extend_from_slice(&[
-            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ]);
+        attr_bytes.extend_from_slice(&[0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         attr_bytes.extend_from_slice(&[
             0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
         ]);
         #[cfg(target_os = "macos")]
+        attr_bytes.extend_from_slice(&[0x78, 0x56, 0x00, 0x00]);
         attr_bytes.extend_from_slice(&[
-            0x78, 0x56, 0x00, 0x00,
-        ]);
-        attr_bytes.extend_from_slice(&[
-            0xa4, 0x41, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
-            0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
+            0xa4, 0x41, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00, 0x77, 0x00,
+            0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
         ]);
         #[cfg(target_os = "macos")]
-        attr_bytes.extend_from_slice(&[
-            0x99, 0x00, 0x00, 0x00,
-        ]);
+        attr_bytes.extend_from_slice(&[0x99, 0x00, 0x00, 0x00]);
         #[cfg(feature = "abi-7-9")]
-        attr_bytes.extend_from_slice(&[
-            0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-        ]);
+        attr_bytes.extend_from_slice(&[0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
         let mut expected = Vec::new();
         // header
         expected.extend_from_slice(&[
-            0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00,
+            0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
+            0x00, 0x00,
         ]);
         // attr 1
         expected.extend_from_slice(&attr_bytes);
@@ -1223,13 +1227,13 @@ mod test {
             0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00,
         ]);
         // attr 2 has a different ino value in two positions
-        attr_bytes[0]=0xdd;
-        attr_bytes[1]=0xcc;
-        attr_bytes[40]=0xdd;
-        attr_bytes[41]=0xcc;
+        attr_bytes[0] = 0xdd;
+        attr_bytes[1] = 0xcc;
+        attr_bytes[40] = 0xdd;
+        attr_bytes[41] = 0xcc;
         // attr 2 has a different file permission in one position
-        let i = if cfg!(target_os = "macos") {113} else {101};
-        attr_bytes[i]=0x81;
+        let i = if cfg!(target_os = "macos") { 113 } else { 101 };
+        attr_bytes[i] = 0x81;
         expected.extend_from_slice(&attr_bytes);
         // dir entry 2
         expected.extend_from_slice(&[
@@ -1241,7 +1245,7 @@ mod test {
         // correct the header
         expected[0] = (expected.len()) as u8;
         // test reply will be compared to expected
-        let sender = AssertSender {expected};
+        let sender = AssertSender { expected };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
@@ -1266,7 +1270,7 @@ mod test {
         attr2.ino = 0xccdd;
         attr2.kind = FileType::RegularFile;
         let generation = Some(0xaa);
-        let entries = vec!(
+        let entries = vec![
             (
                 Dirent {
                     ino: 0xaabb,
@@ -1280,7 +1284,7 @@ mod test {
                     file_ttl: ttl,
                     attr: attr1,
                     attr_ttl: ttl,
-                }
+                },
             ),
             (
                 Dirent {
@@ -1290,15 +1294,15 @@ mod test {
                     name: Bytes::from_static(OsStr::new("world.rs").as_bytes()),
                 },
                 Entry {
-                    ino:0xccdd,
+                    ino: 0xccdd,
                     generation,
                     file_ttl: ttl,
                     attr: attr2,
                     attr_ttl: ttl,
-                }
-            )
-        );
-        replyhandler.dirplus(&entries.into(), 0, std::mem::size_of::<u8>()*4096);
+                },
+            ),
+        ];
+        replyhandler.dirplus(&entries.into(), 0, std::mem::size_of::<u8>() * 4096);
     }
 
     #[test]

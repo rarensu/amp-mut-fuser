@@ -1,15 +1,15 @@
-use std::sync::Arc;
 use std::borrow::Cow;
 use std::ops::Deref;
+use std::sync::Arc;
 
+#[cfg(all(feature = "locking", not(feature = "no-rc")))]
+use std::cell::{Ref, RefCell};
 #[cfg(not(feature = "no-rc"))]
 use std::rc::Rc;
-#[cfg(all(feature = "locking",not(feature = "no-rc")))]
-use std::cell::{Ref, RefCell};
 #[cfg(feature = "locking")]
-use std::sync::{Mutex,RwLock};
+use std::sync::{Mutex, RwLock};
 #[cfg(feature = "locking")]
-use std::sync::{MutexGuard, RwLockReadGuard, PoisonError};
+use std::sync::{MutexGuard, PoisonError, RwLockReadGuard};
 
 #[derive(Debug)]
 /// A generic container enum that provides flexible ownership models for unsized data types.
@@ -35,9 +35,9 @@ pub enum Container<T: Clone + 'static> {
     #[allow(clippy::borrowed_box)]
     /// A borrowed, fixed-size, heap-allocated slice.
     RefBox(&'static Box<[T]>),
-    /// A borrowed, immutable, heap-allocated vector. 
+    /// A borrowed, immutable, heap-allocated vector.
     RefVec(&'static Vec<T>),
-    /// A borrowed, fixed-size, heap-allocated vector, with copy-on-write. 
+    /// A borrowed, fixed-size, heap-allocated vector, with copy-on-write.
     CowBox(Cow<'static, Box<[T]>>),
     /// A borrowed, immutable, heap-allocated vactor, with copy-on-write.
     CowVec(Cow<'static, Vec<T>>),

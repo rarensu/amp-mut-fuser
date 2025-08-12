@@ -1,20 +1,21 @@
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 use std::io;
 
-use crate::session::{Session, BUFFER_SIZE};
 use crate::request::RequestHandler;
+use crate::session::{BUFFER_SIZE, Session};
 
-use crate::any::{AnyFS};
+use crate::any::AnyFS;
+use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
-use crate::trait_async::Filesystem as AsyncFS;
 
-impl<L, S, A> Session<L, S, A> where 
+impl<L, S, A> Session<L, S, A>
+where
     L: LegacyFS,
     S: SyncFS,
-    A: AsyncFS
+    A: AsyncFS,
 {
     /// Run the session loop that receives kernel requests and dispatches them to method
     /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
@@ -34,12 +35,12 @@ impl<L, S, A> Session<L, S, A> where
                     Some(req) => {
                         debug!("Request {} on channel {CH_IDX}.", req.meta.unique);
                         // Extract filesystem
-                        match  &mut self.filesystem {
+                        match &mut self.filesystem {
                             AnyFS::Legacy(fs) => {
                                 // Dispatch request
                                 req.dispatch_legacy(fs, &self.meta);
-                            },
-                            _ => panic!("Attempted to call Sync run method on non-Sync Filesystem")
+                            }
+                            _ => panic!("Attempted to call Sync run method on non-Sync Filesystem"),
                         }
                     }
                     // Quit loop on illegal request

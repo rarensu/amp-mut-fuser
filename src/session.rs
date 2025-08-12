@@ -6,28 +6,31 @@
 //! for filesystem operations under its mount point.
 
 #[allow(unused_imports)]
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 use nix::unistd::geteuid;
-use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::{Relaxed, Acquire}};
-use std::sync::{Arc, Mutex};
-use std::io;
-#[cfg(feature = "threaded")]
-use std::thread::{self, JoinHandle};
 #[cfg(feature = "threaded")]
 use std::fmt;
+use std::io;
+use std::os::fd::OwnedFd;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{
+    AtomicBool, AtomicU32,
+    Ordering::{Acquire, Relaxed},
+};
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "threaded")]
+use std::thread::{self, JoinHandle};
 
-use crate::{MountOption, AnyFS};
-use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
+use crate::{AnyFS, MountOption};
+use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crossbeam_channel::{Sender, Receiver};
+use crossbeam_channel::{Receiver, Sender};
 
+use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
-use crate::trait_async::Filesystem as AsyncFS;
 
 pub const SYNC_SLEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
@@ -73,10 +76,11 @@ pub(crate) struct SessionMeta {
 
 /// The session data structure
 #[derive(Debug)]
-pub struct Session<L, S, A> where 
+pub struct Session<L, S, A>
+where
     L: LegacyFS,
     S: SyncFS,
-    A: AsyncFS
+    A: AsyncFS,
 {
     // TODO: if threaded, filesystem: Mutex<AnyFS<...>>
     /// Filesystem operation implementations
@@ -96,10 +100,11 @@ pub struct Session<L, S, A> where
     pub(crate) nr: Receiver<Notification>,
 }
 
-impl<L, S, A> Session<L, S, A> where 
+impl<L, S, A> Session<L, S, A>
+where
     L: LegacyFS,
     S: SyncFS,
-    A: AsyncFS 
+    A: AsyncFS,
 {
     /// Create a new session by mounting the given filesystem to the given mountpoint
     pub fn new_mounted<P: AsRef<Path>>(
@@ -145,9 +150,14 @@ impl<L, S, A> Session<L, S, A> where
         Session::new(filesystem, ch, allowed, None)
     }
 
-    /// Assemble a Session from raw parts. Not recommended for regular users. 
+    /// Assemble a Session from raw parts. Not recommended for regular users.
     #[allow(unused_mut)] // The filesystem mutates, but only under some combinations of features
-    pub(crate) fn new(mut filesystem: AnyFS<L, S, A>, ch: Channel, allowed: SessionACL, mount: Option<(PathBuf, Mount)>) -> Self {
+    pub(crate) fn new(
+        mut filesystem: AnyFS<L, S, A>,
+        ch: Channel,
+        allowed: SessionACL,
+        mount: Option<(PathBuf, Mount)>,
+    ) -> Self {
         #[cfg(feature = "abi-7-11")]
         // Create the channel for poll events.
         let (ns, nr) = crossbeam_channel::unbounded();
@@ -156,7 +166,7 @@ impl<L, S, A> Session<L, S, A> where
         let notify = match &mut filesystem {
             AnyFS::Legacy(lfs) => lfs.init_notification_sender(ns.clone()),
             AnyFS::Sync(sfs) => sfs.init_notification_sender(ns.clone()),
-            AnyFS::Async(afs) => afs.init_notification_sender(ns.clone())
+            AnyFS::Async(afs) => afs.init_notification_sender(ns.clone()),
         };
         let meta = SessionMeta {
             allowed,
@@ -198,7 +208,7 @@ impl<L, S, A> Session<L, S, A> where
     /// Session has at least `channel_count` communication channels.
     /// Reports the number of channels that were created.
     /// # Errors
-    /// Propagates underlying errors. 
+    /// Propagates underlying errors.
     pub fn set_channels(&mut self, channel_count: u32) -> Result<u32, io::Error> {
         let main_fuse_fd = self.chs[0].raw_fd as u32;
         let mut new_channels = 0;
@@ -236,39 +246,41 @@ impl<L, S, A> Session<L, S, A> where
     }
 }
 
-impl<L, S, A> Session<L, S, A> where 
+impl<L, S, A> Session<L, S, A>
+where
     L: LegacyFS,
     S: SyncFS,
-    A: AsyncFS
+    A: AsyncFS,
 {
-    /// This function starts the main Session loop of a Legacy or Sync Filesystem in the current thread. 
+    /// This function starts the main Session loop of a Legacy or Sync Filesystem in the current thread.
     /// # Panics
     /// Panics if the filesystem is Async. Hint: try `run_blocking()` or `run_async()`
     pub fn run(self) -> io::Result<()> {
         match &self.filesystem {
             AnyFS::Legacy(_) => self.run_legacy(),
             AnyFS::Sync(_) => self.run_sync(),
-            AnyFS::Async(_) => panic!("Attempted to use Legacy/Sync method on an Async filesystem.")
+            AnyFS::Async(_) => {
+                panic!("Attempted to use Legacy/Sync method on an Async filesystem.")
+            }
         }
     }
 }
 
-impl<L, S, A> Session<L, S, A> where 
+impl<L, S, A> Session<L, S, A>
+where
     L: LegacyFS + Send + Sync + 'static,
     S: SyncFS + Send + Sync + 'static,
-    A: AsyncFS + Send + Sync + 'static
+    A: AsyncFS + Send + Sync + 'static,
 {
     /// This function starts the main Session loop of Any Filesystem, blocking the current thread.
     pub fn run_blocking(self) -> io::Result<()> {
         match &self.filesystem {
             AnyFS::Legacy(_) => self.run_legacy(),
             AnyFS::Sync(_) => self.run_sync(),
-            AnyFS::Async(_) => futures::executor::block_on(self.run_async())
+            AnyFS::Async(_) => futures::executor::block_on(self.run_async()),
         }
     }
 }
-
-
 
 #[derive(Debug)]
 /// A thread-safe object that can be used to unmount a Filesystem
@@ -287,10 +299,11 @@ impl SessionUnmounter {
 /// A session can be run synchronously in the current thread using `run()` or spawned into a
 /// background thread using `spawn()`.
 #[cfg(feature = "threaded")]
-impl<L, S, A> Session<L, S, A> where 
+impl<L, S, A> Session<L, S, A>
+where
     L: LegacyFS + Send + Sync + 'static,
     S: SyncFS + Send + Sync + 'static,
-    A: AsyncFS + Send + Sync + 'static
+    A: AsyncFS + Send + Sync + 'static,
 {
     /// Run the session loop in a background thread
     pub fn spawn(self) -> io::Result<BackgroundSession> {
@@ -298,19 +311,18 @@ impl<L, S, A> Session<L, S, A> where
     }
 }
 
-impl<L, S, A> Drop for Session<L, S, A> where 
+impl<L, S, A> Drop for Session<L, S, A>
+where
     L: LegacyFS,
     S: SyncFS,
     A: AsyncFS,
-{    
+{
     fn drop(&mut self) {
         if !self.meta.destroyed.load(Acquire) {
             match &mut self.filesystem {
                 AnyFS::Legacy(fs) => fs.destroy(),
                 AnyFS::Sync(fs) => fs.destroy(),
-                AnyFS::Async(fs) => {
-                    futures::executor::block_on(fs.destroy())
-                }
+                AnyFS::Async(fs) => futures::executor::block_on(fs.destroy()),
             }
             self.meta.destroyed.store(true, Relaxed);
         }
@@ -335,14 +347,14 @@ pub struct BackgroundSession {
 
 #[cfg(feature = "threaded")]
 impl BackgroundSession {
-
     /// Create a new background session for the given session by running its
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
-    pub fn new<L, S, A>(se: Session<L, S, A>) -> io::Result<BackgroundSession> where 
+    pub fn new<L, S, A>(se: Session<L, S, A>) -> io::Result<BackgroundSession>
+    where
         L: LegacyFS + Send + Sync + 'static,
-        S: SyncFS + Send + Sync +'static,
-        A: AsyncFS + Send + Sync + 'static
+        S: SyncFS + Send + Sync + 'static,
+        A: AsyncFS + Send + Sync + 'static,
     {
         #[cfg(feature = "abi-7-11")]
         let extra_notification_sender = se.ns.clone();
@@ -350,11 +362,7 @@ impl BackgroundSession {
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
 
         // The main session (se) is moved into this thread.
-        let main_loop_guard = thread::spawn(
-            move || {
-                se.run_blocking()
-            }
-        );
+        let main_loop_guard = thread::spawn(move || se.run_blocking());
 
         Ok(BackgroundSession {
             main_loop_guard,
@@ -368,13 +376,14 @@ impl BackgroundSession {
         let Self {
             main_loop_guard,
             #[cfg(feature = "abi-7-11")]
-            extra_notification_sender: _,
+                extra_notification_sender: _,
             _mount,
         } = self;
         // Unmount the filesystem
         drop(_mount);
         // Stop the background thread
-        let res = main_loop_guard.join()
+        let res = main_loop_guard
+            .join()
             .expect("Failed to join the background thread");
         // An error is expected, since the thread was active when the unmount occured.
         info!("Session loop end with result {res:?}.");
@@ -384,7 +393,7 @@ impl BackgroundSession {
     #[cfg(feature = "abi-7-11")]
     #[must_use]
     pub fn get_notification_sender(&self) -> Sender<Notification> {
-       self.extra_notification_sender.clone()
+        self.extra_notification_sender.clone()
     }
 }
 
