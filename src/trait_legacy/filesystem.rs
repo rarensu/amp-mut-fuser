@@ -461,8 +461,10 @@ pub trait Filesystem {
     /// Get file system statistics.
     fn statfs(
         &mut self,
-        req: &Request<'_>, ino: u64, reply: ReplyStatfs, 
-            /* blank space */
+        req: &Request<'_>,
+        ino: u64,
+        reply: ReplyStatfs,
+        /* blank space */
     ) {
         reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
     }
@@ -508,7 +510,12 @@ pub trait Filesystem {
     /// If `size` is 0, the size of the value should be sent with `reply.size()`.
     /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
     /// `reply.error(ERANGE)` if it doesn't.
-    fn listxattr(&mut self, req: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr,
+    fn listxattr(
+        &mut self,
+        req: &Request<'_>,
+        ino: u64,
+        size: u32,
+        reply: ReplyXattr,
         /* blank space */
     ) {
         warn!(
@@ -520,8 +527,10 @@ pub trait Filesystem {
 
     /// Remove an extended attribute.
     fn removexattr(
-        &mut self, req: &Request<'_>,
-        ino: u64, name: &OsStr,
+        &mut self,
+        req: &Request<'_>,
+        ino: u64,
+        name: &OsStr,
         reply: ReplyEmpty,
         /* blank space */
     ) {

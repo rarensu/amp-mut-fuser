@@ -216,7 +216,7 @@ impl RequestHandler {
             Operation::Open(x) => {
                 let result = fs.open(
                     self.meta,
-                    self.request.nodeid().into(), 
+                    self.request.nodeid().into(),
                     x.flags(),
                     /* blank space */
                 );
@@ -279,7 +279,7 @@ impl RequestHandler {
             Operation::OpenDir(x) => {
                 let result = fs.opendir(
                     self.meta,
-                    self.request.nodeid().into(), 
+                    self.request.nodeid().into(),
                     x.flags(),
                     /* blank space */
                 );

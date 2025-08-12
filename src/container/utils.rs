@@ -12,12 +12,20 @@ use std::sync::{Mutex, RwLock};
 
 macro_rules! impl_from {
     ($STRUCT:ty, $VARIANT:ident) => {
-        impl<T: Clone> From<$STRUCT> for Container<T> {fn from(value: $STRUCT) -> Self {Container::$VARIANT(value)}} 
+        impl<T: Clone> From<$STRUCT> for Container<T> {
+            fn from(value: $STRUCT) -> Self {
+                Container::$VARIANT(value)
+            }
+        }
     };
 }
 
 // Simple Variants
-impl<T: Clone> From<(/* Empty */)>  for Container<T> {fn from((): ()) -> Self {Container::Empty}}
+impl<T: Clone> From<()> for Container<T> {
+    fn from((): ()) -> Self {
+        Container::Empty
+    }
+}
 impl_from!(Box<[T]>, Box);
 impl_from!(Vec<T>, Vec);
 impl_from!(&'static [T], Static);
@@ -49,7 +57,6 @@ impl_from!(Arc<Mutex<Vec<T>>>, ArcMutexVec);
 impl_from!(Arc<RwLock<Box<[T]>>>, ArcRwLockBox);
 #[cfg(feature = "locking")]
 impl_from!(Arc<RwLock<Vec<T>>>, ArcRwLockVec);
-
 
 /* ------ Clone ------ */
 

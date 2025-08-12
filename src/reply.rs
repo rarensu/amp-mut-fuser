@@ -809,96 +809,100 @@ mod test {
     }
 
     macro_rules! default_attr_struct {
-        () => {
-            {
-                let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
-                FileAttr {
-                    ino: 0x11,
-                    size: 0x22,
-                    blocks: 0x33,
-                    atime: time,
-                    mtime: time,
-                    ctime: time,
-                    crtime: time,
-                    kind: FileType::RegularFile,
-                    perm: 0o644,
-                    nlink: 0x55,
-                    uid: 0x66,
-                    gid: 0x77,
-                    rdev: 0x88,
-                    flags: 0x99,
-                    blksize: 0xbb,
-                }
+        () => {{
+            let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+            FileAttr {
+                ino: 0x11,
+                size: 0x22,
+                blocks: 0x33,
+                atime: time,
+                mtime: time,
+                ctime: time,
+                crtime: time,
+                kind: FileType::RegularFile,
+                perm: 0o644,
+                nlink: 0x55,
+                uid: 0x66,
+                gid: 0x77,
+                rdev: 0x88,
+                flags: 0x99,
+                blksize: 0xbb,
             }
-        };
+        }};
     }
 
     macro_rules! default_attr_bytes {
-        () => {
-            {
-                let mut expected = Vec::new();
-                expected.extend_from_slice(&[ // inode attributes
-                        0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ino */
-                        0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
-                        0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* blocks */
-                ]);
-                expected.extend_from_slice(&[ // timestamps (s)
-                        0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* atime */
-                        0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* mtime */
-                        0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ctime */
-                ]);
-                #[cfg(target_os = "macos")]
-                expected.extend_from_slice(&[
-                        0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* crtime */
-                ]);
-                expected.extend_from_slice(&[  // timestamps (nanos)
-                        0x78, 0x56, 0x00, 0x00, /* atime */
-                        0x78, 0x56, 0x00, 0x00, /* mtime */
-                        0x78, 0x56, 0x00, 0x00, /* ctime */
-                ]);
-                #[cfg(target_os = "macos")]
-                expected.extend_from_slice(&[               
-                        0x78, 0x56, 0x00, 0x00, /* crtime */
-                ]);
-                expected.extend_from_slice(&[ // access attributes
-                        0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00,
-                        0x66, 0x00, 0x00, 0x00, 0x77, 0x00, 0x00, 0x00,
-                        0x88, 0x00, 0x00, 0x00,
-                ]);
-                #[cfg(target_os = "macos")]
-                expected.extend_from_slice(&[ // macos flags
-                        0x99, 0x00, 0x00, 0x00,
-                ]);
-                #[cfg(feature = "abi-7-9")]
-                expected.extend_from_slice(&[ // block size
-                    0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-                ]);
-                // return
-                expected
-            }
-        };
+        () => {{
+            let mut expected = Vec::new();
+            expected.extend_from_slice(&[
+                // inode attributes
+                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ino */
+                0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
+                0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* blocks */
+            ]);
+            expected.extend_from_slice(&[
+                // timestamps (s)
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* atime */
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* mtime */
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ctime */
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* crtime */
+            ]);
+            expected.extend_from_slice(&[
+                // timestamps (nanos)
+                0x78, 0x56, 0x00, 0x00, /* atime */
+                0x78, 0x56, 0x00, 0x00, /* mtime */
+                0x78, 0x56, 0x00, 0x00, /* ctime */
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[0x78, 0x56, 0x00, 0x00 /* crtime */]);
+            expected.extend_from_slice(&[
+                // access attributes
+                0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00, 0x77, 0x00,
+                0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[
+                // macos flags
+                0x99, 0x00, 0x00, 0x00,
+            ]);
+            #[cfg(feature = "abi-7-9")]
+            expected.extend_from_slice(&[
+                // block size
+                0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ]);
+            // return
+            expected
+        }};
     }
 
     #[test]
     fn reply_entry() {
         // prepare the expected message
         let mut expected = Vec::new();
-        expected.extend_from_slice(&[ // FUSE header
+        expected.extend_from_slice(&[
+            // FUSE header
             0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
             0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, /* request id */
         ]);
-        expected.extend_from_slice(&[ // ino
+        expected.extend_from_slice(&[
+            // ino
             0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
-        expected.extend_from_slice(&[ // generation
+        expected.extend_from_slice(&[
+            // generation
             0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
-        expected.extend_from_slice(&[ // file ttl
-            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */ 
+        expected.extend_from_slice(&[
+            // file ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
         ]);
-        expected.extend_from_slice(&[ // attr ttl
-            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* whole seconds */ 
-            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, /* nanoseconds */ 
+        expected.extend_from_slice(&[
+            // attr ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* whole seconds */
+            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, /* nanoseconds */
         ]);
         expected.extend(default_attr_bytes!().iter());
         // correct the header using the actual length
@@ -921,13 +925,15 @@ mod test {
 
     #[test]
     fn reply_attr() {
-        let mut expected = vec![ // FUSE header
-                    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
-                    0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, /* request id */
+        let mut expected = vec![
+            // FUSE header
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, /* request id */
         ];
-        expected.extend_from_slice(&[ // ttl
-                0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
-                0x21, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* nanoseconds */
+        expected.extend_from_slice(&[
+            // ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
+            0x21, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* nanoseconds */
         ]);
         expected.extend(default_attr_bytes!().iter());
 
@@ -960,54 +966,54 @@ mod test {
     }
 
     macro_rules! default_open_struct {
-        () => {
-            {
-                #[cfg(feature = "abi-7-40")]
-                let backing_byte: u8 = 0x44;
-                #[cfg(not(feature = "abi-7-40"))]
-                let backing_byte: u8 = 0x00;
-                Open {
-                    fh: 0x1122,
-                    flags: 0x33,
-                    backing_id: Some(u32::from(backing_byte)),
-                }
+        () => {{
+            #[cfg(feature = "abi-7-40")]
+            let backing_byte: u8 = 0x44;
+            #[cfg(not(feature = "abi-7-40"))]
+            let backing_byte: u8 = 0x00;
+            Open {
+                fh: 0x1122,
+                flags: 0x33,
+                backing_id: Some(u32::from(backing_byte)),
             }
-        };
+        }};
     }
 
     macro_rules! default_open_bytes {
-        () => {
-            {
-                #[cfg(feature = "abi-7-40")]
-                let backing_byte :u8 = 0x44;
-                #[cfg(not(feature = "abi-7-40"))]
-                let backing_byte :u8 = 0x00;
-                let mut expected = vec![
-                    // file handle
-                    0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                ];
-                expected.extend_from_slice(&[
-                    // flags
-                    0x33, 0x00, 0x00, 0x00,
-                ]);
-                expected.extend_from_slice(&[
-                    // backing id
-                    backing_byte, 0x00, 0x00, 0x00,
-                ]);
-                // return
-                expected
-            }
-        };
+        () => {{
+            #[cfg(feature = "abi-7-40")]
+            let backing_byte: u8 = 0x44;
+            #[cfg(not(feature = "abi-7-40"))]
+            let backing_byte: u8 = 0x00;
+            let mut expected = vec![
+                // file handle
+                0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ];
+            expected.extend_from_slice(&[
+                // flags
+                0x33, 0x00, 0x00, 0x00,
+            ]);
+            expected.extend_from_slice(&[
+                // backing id
+                backing_byte,
+                0x00,
+                0x00,
+                0x00,
+            ]);
+            // return
+            expected
+        }};
     }
     #[test]
     fn reply_open() {
-        let mut expected =  vec![ // FUSE header
+        let mut expected = vec![
+            // FUSE header
             0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // size
             0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // request id
         ];
         expected.extend(&default_open_bytes!());
 
-        let sender = AssertSender {expected};
+        let sender = AssertSender { expected };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.opened(&default_open_struct!());
     }
@@ -1052,22 +1058,27 @@ mod test {
 
     #[test]
     fn reply_create() {
-        let mut expected =  vec![ // FUSE header
+        let mut expected = vec![
+            // FUSE header
             0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // size
             0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // request id
         ];
-        expected.extend_from_slice(&[ // ino
+        expected.extend_from_slice(&[
+            // ino
             0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
-        expected.extend_from_slice(&[ // generation
+        expected.extend_from_slice(&[
+            // generation
             0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
-        expected.extend_from_slice(&[ // file ttl
-            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */ 
+        expected.extend_from_slice(&[
+            // file ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
         ]);
-        expected.extend_from_slice(&[ // attr ttl
-            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* whole seconds */ 
-            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, /* nanoseconds */ 
+        expected.extend_from_slice(&[
+            // attr ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* whole seconds */
+            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, /* nanoseconds */
         ]);
         expected.extend(&default_attr_bytes!());
         expected.extend(&default_open_bytes!());
@@ -1157,16 +1168,14 @@ mod test {
         // see test::reply_entry() for details
         let mut entry_bytes = Vec::new();
         entry_bytes.extend_from_slice(&[
-            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
         ]);
         let mut attr_bytes = default_attr_bytes!();
 
         let mut expected = Vec::new();
-        
+
         expected.extend_from_slice(&[
             // FUSE header
             0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
@@ -1187,10 +1196,9 @@ mod test {
         // dirent 1
         // see test::reply_directory() for details
         expected.extend_from_slice(&[
-            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-            0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00,
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c,
+            0x6f, 0x00, 0x00, 0x00,
         ]);
 
         /* ------ file 2 ------- */
@@ -1204,10 +1212,9 @@ mod test {
         expected.extend_from_slice(&attr_bytes);
         // dirent 2
         expected.extend_from_slice(&[
-            0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
-            0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
+            0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c,
+            0x64, 0x2e, 0x72, 0x73,
         ]);
         // correct the header
         expected[0] = (expected.len()) as u8;

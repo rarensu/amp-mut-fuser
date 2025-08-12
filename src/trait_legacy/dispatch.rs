@@ -11,11 +11,11 @@ use crate::{Errno, KernelConfig, RequestMeta};
 use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
+use super::callback::DirectoryHandler;
 use super::{
     Filesystem, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
-use super::callback::DirectoryHandler;
 #[cfg(feature = "abi-7-11")]
 use super::{PollHandle, ReplyIoctl, ReplyPoll};
 #[cfg(feature = "abi-7-21")]
@@ -340,7 +340,7 @@ impl RequestHandler {
                 let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
                 fs.opendir(
                     &req,
-                    self.request.nodeid().into(), 
+                    self.request.nodeid().into(),
                     x.flags(),
                     reply,
                     /* blank space */
