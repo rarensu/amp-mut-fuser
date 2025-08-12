@@ -1,9 +1,7 @@
 use libc::c_int;
 use std::convert::AsRef;
 use zerocopy::IntoBytes;
-use bytes::Bytes;
 use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::fmt::Debug;
 #[cfg(feature = "abi-7-40")]
 use std::fs::File;
@@ -16,12 +14,10 @@ use crate::XTimes;
 use crate::{
     ll::reply::{mode_from_kind_and_perm, EntListBuf, Response}, 
     reply::ReplyHandler,
-    Entry, Errno, FileAttr, FileType, Open, Statfs, Lock, DirentList, Xattr
+    Entry, Errno, FileAttr, FileType, Open, Statfs, Lock
 };
-#[cfg(feature = "abi-7-11")]
-use crate::{Ioctl};
 #[cfg(feature = "abi-7-21")]
-use crate::{ll::reply::fuse_attr_from_attr, DirentPlusList};
+use crate::{ll::reply::fuse_attr_from_attr};
 #[cfg(feature = "abi-7-40")]
 use super::BackingId;
 
@@ -83,13 +79,6 @@ impl ReplyEmpty {
     pub fn ok(mut self) {
         self.handler.ok();
     }
-    /// Reply to a request with the given Result<(), Errno>
-    pub fn ok_or_err(self, result: Result<(), Errno>) {
-        match result {
-            Ok(()) => self.ok(),
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -124,13 +113,6 @@ impl ReplyData {
     /// Reply to a request with the given data
     pub fn data(mut self, data: &[u8]){
         self.handler.data(data);
-    }
-    /// Reply to a request with the given Result<Bytes, Errno>
-    pub fn data_or_err(self, result: Result<Bytes, Errno>) {
-        match result {
-            Ok(data) => self.data(&data),
-            Err(e) => self.error(Errno::into(e)),
-        }
     }
     default_error!();
 }
@@ -172,17 +154,6 @@ impl ReplyEntry {
     pub fn entry(mut self, ttl: &Duration, attr: &FileAttr, generation: u64) {
         self.handler.entry(ttl, attr, generation);
     }
-    /// Reply to a request with the given Result<Entry, Errno>
-    pub fn entry_or_err(self, result: Result<Entry, Errno>) {
-        match result {
-            Ok(entry) => self.entry(
-                &entry.attr_ttl,
-                &entry.attr,
-                entry.generation.unwrap_or(0)
-            ),
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -217,16 +188,6 @@ impl ReplyAttr {
     /// Reply to a request with the given attribute
     pub fn attr(mut self, ttl: &Duration, attr: &FileAttr) {
         self.handler.attr(ttl, attr);
-    }
-    /// Reply to a request with the given Result<(FileAttr, Duration), Errno>
-    pub fn attr_or_err(self, result: Result<(FileAttr, Duration), Errno>) {
-        match result {
-            Ok((attr, ttl)) => self.attr(
-                &ttl,
-                &attr
-            ),
-            Err(e) => self.error(Errno::into(e)),
-        }
     }
     default_error!();
 }
@@ -265,16 +226,6 @@ impl ReplyXTimes {
     /// Reply to a request with the given xtimes
     pub fn xtimes(mut self, bkuptime: SystemTime, crtime: SystemTime) {
         self.handler.xtimes(bkuptime, crtime);
-    }
-    /// Reply to a request with the given Result<XTimes, Errno>
-    pub fn xtimes_or_err(self, result: Result<XTimes, Errno>) {
-        match result {
-            Ok(xtimes) => self.xtimes(
-                xtimes.bkuptime,
-                xtimes.crtime
-            ),
-            Err(e) => self.error(Errno::into(e)),
-        }
     }
     default_error!();
 }
@@ -349,16 +300,6 @@ impl ReplyOpen {
     pub fn open_backing(&mut self, fd: File) -> std::io::Result<BackingId>{
         self.handler.open_backing(fd)
     }
-    /// Reply to a request with the given Result<Open, Errno>
-    pub fn opened_or_err(self, result: Result<Open, Errno>) {
-        match result {
-            Ok(open) => self.opened(
-                open.fh,
-                open.flags
-            ),
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -393,13 +334,6 @@ impl ReplyWrite {
     /// Reply to a request with the given open result
     pub fn written(mut self, size: u32) {
         self.handler.written(size);
-    }
-    /// Reply to a request with the given Result<u32, Errno>
-    pub fn written_or_err(self, result: Result<u32, Errno>) {
-        match result {
-            Ok(size) => self.written(size),
-            Err(e) => self.error(Errno::into(e)),
-        }
     }
     default_error!();
 }
@@ -477,22 +411,6 @@ impl ReplyStatfs {
     ) {
         self.handler.statfs(blocks, bfree, bavail, files, ffree, bsize, namelen, frsize);
     }
-    /// Reply to a request with the given Result<Statfs, Errno>
-    pub fn statfs_or_err(self, result: Result<Statfs, Errno>) {
-        match result {
-            Ok(statfs) => self.statfs(
-                statfs.blocks,
-                statfs.bfree,
-                statfs.bavail,
-                statfs.files,
-                statfs.ffree,
-                statfs.bsize,
-                statfs.namelen,
-                statfs.frsize
-            ),
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -537,19 +455,6 @@ impl ReplyCreate {
     pub fn created(mut self, ttl: &Duration, attr: &FileAttr, generation: u64, fh: u64, flags: u32) {
         self.handler.created(ttl, attr, generation, fh, flags);
     }
-    /// Reply to a request with the given Result<(Entry, Open), Errno>
-    pub fn created_or_err(self, result: Result<(Entry, Open), Errno>) {
-        match result {
-            Ok((entry, open)) => self.created(
-                &entry.file_ttl,
-                &entry.attr,
-                entry.generation.unwrap_or(0),
-                open.fh,
-                open.flags
-            ),
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -585,18 +490,6 @@ impl ReplyLock {
     pub fn locked(mut self, start: u64, end: u64, typ: i32, pid: u32) {
         self.handler.locked(start, end, typ, pid);
     }
-    /// Reply to a request with the given Result<Lock, Errno>
-    pub fn locked_or_err(self, result: Result<Lock, Errno>) {
-        match result {
-            Ok(lock) => self.locked(
-                lock.start,
-                lock.end,
-                lock.typ,
-                lock.pid
-            ),
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -631,13 +524,6 @@ impl ReplyBmap {
     /// Reply to a request with the given block result
     pub fn bmap(mut self, block: u64) {
         self.handler.bmap(block);
-    }
-    /// Reply to a request with the given Result<u64, Errno>
-    pub fn bmap_or_err(self, result: Result<u64, Errno>) {
-        match result {
-            Ok(block) => self.bmap(block),
-            Err(e) => self.error(Errno::into(e)),
-        }
     }
     default_error!();
 }
@@ -681,16 +567,6 @@ impl ReplyIoctl {
     pub fn ioctl(mut self, result: i32, data: &[u8]) {
         self.handler.ioctl(result, data);
     }
-    /// Reply to a request with the given Result<Ioctl, Errno>
-    pub fn ioctl_or_err(self, result: Result<Ioctl, Errno>) {
-        match result {
-            Ok(ioctl) => self.ioctl(
-                ioctl.result,
-                &ioctl.data
-            ),
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -729,13 +605,6 @@ impl ReplyPoll {
     /// Reply to a request with the given poll result
     pub fn poll(mut self, revents: u32) {
         self.handler.poll(revents);
-    }
-    /// Reply to a request with the given Result<u32, Errno>
-    pub fn poll_or_err(self, result: Result<u32, Errno>) {
-        match result {
-            Ok(revents) => self.poll(revents),
-            Err(e) => self.error(Errno::into(e)),
-        }
     }
     default_error!();
 }
@@ -829,23 +698,6 @@ impl ReplyDirectory {
     /// Reply to a request with the filled directory buffer
     pub fn ok(mut self) {
         self.handler.ok();
-    }
-    /// Reply to a request with the given Result<DirentList, Errno>
-    pub fn direntlist_or_err(mut self, result: Result<DirentList, Errno>) {
-        match result {
-            Ok(direntlist) => {
-                for dirent in direntlist.lock().unwrap().iter(){
-                    if self.add(
-                        dirent.ino,
-                        dirent.offset,
-                        dirent.kind,
-                        OsStr::from_bytes(dirent.name.as_bytes())
-                    ) {break;}
-                }
-                self.ok();
-            }
-            Err(e) => self.error(Errno::into(e)),
-        }
     }
     default_error!();
 }
@@ -979,25 +831,6 @@ impl ReplyDirectoryPlus {
     pub fn ok(mut self) {
         self.handler.ok();
     }
-    /// Reply to a request with the given Result<DirentPlusList, Errno>
-    pub fn direntpluslist_or_err(mut self, result: Result<DirentPlusList, Errno>) {
-        match result {
-            Ok(direntpluslist) => {
-                for (dirent, entry) in direntpluslist.lock().unwrap().iter(){
-                    self.add(
-                        dirent.ino,
-                        dirent.offset,
-                        OsStr::from_bytes(dirent.name.as_bytes()),
-                        &entry.attr_ttl,
-                        &entry.attr,
-                        entry.generation.unwrap_or(0)
-                    );
-                }
-                self.ok();
-            },
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -1045,14 +878,6 @@ impl ReplyXattr {
     pub fn data(mut self, data: &[u8]) {
         self.handler.data(data);
     }
-    /// Reply to a request with the given Result<Xattr, Errno>
-    pub fn xattr_or_err(self, result: Result<Xattr, Errno>) {
-        match result {
-            Ok(Xattr::Size(size)) => self.size(size),
-            Ok(Xattr::Data(data)) => self.data(&data),
-            Err(e) => self.error(Errno::into(e)),
-        }
-    }
     default_error!();
 }
 
@@ -1092,13 +917,6 @@ impl ReplyLseek {
     /// Reply to a request with the given offset
     pub fn offset(mut self, offset: i64) {
         self.handler.offset(offset);
-    }
-    /// Reply to a request with the given Result<i64, Errno>
-    pub fn offset_or_err(self, result: Result<i64, Errno>) {
-        match result {
-            Ok(offset) => self.offset(offset),
-            Err(e) => self.error(Errno::into(e)),
-        }
     }
     default_error!();
 }
