@@ -40,9 +40,8 @@ use super::{
 /// implementations are provided here to get a mountable filesystem that does
 /// nothing.
 #[allow(clippy::too_many_arguments)]
-#[allow(unused_variables)]
-// This is the main API, so variables are named without the underscore even though the defaults may not use them.
-#[allow(clippy::missing_errors_doc)] // These default implementations do not define the conditions that cause errors
+#[allow(unused_variables)] // Default impl do not use their arguments.
+#[allow(clippy::missing_errors_doc)] // Default impl do not have conditional errors.
 pub trait Filesystem {
     /// Initialize filesystem.
     /// Called before any other filesystem method.
@@ -435,6 +434,7 @@ pub trait Filesystem {
         fh: u64,
         flags: i32,
         reply: ReplyEmpty,
+        /* blank space */
     ) {
         reply.ok();
     }
@@ -459,7 +459,11 @@ pub trait Filesystem {
     }
 
     /// Get file system statistics.
-    fn statfs(&mut self, req: &Request<'_>, ino: u64, reply: ReplyStatfs) {
+    fn statfs(
+        &mut self,
+        req: &Request<'_>, ino: u64, reply: ReplyStatfs, 
+            /* blank space */
+    ) {
         reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
     }
 
@@ -504,7 +508,9 @@ pub trait Filesystem {
     /// If `size` is 0, the size of the value should be sent with `reply.size()`.
     /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
     /// `reply.error(ERANGE)` if it doesn't.
-    fn listxattr(&mut self, req: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
+    fn listxattr(&mut self, req: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr,
+        /* blank space */
+    ) {
         warn!(
             "[Not Implemented] listxattr(ino: {:#x?}, size: {})",
             ino, size
@@ -513,7 +519,12 @@ pub trait Filesystem {
     }
 
     /// Remove an extended attribute.
-    fn removexattr(&mut self, req: &Request<'_>, ino: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn removexattr(
+        &mut self, req: &Request<'_>,
+        ino: u64, name: &OsStr,
+        reply: ReplyEmpty,
+        /* blank space */
+    ) {
         warn!(
             "[Not Implemented] removexattr(ino: {:#x?}, name: {:?})",
             ino, name

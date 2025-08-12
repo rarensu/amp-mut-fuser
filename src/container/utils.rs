@@ -1,51 +1,57 @@
 use super::core::Container;
 use std::borrow::Cow;
 #[cfg(all(feature = "locking", not(feature = "no-rc")))]
-use std::cell::RefCell;
+use std::cell::StaticCell;
 #[cfg(not(feature = "no-rc"))]
 use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(feature = "locking")]
 use std::sync::{Mutex, RwLock};
 
-// --- From Raw ---
+/* ----- From ----- */
 
-// ----- Simple Variants -----
+macro_rules! impl_from {
+    ($STRUCT:ty, $VARIANT:ident) => {
+        impl<T: Clone> From<$STRUCT> for Container<T> {fn from(value: $STRUCT) -> Self {Container::$VARIANT(value)}} 
+    };
+}
+
+// Simple Variants
 impl<T: Clone> From<(/* Empty */)>  for Container<T> {fn from((): ()) -> Self {Container::Empty}}
-impl<T: Clone> From<Box<[T]>> for Container<T> {fn from(value: Box<[T]>) -> Self {Container::Box(value)}}
-impl<T: Clone> From<Vec<T>> for Container<T> {fn from(value: Vec<T>) -> Self {Container::Vec(value)}}
-impl<T: Clone> From<&'static [T]> for Container<T> {fn from(value: &'static [T]) -> Self {Container::Ref(value)}}
-impl<T: Clone> From<Cow<'static, [T]>> for Container<T> {fn from(value: Cow<'static, [T]>) -> Self {Container::Cow(value)}}
+impl_from!(Box<[T]>, Box);
+impl_from!(Vec<T>, Vec);
+impl_from!(&'static [T], Static);
+impl_from!(Cow<'static, [T]>, Cow);
 #[cfg(not(feature = "no-rc"))]
-impl<T: Clone> From<Rc<[T]>> for Container<T> {fn from(value: Rc<[T]>) -> Self {Container::Rc(value)}}
-impl<T: Clone> From<Arc<[T]>> for Container<T> {fn from(value: Arc<[T]>) -> Self {Container::Arc(value)}}
-// ----- Compound Variants -----
-impl<T: Clone> From<&'static Box<[T]>> for Container<T> {fn from(value: &'static Box<[T]>) -> Self {Container::RefBox(value)}}
-impl<T: Clone> From<&'static Vec<T>> for Container<T> {fn from(value: &'static Vec<T>) -> Self {Container::RefVec(value)}}
-impl<T: Clone> From<Cow<'static, Box<[T]>>> for Container<T> {fn from(value: Cow<'static, Box<[T]>>) -> Self {Container::CowBox(value)}}
-impl<T: Clone> From<Cow<'static, Vec<T>>> for Container<T> {fn from(value: Cow<'static, Vec<T>>) -> Self {Container::CowVec(value)}}
+impl_from!(Rc<[T]>, Rc);
+impl_from!(Arc<[T]>, Arc);
+// Compound Variants
+impl_from!(&'static Box<[T]>, StaticBox);
+impl_from!(&'static Vec<T>, StaticVec);
+impl_from!(Cow<'static, Box<[T]>>, CowBox);
+impl_from!(Cow<'static, Vec<T>>, CowVec);
 #[cfg(not(feature = "no-rc"))]
-impl<T: Clone> From<Rc<Box<[T]>>> for Container<T> {fn from(value: Rc<Box<[T]>>) -> Self {Container::RcBox(value)}}
+impl_from!(Rc<Box<[T]>>, RcBox);
 #[cfg(not(feature = "no-rc"))]
-impl<T: Clone> From<Rc<Vec<T>>> for Container<T> {fn from(value: Rc<Vec<T>>) -> Self {Container::RcVec(value)}}
-impl<T: Clone> From<Arc<Box<[T]>>> for Container<T> {fn from(value: Arc<Box<[T]>>) -> Self {Container::ArcBox(value)}}
-impl<T: Clone> From<Arc<Vec<T>>> for Container<T> {fn from(value: Arc<Vec<T>>) -> Self {Container::ArcVec(value)}}
-// ----- Locking Variants -----
+impl_from!(Rc<Vec<T>>, RcVec);
+impl_from!(Arc<Box<[T]>>, ArcBox);
+impl_from!(Arc<Vec<T>>, ArcVec);
+// Locking Variants
 #[cfg(all(feature = "locking", not(feature = "no-rc")))]
-impl<T: Clone> From<Rc<RefCell<Box<[T]>>>> for Container<T> {fn from(value: Rc<RefCell<Box<[T]>>>) -> Self {Container::RcRefCellBox(value)}}
+impl_from!(Rc<RefCell<Box<[T]>>>, RcRefCellBox);
 #[cfg(all(feature = "locking", not(feature = "no-rc")))]
-impl<T: Clone> From<Rc<RefCell<Vec<T>>>> for Container<T> {fn from(value: Rc<RefCell<Vec<T>>>) -> Self {Container::RcRefCellVec(value)}}
+impl_from!(Rc<RefCell<Vec<T>>>, RcRefCellVec);
 #[cfg(feature = "locking")]
-impl<T: Clone> From<Arc<Mutex<Box<[T]>>>> for Container<T> {fn from(value: Arc<Mutex<Box<[T]>>>) -> Self {Container::ArcMutexBox(value)}}
+impl_from!(Arc<Mutex<Box<[T]>>>, ArcMutexBox);
 #[cfg(feature = "locking")]
-impl<T: Clone> From<Arc<Mutex<Vec<T>>>> for Container<T> {fn from(value: Arc<Mutex<Vec<T>>>) -> Self {Container::ArcMutexVec(value)}}
+impl_from!(Arc<Mutex<Vec<T>>>, ArcMutexVec);
 #[cfg(feature = "locking")]
-impl<T: Clone> From<Arc<RwLock<Box<[T]>>>> for Container<T> {fn from(value: Arc<RwLock<Box<[T]>>>) -> Self {Container::ArcRwLockBox(value)}}
+impl_from!(Arc<RwLock<Box<[T]>>>, ArcRwLockBox);
 #[cfg(feature = "locking")]
-impl<T: Clone> From<Arc<RwLock<Vec<T>>>> for Container<T> {fn from(value: Arc<RwLock<Vec<T>>>) -> Self {Container::ArcRwLockVec(value)}}
+impl_from!(Arc<RwLock<Vec<T>>>, ArcRwLockVec);
 
 
-// --- Clone ---
+/* ------ Clone ------ */
 
 // Clone for Container<T> where T is Clone
 impl<T: Clone> Clone for Container<T> {
@@ -56,14 +62,14 @@ impl<T: Clone> Clone for Container<T> {
             Container::Empty => Container::Empty,
             Container::Box(value) => Container::Box(value.clone()),
             Container::Vec(value) => Container::Vec(value.clone()),
-            Container::Ref(value) => Container::Ref(value),
+            Container::Static(value) => Container::Static(value),
             Container::Cow(value) => Container::Cow(value.clone()),
             #[cfg(not(feature = "no-rc"))]
             Container::Rc(value) => Container::Rc(value.clone()),
             Container::Arc(value) => Container::Arc(value.clone()),
             // ----- Compound Variants -----
-            Container::RefBox(value) => Container::RefBox(value),
-            Container::RefVec(value) => Container::RefVec(value),
+            Container::StaticBox(value) => Container::StaticBox(value),
+            Container::StaticVec(value) => Container::StaticVec(value),
             Container::CowBox(value) => Container::CowBox(value.clone()),
             Container::CowVec(value) => Container::CowVec(value.clone()),
             #[cfg(not(feature = "no-rc"))]

@@ -39,9 +39,8 @@ use std::time::{Duration, SystemTime};
 /// implementations are provided here to get a mountable filesystem that does
 /// nothing.
 #[allow(clippy::too_many_arguments)]
-#[allow(unused_variables)]
-// This is the main API, so variables are named without the underscore even though the defaults may not use them.
-#[allow(clippy::missing_errors_doc)] // These default implementations do not define the conditions that cause errors
+#[allow(unused_variables)] // Default impl do not use their arguments.
+#[allow(clippy::missing_errors_doc)] // Default impl do not have conditional errors.
 pub trait Filesystem {
     /// Initialize filesystem.
     /// Called before any other filesystem method.
@@ -433,6 +432,7 @@ pub trait Filesystem {
         ino: u64,
         fh: u64,
         flags: i32,
+        /* blank space */
     ) -> Result<(), Errno> {
         Ok(())
     }
@@ -506,6 +506,7 @@ pub trait Filesystem {
         req: RequestMeta,
         ino: u64,
         size: u32,
+        /* blank space */
     ) -> Result<Xattr, Errno> {
         warn!("[Not Implemented] listxattr(ino: {ino:#x?}, size: {size})");
         Err(Errno::ENOSYS)
@@ -518,6 +519,7 @@ pub trait Filesystem {
         req: RequestMeta,
         ino: u64,
         name: &OsStr,
+        /* blank space */
     ) -> Result<(), Errno> {
         warn!("[Not Implemented] removexattr(ino: {ino:#x?}, name: {name:?})");
         Err(Errno::ENOSYS)

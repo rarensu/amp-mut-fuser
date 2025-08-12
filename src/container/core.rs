@@ -23,7 +23,7 @@ pub enum Container<T: Clone + 'static> {
     /// An owned, growable, heap-allocated vector.
     Vec(Vec<T>),
     /// A borrowed slice.
-    Ref(&'static [T]),
+    Static(&'static [T]),
     /// A borrowed slice with copy-on-write.
     Cow(Cow<'static, [T]>),
     #[cfg(not(feature = "no-rc"))]
@@ -34,9 +34,9 @@ pub enum Container<T: Clone + 'static> {
     // ----- Compount Variants -----
     #[allow(clippy::borrowed_box)]
     /// A borrowed, fixed-size, heap-allocated slice.
-    RefBox(&'static Box<[T]>),
+    StaticBox(&'static Box<[T]>),
     /// A borrowed, immutable, heap-allocated vector.
-    RefVec(&'static Vec<T>),
+    StaticVec(&'static Vec<T>),
     /// A borrowed, fixed-size, heap-allocated vector, with copy-on-write.
     CowBox(Cow<'static, Box<[T]>>),
     /// A borrowed, immutable, heap-allocated vactor, with copy-on-write.
@@ -152,14 +152,14 @@ impl<T: Clone> Container<T> {
             Container::Empty => Ok(SafeBorrow::Empty),
             Container::Box(value) => Ok(SafeBorrow::Slice(value.as_ref())),
             Container::Vec(value) => Ok(SafeBorrow::Slice(value.as_ref())),
-            Container::Ref(value) => Ok(SafeBorrow::Slice(value)),
+            Container::Static(value) => Ok(SafeBorrow::Slice(value)),
             Container::Cow(value) => Ok(SafeBorrow::Slice(value.as_ref())),
             #[cfg(not(feature = "no-rc"))]
             Container::Rc(value) => Ok(SafeBorrow::Slice(value.as_ref())),
             Container::Arc(value) => Ok(SafeBorrow::Slice(value.as_ref())),
             // ----- Compound Variants -----
-            Container::RefBox(value) => Ok(SafeBorrow::Slice(value.as_ref())),
-            Container::RefVec(value) => Ok(SafeBorrow::Slice(value.as_ref())),
+            Container::StaticBox(value) => Ok(SafeBorrow::Slice(value.as_ref())),
+            Container::StaticVec(value) => Ok(SafeBorrow::Slice(value.as_ref())),
             Container::CowBox(value) => Ok(SafeBorrow::Slice(value.as_ref().as_ref())),
             Container::CowVec(value) => Ok(SafeBorrow::Slice(value.as_ref().as_ref())),
             #[cfg(not(feature = "no-rc"))]
@@ -194,14 +194,14 @@ impl<T: Clone> Container<T> {
             Container::Empty => &[], // the 'static zero-length slice of type T
             Container::Box(value) => value.as_ref(),
             Container::Vec(value) => value.as_ref(),
-            Container::Ref(value) => value,
+            Container::Static(value) => value,
             Container::Cow(value) => value.as_ref(),
             #[cfg(not(feature = "no-rc"))]
             Container::Rc(value) => value.as_ref(),
             Container::Arc(value) => value.as_ref(),
             // ----- Compound Variants -----
-            Container::RefBox(value) => value.as_ref(),
-            Container::RefVec(value) => value.as_ref(),
+            Container::StaticBox(value) => value.as_ref(),
+            Container::StaticVec(value) => value.as_ref(),
             Container::CowBox(value) => value.as_ref().as_ref(),
             Container::CowVec(value) => value.as_ref().as_ref(),
             #[cfg(not(feature = "no-rc"))]

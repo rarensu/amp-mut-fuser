@@ -290,6 +290,7 @@ impl RequestHandler {
                     result,
                     x.offset(),
                     x.size() as usize,
+                    /* blank space */
                 );
             }
             Operation::ReleaseDir(x) => {
@@ -484,6 +485,7 @@ impl RequestHandler {
                     result,
                     x.offset(),
                     x.size() as usize,
+                    /* blank space */
                 );
             }
             #[cfg(feature = "abi-7-23")]

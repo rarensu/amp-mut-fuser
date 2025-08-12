@@ -407,7 +407,7 @@ impl Filesystem for PassthroughFs {
         if (0..=2).contains(&offset) {
             // Case: offset in range:
             // Return a borrowed ('static) slice of entries.
-            Ok(DirentList::Ref(&ROOT_DIRENTS[offset as usize..]))
+            Ok(DirentList::Static(&ROOT_DIRENTS[offset as usize..]))
         } else {
             // Case: offset out of range:
             // No need to allocate anything; just use the Empty enum case.

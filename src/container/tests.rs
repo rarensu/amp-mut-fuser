@@ -30,7 +30,7 @@ mod t_u8 {
         }
 
         let borrowed_slice: &[u8] = &[4, 5, 6];
-        let c_borrowed1: Container<u8> = Container::Ref(borrowed_slice);
+        let c_borrowed1: Container<u8> = Container::Static(borrowed_slice);
         let c_borrowed2 = c_borrowed1.clone();
         assert_eq!(*c_borrowed1.lock().unwrap(), *c_borrowed2.lock().unwrap());
         assert_eq!(
@@ -67,20 +67,20 @@ mod t_u8 {
     fn borrowed_variants() {
         let data_slice: &'static [u8] = &[1, 2, 3];
 
-        // Container::Ref
-        let container_ref = Container::Ref(data_slice);
+        // Container::Static
+        let container_ref = Container::Static(data_slice);
         assert_eq!(&*container_ref.lock().unwrap(), data_slice);
 
         // Container::Cow (borrowed)
         let container_cow_borrowed = Container::Cow(std::borrow::Cow::Borrowed(data_slice));
         assert_eq!(&*container_cow_borrowed.lock().unwrap(), data_slice);
 
-        // Container::RefBox
-        let container_ref_box = Container::RefBox(&DATA_BOX);
+        // Container::StaticBox
+        let container_ref_box = Container::StaticBox(&DATA_BOX);
         assert_eq!(&*container_ref_box.lock().unwrap(), DATA_BOX.as_ref());
 
-        // Container::RefVec
-        let container_ref_vec = Container::RefVec(&DATA_VEC);
+        // Container::StaticVec
+        let container_ref_vec = Container::StaticVec(&DATA_VEC);
         assert_eq!(&*container_ref_vec.lock().unwrap(), DATA_VEC.as_slice());
 
         // Container::CowBox (borrowed)
@@ -172,7 +172,7 @@ mod t_u8 {
         #[cfg(not(feature = "no-rc"))]
         {
             // Container::RcRefCellBox
-            let rc_ref_cell_box = Rc::new(std::cell::RefCell::new(data_box_orig.clone()));
+            let rc_ref_cell_box = Rc::new(std::cell::StaticCell::new(data_box_orig.clone()));
             let container_rc_ref_cell_box: Container<u8> = Container::from(rc_ref_cell_box.clone());
             match container_rc_ref_cell_box.lock() {
                 Ok(guard) => assert_eq!(&*guard, data_box_orig.as_ref()),
@@ -180,7 +180,7 @@ mod t_u8 {
             }
 
             // Container::RcRefCellVec
-            let rc_ref_cell_vec = Rc::new(std::cell::RefCell::new(data_vec_orig.clone()));
+            let rc_ref_cell_vec = Rc::new(std::cell::StaticCell::new(data_vec_orig.clone()));
             let container_rc_ref_cell_vec: Container<u8> = Container::from(rc_ref_cell_vec.clone());
             match container_rc_ref_cell_vec.lock() {
                 Ok(guard) => assert_eq!(&*guard, data_vec_orig.as_slice()),

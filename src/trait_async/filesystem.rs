@@ -442,6 +442,7 @@ pub trait Filesystem: Send + Sync {
         ino: u64,
         fh: u64,
         flags: i32,
+        /* blank space */
     ) -> Result<(), Errno> {
         Ok(())
     }
@@ -515,6 +516,7 @@ pub trait Filesystem: Send + Sync {
         req: RequestMeta,
         ino: u64,
         size: u32,
+        /* blank space */
     ) -> Result<Xattr, Errno> {
         warn!("[Not Implemented] listxattr(ino: {ino:#x?}, size: {size})");
         Err(Errno::ENOSYS)
@@ -527,6 +529,7 @@ pub trait Filesystem: Send + Sync {
         req: RequestMeta,
         ino: u64,
         name: &OsStr,
+        /* blank space */
     ) -> Result<(), Errno> {
         warn!("[Not Implemented] removexattr(ino: {ino:#x?}, name: {name:?})");
         Err(Errno::ENOSYS)
