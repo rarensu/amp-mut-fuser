@@ -8,7 +8,7 @@ use crate::channel::Channel;
 #[cfg(feature = "abi-7-21")]
 use crate::ll::reply::DirentPlusBuf;
 use crate::ll::{self, reply::DirentBuf};
-use crate::{Container, Errno, KernelConfig};
+use crate::{Container, Errno, KernelConfig, SessionACL};
 use bytes::Bytes;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -48,15 +48,18 @@ pub(crate) struct ReplyHandler {
     pub unique: ll::RequestId,
     /// Closure to call for sending the reply
     pub sender: Option<Box<dyn ReplySender>>,
+    /// Session permission flag
+    pub acl: SessionACL,
 }
 
 impl ReplyHandler {
     /// Create a reply handler for a specific request identifier
-    pub(crate) fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyHandler {
+    pub(crate) fn new<S: ReplySender>(unique: u64, sender: S, acl: SessionACL) -> ReplyHandler {
         let sender = Box::new(sender);
         ReplyHandler {
             unique: ll::RequestId(unique),
             sender: Some(sender),
+            acl,
         }
     }
 
@@ -348,12 +351,14 @@ impl ReplyHandler {
 
     /// Reply to a request with a file entry
     pub fn entry(self, entry: &Entry) {
+        let mask = self.acl.to_mask();
         self.send_ll(&ll::Response::new_entry(
             ll::INodeNo(entry.ino),
             ll::Generation(entry.generation.unwrap_or(1)),
             entry.file_ttl,
             &entry.attr,
             entry.attr_ttl,
+            mask,
         ));
     }
 
@@ -367,7 +372,8 @@ impl ReplyHandler {
 
     /// Reply to a request with file attributes
     pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
-        self.send_ll(&ll::Response::new_attr(ttl, &attr.into()));
+        let mask = self.acl.to_mask();
+        self.send_ll(&ll::Response::new_attr(ttl, &attr, mask));
     }
 
     /// Reply to a request with file attributes or an error
@@ -616,7 +622,7 @@ impl ReplyHandler {
                 "ReplyHandler::dirplus: processing item with offset #{}",
                 dirent.offset
             );
-            match buf.push(dirent, entry) {
+            match buf.push(dirent, entry, self.acl.to_mask()) {
                 Ok(true) => {
                     log::debug!("ReplyHandler::dirplus: buffer full!");
                     break;
@@ -768,7 +774,7 @@ mod test {
                 0x00, 0x00, 0x12, 0x34, 0x78, 0x56,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.send_ll(&ll::Response::new_data(data.as_bytes()));
     }
 
@@ -780,7 +786,7 @@ mod test {
                 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.error(Errno::from_i32(66));
     }
 
@@ -792,7 +798,7 @@ mod test {
                 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.ok();
     }
 
@@ -804,7 +810,7 @@ mod test {
                 0x00, 0x00, 0xde, 0xad, 0xbe, 0xef,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.data(&[0xde, 0xad, 0xbe, 0xef]);
     }
 
@@ -910,7 +916,7 @@ mod test {
         // test reply will be compare with the expected message
         let sender = AssertSender { expected };
         // prepare the test reply
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = default_attr_struct!();
         // send the test reply
@@ -941,7 +947,7 @@ mod test {
         expected[0] = expected.len() as u8;
 
         let sender = AssertSender { expected };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = default_attr_struct!();
         replyhandler.attr(&attr, &ttl);
@@ -957,7 +963,7 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         replyhandler.xtimes(XTimes {
             bkuptime: time,
@@ -1014,7 +1020,7 @@ mod test {
         expected.extend(&default_open_bytes!());
 
         let sender = AssertSender { expected };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.opened(&default_open_struct!());
     }
 
@@ -1026,7 +1032,7 @@ mod test {
                 0x00, 0x00, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.written(0x1122);
     }
 
@@ -1043,7 +1049,7 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.statfs(&Statfs {
             blocks: 0x11,
             bfree: 0x22,
@@ -1085,7 +1091,7 @@ mod test {
         expected[0] = (expected.len()) as u8;
 
         let sender = AssertSender { expected };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = default_attr_struct!();
         let open = default_open_struct!();
@@ -1110,7 +1116,7 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x44, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.locked(&Lock {
             start: 0x11,
             end: 0x22,
@@ -1127,7 +1133,7 @@ mod test {
                 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.bmap(0x1234);
     }
 
@@ -1143,7 +1149,7 @@ mod test {
                 0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         let entries = vec![
             Dirent {
                 ino: 0xaabb,
@@ -1220,7 +1226,7 @@ mod test {
         expected[0] = (expected.len()) as u8;
         // test reply will be compared to expected
         let sender = AssertSender { expected };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr1 = FileAttr {
@@ -1287,7 +1293,7 @@ mod test {
                 0x00, 0x00, 0x78, 0x56, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.xattr(Xattr::Size(0x12345678));
     }
 
@@ -1299,7 +1305,7 @@ mod test {
                 0x00, 0x00, 0x11, 0x22, 0x33, 0x44,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender, SessionACL::All);
         replyhandler.xattr(Xattr::Data(Bytes::from_static(&[0x11, 0x22, 0x33, 0x44])));
     }
 
@@ -1313,7 +1319,7 @@ mod test {
     #[test]
     fn threaded_reply() {
         let (tx, rx) = sync_channel::<()>(1);
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, tx);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, tx, SessionACL::All);
         thread::spawn(move || {
             replyhandler.ok();
         });

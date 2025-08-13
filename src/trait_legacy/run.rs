@@ -30,7 +30,7 @@ where
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
             match self.chs[CH_IDX].receive(&mut buffer) {
-                Ok(data) => match RequestHandler::new(self.chs[CH_IDX].clone(), data) {
+                Ok(data) => match RequestHandler::new(self.chs[CH_IDX].clone(), data, self.meta.allowed) {
                     // Dispatch request
                     Some(req) => {
                         debug!("Request {} on channel {CH_IDX}.", req.meta.unique);

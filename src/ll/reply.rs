@@ -2,7 +2,7 @@ use std::{
     convert::TryInto,
     io::IoSlice,
     mem::size_of,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH}, u16,
 };
 
 use crate::FileType;
@@ -80,6 +80,7 @@ impl<'a> Response<'a> {
         file_ttl: Duration,
         attr: &crate::FileAttr,
         attr_ttl: Duration,
+        mask: u16,
     ) -> Self {
         let d = abi::fuse_entry_out {
             nodeid: ino.into(),
@@ -88,17 +89,17 @@ impl<'a> Response<'a> {
             attr_valid: attr_ttl.as_secs(),
             entry_valid_nsec: file_ttl.subsec_nanos(),
             attr_valid_nsec: attr_ttl.subsec_nanos(),
-            attr: fuse_attr_from_attr(attr),
+            attr: fuse_attr_from_attr(attr, mask),
         };
         Self::from_struct(d.as_bytes())
     }
 
-    pub(crate) fn new_attr(ttl: &Duration, attr: &Attr) -> Self {
+    pub(crate) fn new_attr(ttl: &Duration, attr: &crate::FileAttr, mask: u16) -> Self {
         let r = abi::fuse_attr_out {
             attr_valid: ttl.as_secs(),
             attr_valid_nsec: ttl.subsec_nanos(),
             dummy: 0,
-            attr: attr.attr,
+            attr: fuse_attr_from_attr(attr, mask),
         };
         Self::from_struct(&r)
     }
@@ -281,7 +282,7 @@ pub(crate) fn time_from_system_time(system_time: &SystemTime) -> (i64, u32) {
 #[allow(trivial_numeric_casts)]
 #[allow(clippy::unnecessary_cast)]
 /// Returns the mode for a given file kind and permission
-pub(crate) fn mode_from_kind_and_perm(kind: FileType, perm: u16) -> u32 {
+pub(crate) fn mode_from_kind_and_perm(kind: FileType, perm: u16, mask: u16) -> u32 {
     (match kind {
         FileType::NamedPipe => libc::S_IFIFO,
         FileType::CharDevice => libc::S_IFCHR,
@@ -291,10 +292,10 @@ pub(crate) fn mode_from_kind_and_perm(kind: FileType, perm: u16) -> u32 {
         FileType::Symlink => libc::S_IFLNK,
         FileType::Socket => libc::S_IFSOCK,
     }) as u32
-        | u32::from(perm)
+        | u32::from(perm & mask)
 }
 /// Returns a `fuse_attr` from `FileAttr`
-pub(crate) fn fuse_attr_from_attr(attr: &crate::FileAttr) -> abi::fuse_attr {
+pub(crate) fn fuse_attr_from_attr(attr: &crate::FileAttr, mask: u16) -> abi::fuse_attr {
     let (atime_secs, atime_nanos) = time_from_system_time(&attr.atime);
     let (mtime_secs, mtime_nanos) = time_from_system_time(&attr.mtime);
     let (ctime_secs, ctime_nanos) = time_from_system_time(&attr.ctime);
@@ -315,7 +316,7 @@ pub(crate) fn fuse_attr_from_attr(attr: &crate::FileAttr) -> abi::fuse_attr {
         ctimensec: ctime_nanos,
         #[cfg(target_os = "macos")]
         crtimensec: crtime_nanos,
-        mode: mode_from_kind_and_perm(attr.kind, attr.perm),
+        mode: mode_from_kind_and_perm(attr.kind, attr.perm, mask),
         nlink: attr.nlink,
         uid: attr.uid,
         gid: attr.gid,
@@ -337,14 +338,14 @@ pub struct Attr {
 impl From<&crate::FileAttr> for Attr {
     fn from(attr: &crate::FileAttr) -> Self {
         Self {
-            attr: fuse_attr_from_attr(attr),
+            attr: fuse_attr_from_attr(attr, u16::MAX),
         }
     }
 }
 impl From<crate::FileAttr> for Attr {
     fn from(attr: crate::FileAttr) -> Self {
         Self {
-            attr: fuse_attr_from_attr(&attr),
+            attr: fuse_attr_from_attr(&attr, u16::MAX),
         }
     }
 }
@@ -414,7 +415,7 @@ impl DirentBuf {
             ino: ent.ino,
             off: ent.offset,
             namelen: ent.name.len().try_into().expect("Name too long"),
-            typ: mode_from_kind_and_perm(ent.kind, 0) >> 12,
+            typ: mode_from_kind_and_perm(ent.kind, 0, 0) >> 12,
         };
         Ok(self.0.push([header.as_bytes(), &ent.name]))
     }
@@ -441,7 +442,7 @@ impl DirentPlusBuf {
     /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
-    pub fn push(&mut self, x: &crate::Dirent, y: &crate::Entry) -> Result<bool, Errno> {
+    pub fn push(&mut self, x: &crate::Dirent, y: &crate::Entry, mask: u16) -> Result<bool, Errno> {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {
                 nodeid: y.ino,
@@ -450,13 +451,13 @@ impl DirentPlusBuf {
                 attr_valid: y.attr_ttl.as_secs(),
                 entry_valid_nsec: y.file_ttl.subsec_nanos(),
                 attr_valid_nsec: y.attr_ttl.subsec_nanos(),
-                attr: fuse_attr_from_attr(&y.attr),
+                attr: fuse_attr_from_attr(&y.attr, mask),
             },
             dirent: abi::fuse_dirent {
                 ino: x.ino,
                 off: x.offset,
                 namelen: x.name.len().try_into().expect("Name too long"),
-                typ: mode_from_kind_and_perm(x.kind, 0) >> 12,
+                typ: mode_from_kind_and_perm(x.kind, 0, 0) >> 12,
             },
         };
         Ok(self.0.push([header.as_bytes(), &x.name]))
@@ -466,7 +467,7 @@ impl DirentPlusBuf {
 #[cfg(test)]
 #[allow(clippy::cast_possible_truncation)] // these byte literals are not in danger of being truncated
 mod test {
-    use std::num::NonZeroI32;
+    use std::{num::NonZeroI32, u16};
 
     use super::super::test::ioslice_to_vec;
     #[allow(clippy::wildcard_imports)]
@@ -563,7 +564,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr, ttl);
+        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr, ttl, u16::MAX);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected
@@ -622,7 +623,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_attr(&ttl, &attr.into());
+        let r = Response::new_attr(&ttl, &attr.into(), u16::MAX);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected

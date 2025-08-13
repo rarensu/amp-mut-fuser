@@ -43,7 +43,7 @@ pub const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
 /// up to `MAX_WRITE_SIZE` bytes in a write request, we use that value plus some extra space.
 pub const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
 
-#[derive(Default, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
 /// How requests should be filtered based on the calling UID.
 pub enum SessionACL {
     /// Allow requests from any user. Corresponds to the `allow_other` mount option.
@@ -53,6 +53,16 @@ pub enum SessionACL {
     /// Allow requests from the owning UID. This is FUSE's default mode of operation.
     #[default]
     Owner,
+}
+
+impl SessionACL {
+    pub(crate) fn to_mask(&self) -> u16 {
+        match self {
+            Self::All => 0x777,
+            Self::Owner => 0x700,
+            Self::RootAndOwner => 0x700,
+        }
+    }
 }
 
 /// Session metadata
