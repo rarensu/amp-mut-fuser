@@ -1,6 +1,6 @@
 use crate::ll::{self, Errno, Operation, Request as AnyRequest, fuse_abi as abi};
 use crate::request::RequestHandler;
-use crate::session::{SessionMeta, SessionACL};
+use crate::session::{SessionACL, SessionMeta};
 use crate::{Forget, KernelConfig};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -402,11 +402,14 @@ impl RequestHandler {
                 match result {
                     Ok(()) => {
                         reply!(ok);
-                    },
-                    Err(Errno::ENOSYS) if se_meta.allowed != SessionACL::All => {
+                    }
+                    Err(Errno::ENOSYS)
+                        if (se_meta.allowed == SessionACL::Owner
+                            || se_meta.allowed == SessionACL::RootAndOwner) =>
+                    {
                         // Access was not denied (see above) so it is allowed.
                         reply!(ok);
-                    },
+                    }
                     Err(e) => {
                         reply!(error, e);
                     }

@@ -369,11 +369,14 @@ impl RequestHandler {
                 );
                 match result {
                     Ok(()) => self.replyhandler.ok(),
-                    Err(Errno::ENOSYS) if se_meta.allowed != SessionACL::All => {
+                    Err(Errno::ENOSYS)
+                        if (se_meta.allowed == SessionACL::Owner
+                            || se_meta.allowed == SessionACL::RootAndOwner) =>
+                    {
                         // Access was not denied (see above) so it is allowed.
                         self.replyhandler.ok();
-                    },
-                    Err(e) => self.replyhandler.error(e)
+                    }
+                    Err(e) => self.replyhandler.error(e),
                 }
             }
             Operation::Create(x) => {

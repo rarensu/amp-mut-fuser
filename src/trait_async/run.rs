@@ -245,7 +245,8 @@ where
             #[cfg(feature = "tokio")]
             let res = {
                 let notifier_copy = notifier.clone();
-                tokio::task::spawn_blocking(async move || notifier_copy.notify(notification)).await
+                tokio::task::spawn_blocking(async move || notifier_copy.notify(notification))
+                    .await
                     .expect("unable to recover a background i/o thread")
                     .await
             };
