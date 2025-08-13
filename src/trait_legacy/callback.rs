@@ -681,7 +681,7 @@ impl CallbackDirectory for DirectoryHandler {
                 ino,
                 off: offset,
                 namelen,
-                typ: mode_from_kind_and_perm(kind, 0, 0) >> 12,
+                typ: mode_from_kind_and_perm(kind, 0) >> 12,
             };
             let res = buf.push([header.as_bytes(), name.as_encoded_bytes()]);
             self.buf = Some(buf);
@@ -798,13 +798,13 @@ impl CallbackDirectoryPlus for DirectoryPlusHandler {
                     attr_valid: ttl.as_secs(),
                     entry_valid_nsec: ttl.subsec_nanos(),
                     attr_valid_nsec: ttl.subsec_nanos(),
-                    attr: fuse_attr_from_attr(attr, u16::MAX),
+                    attr: fuse_attr_from_attr(attr),
                 },
                 dirent: crate::ll::fuse_abi::fuse_dirent {
                     ino,
                     off: offset,
                     namelen,
-                    typ: mode_from_kind_and_perm(attr.kind, 0, 0) >> 12,
+                    typ: mode_from_kind_and_perm(attr.kind, 0) >> 12,
                 },
             };
             let res = buf.push([header.as_bytes(), name.as_encoded_bytes()]);

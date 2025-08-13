@@ -51,7 +51,7 @@ pub struct Forget {
 
 impl RequestHandler {
     /// Create a new request from the given data
-    pub(crate) fn new(ch: Channel, data: Vec<u8>, acl: SessionACL) -> Option<RequestHandler> {
+    pub(crate) fn new(ch: Channel, data: Vec<u8>) -> Option<RequestHandler> {
         let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
@@ -65,7 +65,7 @@ impl RequestHandler {
             gid: request.gid(),
             pid: request.pid(),
         };
-        let replyhandler = ReplyHandler::new(request.unique().into(), ch, acl);
+        let replyhandler = ReplyHandler::new(request.unique().into(), ch);
         Some(Self {
             request,
             meta,

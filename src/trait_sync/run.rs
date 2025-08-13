@@ -103,7 +103,7 @@ where
 
     fn handle_one_request_sync(self: &mut Session<L, S, A>, ch_idx: usize, data: Vec<u8>) -> bool {
         // Parse data
-        match RequestHandler::new(self.chs[ch_idx].clone(), data, self.meta.allowed) {
+        match RequestHandler::new(self.chs[ch_idx].clone(), data) {
             // Request is valid
             Some(req) => {
                 debug!("Request {} on channel {ch_idx}.", req.meta.unique);
