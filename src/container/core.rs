@@ -183,12 +183,14 @@ impl<T: Clone> Container<T> {
             Container::ArcRwLockVec(value) => Ok(SafeBorrow::ArcRwLockVec(value.read()?)),
         }
     }
+}
 
-    /// Returns a borrowed slice &[] from the container.
+#[cfg(not(feature = "locking"))]
+impl<T: Clone> AsRef<[T]> for Container<T> {
+    /// Returns a borrowed slice `&[]` from the `Container`.
     /// Only available if locking variants are disabled.
     /// Hint: use `lock()` to handle locking variants.
-    #[cfg(not(feature = "locking"))]
-    pub fn as_ref(&self) -> &[T] {
+    fn as_ref(&self) -> &[T] {
         match self {
             // ----- Simple Variants -----
             Container::Empty => &[], // the 'static zero-length slice of type T
@@ -215,6 +217,7 @@ impl<T: Clone> Container<T> {
         }
     }
 }
+
 
 #[cfg(not(feature = "locking"))]
 impl<T: Clone> Deref for Container<T> {

@@ -61,7 +61,7 @@ impl Request<'_> {
     }
     /// Returns a copy of this Request's data as a RequestMeta
     pub fn meta(&self) -> RequestMeta {
-        self.meta.clone()
+        *self.meta
     }
 }
 

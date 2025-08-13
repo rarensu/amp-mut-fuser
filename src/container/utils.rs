@@ -123,10 +123,7 @@ impl<T: Clone> Container<T> {
     /// Only available if locking variants are disabled.
     #[must_use]
     pub fn to_vec(&self) -> Vec<T> {
-        self.as_ref()
-            .iter()
-            .map(|t: &T| t.clone())
-            .collect::<Vec<T>>()
+        self.as_ref().to_vec()
     }
 
     /// Converts the container to an Owned `Container<T>` by cloning each `item: T`.

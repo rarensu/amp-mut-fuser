@@ -124,7 +124,7 @@ where
             // Read a FUSE request (await until read succeeds)
             // Move buffer into the helper function, receive the buffer back if it succeeds.
             let (result, updated_buffer) = se.chs[ch_idx].receive_async(buffer).await;
-            if updated_buffer.len() > 0 {
+            if !updated_buffer.is_empty() {
                 // Re-use the buffer for the next loop iteration
                 buffer = updated_buffer;
             } else {
@@ -184,7 +184,7 @@ where
 
     /// Process notifications in a single task.
     /// This variant executes sleep() to prevent busy loops.
-    #[cfg(all(feature = "abi-7-11"))]
+    #[cfg(feature = "abi-7-11")]
     #[allow(unused)] // this function is reserved for future multithreaded implementations
     pub async fn do_notifications_async(
         se: Arc<Session<L, S, A>>,
@@ -227,7 +227,7 @@ where
         Ok(())
     }
 
-    #[cfg(all(feature = "abi-7-11"))]
+    #[cfg(feature = "abi-7-11")]
     async fn handle_one_notification_async(
         se: &Session<L, S, A>,
         notification: Notification,
@@ -334,7 +334,7 @@ where
             let updated_buffer = buffer;
             #[cfg(feature = "tokio")]
             let (result, updated_buffer) = se.chs[ch_idx].try_receive_async(updated_buffer).await;
-            if updated_buffer.len() > 0 {
+            if !updated_buffer.is_empty() {
                 // Re-use the buffer for the next loop iteration
                 buffer = updated_buffer;
             } else {

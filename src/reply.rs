@@ -34,7 +34,7 @@ impl fmt::Debug for Box<dyn ReplySender> {
 /// Specialized implementation to send Filesystem replies to a FUSE Channel
 impl ReplySender for Channel {
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-        Channel::send(&self, data)
+        Channel::send(self, data)
     }
 }
 
@@ -367,7 +367,7 @@ impl ReplyHandler {
 
     /// Reply to a request with file attributes
     pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
-        self.send_ll(&ll::Response::new_attr(&ttl, &attr.into()));
+        self.send_ll(&ll::Response::new_attr(ttl, &attr.into()));
     }
 
     /// Reply to a request with file attributes or an error

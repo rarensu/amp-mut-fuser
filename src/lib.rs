@@ -304,10 +304,11 @@ impl KernelConfig {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, Default, PartialEq, Debug)]
 /// This enum is an optional way for the Filesystem to report its status to a Session thread.
 pub enum FsStatus {
     /// Default may be used when the Filesystem does not implement a status
+    #[default]
     Default,
     /// Ready indicates the Filesystem has no actions in progress
     Ready,
@@ -315,12 +316,6 @@ pub enum FsStatus {
     Busy,
     /// Stopped indicates that the Filesystem will not accept new requests
     Stopped, // This list is a work in progress and I'm still trying to figure out what values would be useful
-}
-
-impl Default for FsStatus {
-    fn default() -> Self {
-        FsStatus::Default
-    }
 }
 
 /// Mount the given filesystem to the given mountpoint. This function will

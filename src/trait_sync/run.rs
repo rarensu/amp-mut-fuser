@@ -124,7 +124,7 @@ where
     }
 
     /// Process notifications, blocking a single thread.
-    #[cfg(all(feature = "abi-7-11"))]
+    #[cfg(feature = "abi-7-11")]
     #[allow(unused)] // this function is reserved for future multithreaded implementations
     pub fn do_notifications_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
         let sender = self.get_ch(ch_idx);
@@ -159,7 +159,7 @@ where
         Ok(())
     }
 
-    #[cfg(all(feature = "abi-7-11",))]
+    #[cfg(feature = "abi-7-11")]
     fn handle_one_notification_sync(
         self: &mut Session<L, S, A>,
         notification: Notification,
