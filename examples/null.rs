@@ -14,7 +14,7 @@ fn main() {
 #[cfg(test)]
 mod test {
     use fuser::{Errno, RequestMeta, trait_sync::Filesystem};
-    use std::path::PathBuf;
+    use std::ffi::OsString;
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta {
@@ -31,7 +31,7 @@ mod test {
         let req = dummy_meta();
 
         // Test lookup
-        let lookup_result = nullfs.lookup(req, 1, &PathBuf::from("nonexistent"));
+        let lookup_result = nullfs.lookup(req, 1, &OsString::from("nonexistent"));
         assert!(lookup_result.is_err(), "Lookup should fail for NullFS");
         if let Err(e) = lookup_result {
             assert_eq!(e, Errno::ENOSYS, "Lookup should return ENOSYS");
@@ -59,7 +59,7 @@ mod test {
         }
 
         // Test create
-        let create_result = nullfs.create(req, 1, &PathBuf::from("testfile"), 0o644, 0, 0);
+        let create_result = nullfs.create(req, 1, &OsString::from("testfile"), 0o644, 0, 0);
         assert!(create_result.is_err(), "Create should fail for NullFS");
         if let Err(e) = create_result {
             assert_eq!(e, Errno::ENOSYS, "Create should return ENOSYS");

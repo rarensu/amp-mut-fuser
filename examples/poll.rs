@@ -11,9 +11,8 @@
 
 use std::{
     convert::TryInto,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     os::unix::ffi::{OsStrExt, OsStringExt}, // for converting to and from
-    path::Path,
     time::{Duration, UNIX_EPOCH},
 };
 
@@ -142,12 +141,12 @@ impl Filesystem for FSelFS {
         FsStatus::Ready
     }
 
-    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
-        if parent != FUSE_ROOT_ID || name.as_os_str().len() != 1 {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
+        if parent != FUSE_ROOT_ID || name.len() != 1 {
             return Err(Errno::ENOENT);
         }
 
-        let name_bytes = name.as_os_str().as_bytes();
+        let name_bytes = name.as_bytes();
 
         let idx = match name_bytes[0] {
             b'0'..=b'9' => name_bytes[0] - b'0',

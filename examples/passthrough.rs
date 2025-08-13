@@ -15,6 +15,7 @@ use fuser::{
     Notification, Open, RequestMeta, consts, trait_async::Filesystem,
 };
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -299,7 +300,7 @@ impl Filesystem for PassthroughFs {
     // while the kernel is waiting for a response to an open operation in progress.
     // Therefore, this example requests the backing id on lookup instead of on open.
     #[allow(clippy::cast_sign_loss)]
-    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
         log::info!("lookup(name={name:?})");
         if parent == 1 && name.to_str() == Some("passthrough") {
             if !self.any_backing_status(2) {
@@ -482,7 +483,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::ffi::OsString;
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta {
@@ -500,7 +501,7 @@ mod tests {
         assert!(fs.init_notification_sender(tx));
 
         // Should react to lookup with a pending entry and a notification
-        futures::executor::block_on(fs.lookup(dummy_meta(), 1, &PathBuf::from("passthrough")))
+        futures::executor::block_on(fs.lookup(dummy_meta(), 1, &OsString::from("passthrough")))
             .unwrap();
         assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
         assert!(matches!(

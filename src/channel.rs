@@ -186,7 +186,7 @@ impl Channel {
             // Tokio implementation
             #[cfg(feature = "tokio")]
             let (res, new_buffer) = self.receive_async(buffer).await;
-            (res.map(|data| Some(data)), new_buffer)
+            (res.map(Some), new_buffer)
         } else {
             (Ok(None), buffer)
         }

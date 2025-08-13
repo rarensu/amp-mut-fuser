@@ -13,7 +13,6 @@ use fuser::{
 };
 use log::{debug, info};
 use std::ffi::OsStr;
-use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -100,7 +99,7 @@ impl FiocFS {
 
 #[async_trait]
 impl Filesystem for FiocFS {
-    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
         if parent == 1 && name == OsStr::new("fioc") {
             Ok(Entry {
                 ino: self.fioc_file_attr.ino,

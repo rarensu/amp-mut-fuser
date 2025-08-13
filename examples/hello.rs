@@ -4,7 +4,7 @@ use fuser::{
     Dirent, DirentList, Entry, Errno, FileAttr, FileType, MountOption, RequestMeta,
     trait_async::Filesystem,
 };
-use std::path::Path;
+use std::ffi::OsStr;
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -77,8 +77,8 @@ impl HelloFS {
 
 #[async_trait]
 impl Filesystem for HelloFS {
-    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
-        if parent == 1 && name.as_os_str().as_encoded_bytes() == self.hello_filename {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
+        if parent == 1 && name.as_encoded_bytes() == self.hello_filename {
             Ok(Entry {
                 ino: 2,
                 generation: None,
@@ -233,9 +233,8 @@ fn main() {
 #[cfg(test)]
 mod test {
     use fuser::{Errno, FileType, RequestMeta, trait_async::Filesystem};
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::os::unix::ffi::OsStrExt;
-    use std::path::PathBuf;
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta {
@@ -251,7 +250,7 @@ mod test {
         let hellofs = super::HelloFS::new();
         let req = dummy_meta();
         let result =
-            futures::executor::block_on(hellofs.lookup(req, 1, &PathBuf::from("hello.txt")));
+            futures::executor::block_on(hellofs.lookup(req, 1, &OsString::from("hello.txt")));
         assert!(result.is_ok(), "Lookup for hello.txt should succeed");
         if let Ok(entry) = result {
             assert_eq!(
@@ -356,7 +355,7 @@ mod test {
             &hellofs,
             req,
             1,
-            &PathBuf::from("newfile.txt"),
+            &OsString::from("newfile.txt"),
             0o644,
             0,
             0,

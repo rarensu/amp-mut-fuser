@@ -536,8 +536,8 @@ impl Filesystem for SimpleFS {
 
     async fn destroy(&self) {}
 
-    async fn lookup(&self, req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
-        if name.as_os_str().len() > MAX_NAME_LENGTH as usize {
+    async fn lookup(&self, req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
+        if name.len() > MAX_NAME_LENGTH as usize {
             return Err(Errno::ENAMETOOLONG);
         }
         let parent_attrs = match self.get_inode(parent) {
@@ -557,7 +557,7 @@ impl Filesystem for SimpleFS {
             return Err(Errno::EACCES);
         }
 
-        match self.lookup_name(parent, name.as_os_str()) {
+        match self.lookup_name(parent, name) {
             Ok(attrs) => Ok(Entry {
                 ino: attrs.inode,
                 generation: None,
@@ -777,7 +777,7 @@ impl Filesystem for SimpleFS {
         &self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         mode: u32,
         _umask: u32,
         _rdev: u32,
@@ -795,7 +795,7 @@ impl Filesystem for SimpleFS {
             return Err(Errno::EPERM);
         }
 
-        if self.lookup_name(parent, name.as_os_str()).is_ok() {
+        if self.lookup_name(parent, name).is_ok() {
             return Err(Errno::EEXIST);
         }
 
@@ -859,7 +859,7 @@ impl Filesystem for SimpleFS {
         let mut entries = self
             .get_directory_content(parent)
             .map_err(Errno::from_i32)?;
-        entries.insert(name.as_os_str().as_bytes().to_vec(), (inode, attrs.kind));
+        entries.insert(name.as_bytes().to_vec(), (inode, attrs.kind));
         self.write_directory_content(parent, &entries);
         Ok(Entry {
             ino: attrs.inode,
@@ -874,13 +874,13 @@ impl Filesystem for SimpleFS {
         &self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         mode: u32,
         #[allow(unused_variables)] _umask: u32,
     ) -> Result<Entry, Errno> {
         let _guard = self.state_lock.lock().unwrap();
         debug!("mkdir() called with {parent:?} {name:?} {mode:o}");
-        if self.lookup_name(parent, name.as_os_str()).is_ok() {
+        if self.lookup_name(parent, name).is_ok() {
             return Err(Errno::EEXIST);
         }
 
@@ -944,10 +944,7 @@ impl Filesystem for SimpleFS {
         let mut entries = self
             .get_directory_content(parent)
             .map_err(Errno::from_i32)?;
-        entries.insert(
-            name.as_os_str().as_bytes().to_vec(),
-            (inode, FileKind::Directory),
-        );
+        entries.insert(name.as_bytes().to_vec(), (inode, FileKind::Directory));
         self.write_directory_content(parent, &entries);
         Ok(Entry {
             ino: attrs.inode,
@@ -958,10 +955,10 @@ impl Filesystem for SimpleFS {
         })
     }
 
-    async fn unlink(&self, req: RequestMeta, parent: u64, name: &Path) -> Result<(), Errno> {
+    async fn unlink(&self, req: RequestMeta, parent: u64, name: &OsStr) -> Result<(), Errno> {
         let _guard = self.state_lock.lock().unwrap();
         debug!("unlink() called with {parent:?} {name:?}");
-        let mut attrs = match self.lookup_name(parent, name.as_os_str()) {
+        let mut attrs = match self.lookup_name(parent, name) {
             Ok(attrs) => attrs,
             Err(error_code) => {
                 return Err(Errno::from_i32(error_code));
@@ -1006,16 +1003,16 @@ impl Filesystem for SimpleFS {
         self.gc_inode(&attrs);
 
         let mut entries = self.get_directory_content(parent).unwrap();
-        entries.remove(name.as_os_str().as_bytes());
+        entries.remove(name.as_bytes());
         self.write_directory_content(parent, &entries);
 
         Ok(())
     }
 
-    async fn rmdir(&self, req: RequestMeta, parent: u64, name: &Path) -> Result<(), Errno> {
+    async fn rmdir(&self, req: RequestMeta, parent: u64, name: &OsStr) -> Result<(), Errno> {
         let _guard = self.state_lock.lock().unwrap();
         debug!("rmdir() called with {parent:?} {name:?}");
-        let mut attrs = match self.lookup_name(parent, name.as_os_str()) {
+        let mut attrs = match self.lookup_name(parent, name) {
             Ok(attrs) => attrs,
             Err(error_code) => {
                 return Err(Errno::from_i32(error_code));
@@ -1070,7 +1067,7 @@ impl Filesystem for SimpleFS {
         let mut entries = self
             .get_directory_content(parent)
             .map_err(Errno::from_i32)?;
-        entries.remove(name.as_os_str().as_bytes());
+        entries.remove(name.as_bytes());
         self.write_directory_content(parent, &entries);
 
         Ok(())
@@ -1080,7 +1077,7 @@ impl Filesystem for SimpleFS {
         &self,
         req: RequestMeta,
         parent: u64,
-        link_name: &Path,
+        link_name: &OsStr,
         target: &Path,
     ) -> Result<Entry, Errno> {
         let _guard = self.state_lock.lock().unwrap();
@@ -1126,8 +1123,7 @@ impl Filesystem for SimpleFS {
             xattrs: BTreeMap::default(),
         };
 
-        if let Err(error_code) =
-            self.insert_link(req, parent, link_name.as_os_str(), inode, FileKind::Symlink)
+        if let Err(error_code) = self.insert_link(req, parent, link_name, inode, FileKind::Symlink)
         {
             return Err(Errno::from_i32(error_code));
         }
@@ -1155,16 +1151,16 @@ impl Filesystem for SimpleFS {
         &self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         new_parent: u64,
-        new_name: &Path,
+        new_name: &OsStr,
         flags: u32,
     ) -> Result<(), Errno> {
         debug!(
             "rename() called with: source {parent:?} {name:?}, \
             destination {new_parent:?} {new_name:?}, flags {flags:#b}",
         );
-        let mut inode_attrs = match self.lookup_name(parent, name.as_os_str()) {
+        let mut inode_attrs = match self.lookup_name(parent, name) {
             Ok(attrs) => attrs,
             Err(error_code) => {
                 return Err(Errno::from_i32(error_code));
@@ -1222,7 +1218,7 @@ impl Filesystem for SimpleFS {
 
         // "Sticky bit" handling in new_parent
         if new_parent_attrs.mode & libc::S_ISVTX as u16 != 0 {
-            if let Ok(existing_attrs) = self.lookup_name(new_parent, new_name.as_os_str()) {
+            if let Ok(existing_attrs) = self.lookup_name(new_parent, new_name) {
                 if req.uid != 0 && req.uid != new_parent_attrs.uid && req.uid != existing_attrs.uid
                 {
                     return Err(Errno::EACCES);
@@ -1232,7 +1228,7 @@ impl Filesystem for SimpleFS {
 
         #[cfg(target_os = "linux")]
         if flags & libc::RENAME_EXCHANGE as u32 != 0 {
-            let mut new_inode_attrs = match self.lookup_name(new_parent, new_name.as_os_str()) {
+            let mut new_inode_attrs = match self.lookup_name(new_parent, new_name) {
                 Ok(attrs) => attrs,
                 Err(error_code) => {
                     return Err(Errno::from_i32(error_code));
@@ -1243,7 +1239,7 @@ impl Filesystem for SimpleFS {
                 .get_directory_content(new_parent)
                 .map_err(Errno::from_i32)?;
             entries.insert(
-                new_name.as_os_str().as_bytes().to_vec(),
+                new_name.as_bytes().to_vec(),
                 (inode_attrs.inode, inode_attrs.kind),
             );
             self.write_directory_content(new_parent, &entries);
@@ -1252,7 +1248,7 @@ impl Filesystem for SimpleFS {
                 .get_directory_content(parent)
                 .map_err(Errno::from_i32)?;
             entries.insert(
-                name.as_os_str().as_bytes().to_vec(),
+                name.as_bytes().to_vec(),
                 (new_inode_attrs.inode, new_inode_attrs.kind),
             );
             self.write_directory_content(parent, &entries);
@@ -1287,7 +1283,7 @@ impl Filesystem for SimpleFS {
         }
 
         // Only overwrite an existing directory if it's empty
-        if let Ok(new_name_attrs) = self.lookup_name(new_parent, new_name.as_os_str()) {
+        if let Ok(new_name_attrs) = self.lookup_name(new_parent, new_name) {
             if new_name_attrs.kind == FileKind::Directory {
                 let dir_entries = self
                     .get_directory_content(new_name_attrs.inode)
@@ -1315,11 +1311,11 @@ impl Filesystem for SimpleFS {
         }
 
         // If target already exists decrement its hardlink count
-        if let Ok(mut existing_inode_attrs) = self.lookup_name(new_parent, new_name.as_os_str()) {
+        if let Ok(mut existing_inode_attrs) = self.lookup_name(new_parent, new_name) {
             let mut entries = self
                 .get_directory_content(new_parent)
                 .map_err(Errno::from_i32)?;
-            entries.remove(new_name.as_os_str().as_bytes());
+            entries.remove(new_name.as_bytes());
             self.write_directory_content(new_parent, &entries);
 
             if existing_inode_attrs.kind == FileKind::Directory {
@@ -1335,14 +1331,14 @@ impl Filesystem for SimpleFS {
         let mut entries = self
             .get_directory_content(parent)
             .map_err(Errno::from_i32)?;
-        entries.remove(name.as_os_str().as_bytes());
+        entries.remove(name.as_bytes());
         self.write_directory_content(parent, &entries);
 
         let mut entries = self
             .get_directory_content(new_parent)
             .map_err(Errno::from_i32)?;
         entries.insert(
-            new_name.as_os_str().as_bytes().to_vec(),
+            new_name.as_bytes().to_vec(),
             (inode_attrs.inode, inode_attrs.kind),
         );
         self.write_directory_content(new_parent, &entries);
@@ -1372,7 +1368,7 @@ impl Filesystem for SimpleFS {
         req: RequestMeta,
         inode: u64,
         new_parent: u64,
-        new_name: &Path,
+        new_name: &OsStr,
     ) -> Result<Entry, Errno> {
         let _guard = self.state_lock.lock().unwrap();
         debug!("link() called for {inode}, {new_parent}, {new_name:?}");
@@ -1382,9 +1378,7 @@ impl Filesystem for SimpleFS {
                 return Err(Errno::from_i32(error_code));
             }
         };
-        if let Err(error_code) =
-            self.insert_link(req, new_parent, new_name.as_os_str(), inode, attrs.kind)
-        {
+        if let Err(error_code) = self.insert_link(req, new_parent, new_name, inode, attrs.kind) {
             return Err(Errno::from_i32(error_code));
         }
         attrs.hardlinks += 1;
@@ -1750,13 +1744,13 @@ impl Filesystem for SimpleFS {
         &self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         mut mode: u32,
         _umask: u32,
         flags: i32,
     ) -> Result<(Entry, Open), Errno> {
         debug!("create() called with {parent:?} {name:?}");
-        if self.lookup_name(parent, name.as_os_str()).is_ok() {
+        if self.lookup_name(parent, name).is_ok() {
             return Err(Errno::EEXIST);
         }
 
@@ -1825,7 +1819,7 @@ impl Filesystem for SimpleFS {
         }
 
         let mut entries = self.get_directory_content(parent).unwrap();
-        entries.insert(name.as_os_str().as_bytes().to_vec(), (inode, attrs.kind));
+        entries.insert(name.as_bytes().to_vec(), (inode, attrs.kind));
         self.write_directory_content(parent, &entries);
 
         // TODO: implement flags
@@ -2134,6 +2128,7 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::ffi::OsString;
 
     fn dummy_meta() -> RequestMeta {
         RequestMeta {
@@ -2266,7 +2261,7 @@ mod test {
         let symlink_result = futures::executor::block_on(fs.symlink(
             req,
             FUSE_ROOT_ID,
-            &PathBuf::from("testlink"),
+            &OsString::from("testlink"),
             &target,
         ));
         assert!(symlink_result.is_ok(), "Symlink creation should succeed");

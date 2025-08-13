@@ -69,7 +69,7 @@ pub trait Filesystem {
 
     /// Look up a directory entry by name and get its attributes.
     /// The method should return `Ok(Entry)` if the entry is found, or `Err(Errno)` otherwise.
-    fn lookup(&mut self, req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    fn lookup(&mut self, req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
         warn!("[Not Implemented] lookup(parent: {parent:#x?}, name {name:?})");
         Err(Errno::ENOSYS)
     }
@@ -146,7 +146,7 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         mode: u32,
         umask: u32,
         rdev: u32,
@@ -164,7 +164,7 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         mode: u32,
         umask: u32,
     ) -> Result<Entry, Errno> {
@@ -176,14 +176,14 @@ pub trait Filesystem {
 
     /// Remove a file.
     /// The method should return `Ok(())` on success, or `Err(Errno)` otherwise.
-    fn unlink(&mut self, req: RequestMeta, parent: u64, name: &Path) -> Result<(), Errno> {
+    fn unlink(&mut self, req: RequestMeta, parent: u64, name: &OsStr) -> Result<(), Errno> {
         warn!("[Not Implemented] unlink(parent: {parent:#x?}, name: {name:?})");
         Err(Errno::ENOSYS)
     }
 
     /// Remove a directory.
     /// The method should return `Ok(())` on success, or `Err(Errno)` otherwise.
-    fn rmdir(&mut self, req: RequestMeta, parent: u64, name: &Path) -> Result<(), Errno> {
+    fn rmdir(&mut self, req: RequestMeta, parent: u64, name: &OsStr) -> Result<(), Errno> {
         warn!("[Not Implemented] rmdir(parent: {parent:#x?}, name: {name:?})");
         Err(Errno::ENOSYS)
     }
@@ -194,7 +194,7 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        link_name: &Path,
+        link_name: &OsStr,
         target: &Path,
     ) -> Result<Entry, Errno> {
         warn!(
@@ -210,9 +210,9 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         newparent: u64,
-        newname: &Path,
+        newname: &OsStr,
         flags: u32,
     ) -> Result<(), Errno> {
         warn!(
@@ -229,7 +229,7 @@ pub trait Filesystem {
         req: RequestMeta,
         ino: u64,
         newparent: u64,
-        newname: &Path,
+        newname: &OsStr,
     ) -> Result<Entry, Errno> {
         warn!(
             "[Not Implemented] link(ino: {ino:#x?}, newparent: {newparent:#x?}, newname: {newname:?})"
@@ -550,7 +550,7 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         mode: u32,
         umask: u32,
         flags: i32,
@@ -740,9 +740,9 @@ pub trait Filesystem {
         &mut self,
         req: RequestMeta,
         parent: u64,
-        name: &Path,
+        name: &OsStr,
         newparent: u64,
-        newname: &Path,
+        newname: &OsStr,
         options: u64,
     ) -> Result<(), Errno> {
         warn!(

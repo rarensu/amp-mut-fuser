@@ -62,9 +62,7 @@ where
             )))
         }
         for future in futures {
-            if let Err(e) = future.await.expect("Unable to await task?") {
-                return Err(e);
-            }
+            future.await.expect("Unable to await task?")?;
         }
         Ok(())
     }
@@ -95,9 +93,7 @@ where
         }
         futures.push(tokio::spawn(Session::do_heartbeats_async(se.clone())));
         for future in futures {
-            if let Err(e) = future.await.expect("Unable to await task?") {
-                return Err(e);
-            }
+            future.await.expect("Unable to await task?")?;
         }
         Ok(())
     }
@@ -247,14 +243,16 @@ where
             #[cfg(not(feature = "tokio"))]
             let res = notifier.notify(notification);
             #[cfg(feature = "tokio")]
-            let notifier_copy = notifier.clone();
-            #[cfg(feature = "tokio")]
-            let res =
-                tokio::task::spawn_blocking(async move || notifier_copy.notify(notification)).await;
+            let res = {
+                let notifier_copy = notifier.clone();
+                tokio::task::spawn_blocking(async move || notifier_copy.notify(notification)).await
+                    .expect("unable to recover a background i/o thread")
+                    .await
+            };
             if let Err(e) = res {
                 error!("Failed to send notification.");
                 // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-                Err(e.into())
+                Err(e)
             } else {
                 Ok(())
             }

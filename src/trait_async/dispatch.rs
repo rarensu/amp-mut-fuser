@@ -106,7 +106,11 @@ impl RequestHandler {
             /* ------ Regular Operations ------ */
             Operation::Lookup(x) => {
                 let result = fs
-                    .lookup(self.meta, self.request.nodeid().into(), x.name())
+                    .lookup(
+                        self.meta,
+                        self.request.nodeid().into(),
+                        x.name().as_os_str(), /* blank space */
+                    )
                     .await;
                 reply!(entry_or_err, result);
             }
@@ -164,7 +168,7 @@ impl RequestHandler {
                     .mknod(
                         self.meta,
                         self.request.nodeid().into(),
-                        x.name(),
+                        x.name().as_os_str(),
                         x.mode(),
                         x.umask(),
                         x.rdev(),
@@ -177,7 +181,7 @@ impl RequestHandler {
                     .mkdir(
                         self.meta,
                         self.request.nodeid().into(),
-                        x.name(),
+                        x.name().as_os_str(),
                         x.mode(),
                         x.umask(),
                     )
@@ -186,13 +190,21 @@ impl RequestHandler {
             }
             Operation::Unlink(x) => {
                 let result = fs
-                    .unlink(self.meta, self.request.nodeid().into(), x.name())
+                    .unlink(
+                        self.meta,
+                        self.request.nodeid().into(),
+                        x.name().as_os_str(), /* blank space */
+                    )
                     .await;
                 reply!(ok_or_err, result);
             }
             Operation::RmDir(x) => {
                 let result = fs
-                    .rmdir(self.meta, self.request.nodeid().into(), x.name())
+                    .rmdir(
+                        self.meta,
+                        self.request.nodeid().into(),
+                        x.name().as_os_str(), /* blank space */
+                    )
                     .await;
                 reply!(ok_or_err, result);
             }
@@ -201,7 +213,7 @@ impl RequestHandler {
                     .symlink(
                         self.meta,
                         self.request.nodeid().into(),
-                        x.link_name(),
+                        x.link_name().as_os_str(),
                         x.target(),
                     )
                     .await;
@@ -212,9 +224,9 @@ impl RequestHandler {
                     .rename(
                         self.meta,
                         self.request.nodeid().into(),
-                        x.src().name,
+                        x.src().name.as_os_str(),
                         x.dest().dir.into(),
-                        x.dest().name,
+                        x.dest().name.as_os_str(),
                         0,
                     )
                     .await;
@@ -226,7 +238,7 @@ impl RequestHandler {
                         self.meta,
                         x.inode_no().into(),
                         self.request.nodeid().into(),
-                        x.dest().name,
+                        x.dest().name.as_os_str(),
                     )
                     .await;
                 reply!(entry_or_err, result);
@@ -394,7 +406,7 @@ impl RequestHandler {
                     .create(
                         self.meta,
                         self.request.nodeid().into(),
-                        x.name(),
+                        x.name().as_os_str(),
                         x.mode(),
                         x.umask(),
                         x.flags(),
@@ -539,9 +551,9 @@ impl RequestHandler {
                     .rename(
                         self.meta,
                         x.from().dir.into(),
-                        x.from().name,
+                        x.from().name.as_os_str(),
                         x.to().dir.into(),
-                        x.to().name,
+                        x.to().name.as_os_str(),
                         x.flags(),
                     )
                     .await;
@@ -580,7 +592,13 @@ impl RequestHandler {
             }
             #[cfg(target_os = "macos")]
             Operation::SetVolName(x) => {
-                let result = fs.setvolname(self.meta, x.name()).await;
+                let result = fs
+                    .setvolname(
+                        self.meta,
+                        x.name().as_os_str(),
+                        /* blank space */
+                    )
+                    .await;
                 reply!(ok_or_err, result);
             }
             #[cfg(target_os = "macos")]
@@ -594,9 +612,9 @@ impl RequestHandler {
                     .exchange(
                         self.meta,
                         x.from().dir.into(),
-                        x.from().name,
+                        x.from().name.as_os_str(),
                         x.to().dir.into(),
-                        x.to().name,
+                        x.to().name.as_os_str(),
                         x.options(),
                     )
                     .await;

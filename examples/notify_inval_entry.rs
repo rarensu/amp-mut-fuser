@@ -10,8 +10,7 @@
 // Converted to the synchronous execution model by Richard Lawrence
 
 use std::{
-    ffi::OsString,
-    path::Path,
+    ffi::{OsStr, OsString},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -146,7 +145,7 @@ impl Filesystem for ClockFS {
         FsStatus::Ready
     }
 
-    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name != *self.file_name.lock().unwrap() {
             return Err(Errno::ENOENT);
         }

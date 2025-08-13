@@ -91,7 +91,7 @@ impl RequestHandler {
                 let result = fs.lookup(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name(),
+                    x.name().as_os_str(),
                     /* blank space */
                 );
                 self.replyhandler.entry_or_err(result);
@@ -149,7 +149,7 @@ impl RequestHandler {
                 let result = fs.mknod(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name(),
+                    x.name().as_os_str(),
                     x.mode(),
                     x.umask(),
                     x.rdev(),
@@ -160,7 +160,7 @@ impl RequestHandler {
                 let result = fs.mkdir(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name(),
+                    x.name().as_os_str(),
                     x.mode(),
                     x.umask(),
                 );
@@ -170,7 +170,7 @@ impl RequestHandler {
                 let result = fs.unlink(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name(),
+                    x.name().as_os_str(),
                     /* blank space */
                 );
                 self.replyhandler.ok_or_err(result);
@@ -179,7 +179,7 @@ impl RequestHandler {
                 let result = fs.rmdir(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name(),
+                    x.name().as_os_str(),
                     /* blank space */
                 );
                 self.replyhandler.ok_or_err(result);
@@ -188,7 +188,7 @@ impl RequestHandler {
                 let result = fs.symlink(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.link_name(),
+                    x.link_name().as_os_str(),
                     x.target(),
                 );
                 self.replyhandler.entry_or_err(result);
@@ -197,9 +197,9 @@ impl RequestHandler {
                 let result = fs.rename(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.src().name,
+                    x.src().name.as_os_str(),
                     x.dest().dir.into(),
-                    x.dest().name,
+                    x.dest().name.as_os_str(),
                     0,
                 );
                 self.replyhandler.ok_or_err(result);
@@ -209,7 +209,7 @@ impl RequestHandler {
                     self.meta,
                     x.inode_no().into(),
                     self.request.nodeid().into(),
-                    x.dest().name,
+                    x.dest().name.as_os_str(),
                 );
                 self.replyhandler.entry_or_err(result);
             }
@@ -373,7 +373,7 @@ impl RequestHandler {
                 let result = fs.create(
                     self.meta,
                     self.request.nodeid().into(),
-                    x.name(),
+                    x.name().as_os_str(),
                     x.mode(),
                     x.umask(),
                     x.flags(),
@@ -503,9 +503,9 @@ impl RequestHandler {
                 let result = fs.rename(
                     self.meta,
                     x.from().dir.into(),
-                    x.from().name,
+                    x.from().name.as_os_str(),
                     x.to().dir.into(),
-                    x.to().name,
+                    x.to().name.as_os_str(),
                     x.flags(),
                 );
                 self.replyhandler.ok_or_err(result);

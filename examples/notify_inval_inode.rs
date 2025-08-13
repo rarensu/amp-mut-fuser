@@ -9,7 +9,6 @@
 use std::{
     convert::TryInto,
     ffi::OsStr,
-    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering::SeqCst},
@@ -145,7 +144,7 @@ impl Filesystem for ClockFS<'_> {
         FsStatus::Ready
     }
 
-    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &Path) -> Result<Entry, Errno> {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
         if parent != FUSE_ROOT_ID || name != OsStr::new(Self::FILE_NAME) {
             return Err(Errno::ENOENT);
         }

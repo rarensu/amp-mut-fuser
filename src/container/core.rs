@@ -218,7 +218,6 @@ impl<T: Clone> AsRef<[T]> for Container<T> {
     }
 }
 
-
 #[cfg(not(feature = "locking"))]
 impl<T: Clone> Deref for Container<T> {
     type Target = [T];
