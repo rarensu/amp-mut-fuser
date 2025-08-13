@@ -15,6 +15,7 @@ categories = ["external-ffi-bindings", "api-bindings", "filesystem", "os::unix-a
 build = "build.rs"
 
 [dependencies]
+bytes = "1.10"
 libc = "0.2.51"
 log = "0.4.6"
 memchr = "2.7.2"
@@ -23,6 +24,10 @@ serde = { version = "1.0.102", features = ["std", "derive"], optional = true }
 smallvec = "1.6.1"
 zerocopy = { version = "0.8", features = ["derive"] }
 nix = { version = "0.29.0", features = ["fs", "user"] }
+crossbeam-channel = "0.5"
+async-trait = "0.1"
+futures = "0.3"
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "time", "fs", "io-util", "net"] }
 
 [dev-dependencies]
 env_logger = "0.11.7"
@@ -31,12 +36,17 @@ bincode = "1.3.1"
 serde = { version = "1.0.102", features = ["std", "derive"] }
 tempfile = "3.10.1"
 nix = { version = "0.29.0", features = ["poll", "fs", "ioctl"] }
+once_cell = "*"
 
 [build-dependencies]
 pkg-config = { version = "0.3.14", optional = true }
 
 [features]
-default = []
+default = ["threaded"]
+tokio = ["threaded"]
+threaded = ["no-rc"]
+no-rc = []
+locking = []
 libfuse = ["pkg-config"]
 serializable = ["serde"]
 macfuse-4-compat = []
@@ -80,10 +90,14 @@ required-features = ["abi-7-12"]
 
 [[example]]
 name = "notify_inval_inode"
-required-features = ["abi-7-15"]
+required-features = ["abi-7-15", "tokio"]
 
 [[example]]
 name = "ioctl"
+required-features = ["abi-7-11"]
+
+[[example]]
+name = "ioctl_client"
 required-features = ["abi-7-11"]
 
 [[example]]

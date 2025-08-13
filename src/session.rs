@@ -5,23 +5,34 @@
 //! filesystem is mounted, the session loop receives, dispatches and replies to kernel requests
 //! for filesystem operations under its mount point.
 
-use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
-use log::{info, warn};
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
 use nix::unistd::geteuid;
+#[cfg(feature = "threaded")]
 use std::fmt;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::io;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{
+    AtomicBool, AtomicU32,
+    Ordering::{Acquire, Relaxed},
+};
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "threaded")]
 use std::thread::{self, JoinHandle};
-use std::{io, ops::DerefMut};
 
-use crate::Filesystem;
-use crate::MountOption;
-use crate::ll::fuse_abi as abi;
-use crate::request::Request;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::{Notification, Notifier};
+use crate::{AnyFS, MountOption};
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::{channel::ChannelSender, notify::Notifier};
+use crossbeam_channel::{Receiver, Sender};
+
+use crate::trait_async::Filesystem as AsyncFS;
+use crate::trait_legacy::Filesystem as LegacyFS;
+use crate::trait_sync::Filesystem as SyncFS;
+
+pub const SYNC_SLEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
@@ -29,10 +40,10 @@ use crate::{channel::ChannelSender, notify::Notifier};
 pub const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Size of the buffer for reading a request from the kernel. Since the kernel may send
-/// up to MAX_WRITE_SIZE bytes in a write request, we use that value plus some extra space.
-const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
+/// up to `MAX_WRITE_SIZE` bytes in a write request, we use that value plus some extra space.
+pub const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
 
-#[derive(Default, Debug, Eq, PartialEq)]
+#[derive(Default, Eq, PartialEq, Debug)]
 /// How requests should be filtered based on the calling UID.
 pub enum SessionACL {
     /// Allow requests from any user. Corresponds to the `allow_other` mount option.
@@ -44,52 +55,73 @@ pub enum SessionACL {
     Owner,
 }
 
-/// The session data structure
+/// Session metadata
 #[derive(Debug)]
-pub struct Session<FS: Filesystem> {
-    /// Filesystem operation implementations
-    pub(crate) filesystem: FS,
-    /// Communication channel to the kernel driver
-    pub(crate) ch: Channel,
-    /// Handle to the mount.  Dropping this unmounts.
-    mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
-    /// Whether to restrict access to owner, root + owner, or unrestricted
-    /// Used to implement allow_root and auto_unmount
+pub(crate) struct SessionMeta {
     pub(crate) allowed: SessionACL,
     /// User that launched the fuser process
     pub(crate) session_owner: u32,
     /// FUSE protocol major version
-    pub(crate) proto_major: u32,
+    pub(crate) proto_major: AtomicU32,
     /// FUSE protocol minor version
-    pub(crate) proto_minor: u32,
+    pub(crate) proto_minor: AtomicU32,
     /// True if the filesystem is initialized (init operation done)
-    pub(crate) initialized: bool,
+    pub(crate) initialized: AtomicBool,
     /// True if the filesystem was destroyed (destroy operation done)
-    pub(crate) destroyed: bool,
+    pub(crate) destroyed: AtomicBool,
+    #[cfg(feature = "abi-7-11")]
+    /// Whether this session currently has notification support
+    pub(crate) notify: AtomicBool,
 }
 
-impl<FS: Filesystem> AsFd for Session<FS> {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.ch.as_fd()
-    }
+/// The session data structure
+#[derive(Debug)]
+pub struct Session<L, S, A>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS,
+{
+    // TODO: if threaded, filesystem: Mutex<AnyFS<...>>
+    /// Filesystem operation implementations
+    pub(crate) filesystem: AnyFS<L, S, A>,
+    /// Communication channels to the kernel fuse driver
+    pub(crate) chs: Vec<Channel>,
+    /// Handle to the mount.  Dropping this unmounts.
+    pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
+    /// Whether to restrict access to owner, root + owner, or unrestricted
+    /// Used to implement `allow_root` and `auto_unmount`
+    pub(crate) meta: SessionMeta,
+    #[cfg(feature = "abi-7-11")]
+    /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
+    pub(crate) ns: Sender<Notification>,
+    #[cfg(feature = "abi-7-11")]
+    /// Receiver for poll events from the filesystem.
+    pub(crate) nr: Receiver<Notification>,
 }
 
-impl<FS: Filesystem> Session<FS> {
+impl<L, S, A> Session<L, S, A>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS,
+{
     /// Create a new session by mounting the given filesystem to the given mountpoint
-    pub fn new<P: AsRef<Path>>(
-        filesystem: FS,
+    pub fn new_mounted<P: AsRef<Path>>(
+        filesystem: AnyFS<L, S, A>,
         mountpoint: P,
         options: &[MountOption],
-    ) -> io::Result<Session<FS>> {
+    ) -> io::Result<Session<L, S, A>> {
         let mountpoint = mountpoint.as_ref();
         info!("Mounting {}", mountpoint.display());
-        // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
-        // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
-        // to handle the auto_unmount option
-        let (file, mount) = if options.contains(&MountOption::AutoUnmount)
+        // Create the channel for fuse messages
+        let (ch, mount) = if options.contains(&MountOption::AutoUnmount)
             && !(options.contains(&MountOption::AllowRoot)
                 || options.contains(&MountOption::AllowOther))
         {
+            // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
+            // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
+            // to handle the auto_unmount option
             warn!(
                 "Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling"
             );
@@ -99,8 +131,6 @@ impl<FS: Filesystem> Session<FS> {
         } else {
             Mount::new(mountpoint, options)?
         };
-
-        let ch = Channel::new(file);
         let allowed = if options.contains(&MountOption::AllowRoot) {
             SessionACL::RootAndOwner
         } else if options.contains(&MountOption::AllowOther) {
@@ -108,74 +138,99 @@ impl<FS: Filesystem> Session<FS> {
         } else {
             SessionACL::Owner
         };
-
-        Ok(Session {
-            filesystem,
-            ch,
-            mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
-            allowed,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
-        })
+        let mount = Some((mountpoint.to_owned(), mount));
+        Ok(Session::new(filesystem, ch, allowed, mount))
     }
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
-    pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
-        let ch = Channel::new(Arc::new(fd.into()));
+    pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, allowed: SessionACL) -> Self {
+        // Create the channel for fuse messages
+        let ch = Channel::new(fd.into());
+        Session::new(filesystem, ch, allowed, None)
+    }
+
+    /// Assemble a Session from raw parts. Not recommended for regular users.
+    #[allow(unused_mut)] // The filesystem mutates, but only under some combinations of features
+    pub(crate) fn new(
+        mut filesystem: AnyFS<L, S, A>,
+        ch: Channel,
+        allowed: SessionACL,
+        mount: Option<(PathBuf, Mount)>,
+    ) -> Self {
+        #[cfg(feature = "abi-7-11")]
+        // Create the channel for poll events.
+        let (ns, nr) = crossbeam_channel::unbounded();
+        #[cfg(feature = "abi-7-11")]
+        // Pass the sender to the filesystem.
+        let notify = match &mut filesystem {
+            AnyFS::Legacy(lfs) => lfs.init_notification_sender(ns.clone()),
+            AnyFS::Sync(sfs) => sfs.init_notification_sender(ns.clone()),
+            AnyFS::Async(afs) => afs.init_notification_sender(ns.clone()),
+        };
+        let meta = SessionMeta {
+            allowed,
+            session_owner: geteuid().as_raw(),
+            proto_major: AtomicU32::new(0),
+            proto_minor: AtomicU32::new(0),
+            initialized: AtomicBool::new(false),
+            destroyed: AtomicBool::new(false),
+            #[cfg(feature = "abi-7-11")]
+            notify: AtomicBool::new(notify),
+        };
         Session {
             filesystem,
-            ch,
-            mount: Arc::new(Mutex::new(None)),
-            allowed: acl,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
+            chs: vec![ch],
+            mount: Arc::new(Mutex::new(mount)),
+            meta,
+            #[cfg(feature = "abi-7-11")]
+            ns,
+            #[cfg(feature = "abi-7-11")]
+            nr,
         }
     }
 
-    /// Run the session loop that receives kernel requests and dispatches them to method
-    /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
-    /// having multiple buffers (which take up much memory), but the filesystem methods
-    /// may run concurrent by spawning threads.
-    pub fn run(&mut self) -> io::Result<()> {
-        // Buffer for receiving requests from the kernel. Only one is allocated and
-        // it is reused immediately after dispatching to conserve memory and allocations.
-        let mut buffer = vec![0; BUFFER_SIZE];
-        let buf = aligned_sub_buf(
-            buffer.deref_mut(),
-            std::mem::align_of::<abi::fuse_in_header>(),
-        );
-        loop {
-            // Read the next request from the given channel to kernel driver
-            // The kernel driver makes sure that we get exactly one request per read
-            match self.ch.receive(buf) {
-                Ok(size) => match Request::new(self.ch.sender(), &buf[..size]) {
-                    // Dispatch request
-                    Some(req) => req.dispatch(self),
-                    // Quit loop on illegal request
-                    None => break,
-                },
-                Err(err) => match err.raw_os_error() {
-                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                    Some(ENOENT) => continue,
-                    // Interrupted system call, retry
-                    Some(EINTR) => continue,
-                    // Explicitly try again
-                    Some(EAGAIN) => continue,
-                    // Filesystem was unmounted, quit the loop
-                    Some(ENODEV) => break,
-                    // Unhandled error
-                    _ => return Err(err),
-                },
-            }
+    /// Returns an object that can be used to send notifications directly to the kernel
+    #[cfg(feature = "abi-7-11")]
+    pub fn notifier(&self) -> Notifier {
+        // Legacy notification method
+        Notifier::new(self.chs[0].clone())
+    }
+
+    /// Returns an object that can be used to queue notifications for the Session to process
+    #[cfg(feature = "abi-7-11")]
+    pub fn get_notification_sender(&self) -> Sender<Notification> {
+        // Sync/Async notification method
+        self.ns.clone()
+    }
+
+    /// Creates additional worker fuse file descriptors until the
+    /// Session has at least `channel_count` communication channels.
+    /// Reports the number of channels that were created.
+    /// # Errors
+    /// Propagates underlying errors.
+    pub fn set_channels(&mut self, channel_count: u32) -> Result<u32, io::Error> {
+        let main_fuse_fd = self.chs[0].raw_fd as u32;
+        let mut new_channels = 0;
+        while self.chs.len() < channel_count as usize {
+            let fuse_device_name = "/dev/fuse";
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(fuse_device_name)?;
+            let ch = Channel::new(file);
+            ch.new_fuse_worker(main_fuse_fd)?;
+            self.chs.push(ch);
+            new_channels += 1;
         }
-        Ok(())
+        Ok(new_channels)
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    /// returns a copy of the channel associated with a specific channel index.
+    /// used to assist with constructing notifiers and the like.
+    pub(crate) fn get_ch(&self, ch_idx: usize) -> Channel {
+        self.chs[ch_idx].clone()
     }
 
     /// Unmount the filesystem
@@ -189,11 +244,41 @@ impl<FS: Filesystem> Session<FS> {
             mount: self.mount.clone(),
         }
     }
+}
 
-    /// Returns an object that can be used to send notifications to the kernel
-    #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Notifier {
-        Notifier::new(self.ch.sender())
+impl<L, S, A> Session<L, S, A>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS,
+{
+    /// This function starts the main Session loop of a Legacy or Sync Filesystem in the current thread.
+    /// # Panics
+    /// Panics if the filesystem is Async. Hint: try `run_blocking()` or `run_async()`
+    pub fn run(self) -> io::Result<()> {
+        match &self.filesystem {
+            AnyFS::Legacy(_) => self.run_legacy(),
+            AnyFS::Sync(_) => self.run_sync(),
+            AnyFS::Async(_) => {
+                panic!("Attempted to use Legacy/Sync method on an Async filesystem.")
+            }
+        }
+    }
+}
+
+impl<L, S, A> Session<L, S, A>
+where
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + Send + Sync + 'static,
+{
+    /// This function starts the main Session loop of Any Filesystem, blocking the current thread.
+    pub fn run_blocking(self) -> io::Result<()> {
+        match &self.filesystem {
+            AnyFS::Legacy(_) => self.run_legacy(),
+            AnyFS::Sync(_) => self.run_sync(),
+            AnyFS::Async(_) => futures::executor::block_on(self.run_async()),
+        }
     }
 }
 
@@ -211,27 +296,35 @@ impl SessionUnmounter {
     }
 }
 
-fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
-    let off = alignment - (buf.as_ptr() as usize) % alignment;
-    if off == alignment {
-        buf
-    } else {
-        &mut buf[off..]
-    }
-}
-
-impl<FS: 'static + Filesystem + Send> Session<FS> {
+/// A session can be run synchronously in the current thread using `run()` or spawned into a
+/// background thread using `spawn()`.
+#[cfg(feature = "threaded")]
+impl<L, S, A> Session<L, S, A>
+where
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + Send + Sync + 'static,
+{
     /// Run the session loop in a background thread
     pub fn spawn(self) -> io::Result<BackgroundSession> {
         BackgroundSession::new(self)
     }
 }
 
-impl<FS: Filesystem> Drop for Session<FS> {
+impl<L, S, A> Drop for Session<L, S, A>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS,
+{
     fn drop(&mut self) {
-        if !self.destroyed {
-            self.filesystem.destroy();
-            self.destroyed = true;
+        if !self.meta.destroyed.load(Acquire) {
+            match &mut self.filesystem {
+                AnyFS::Legacy(fs) => fs.destroy(),
+                AnyFS::Sync(fs) => fs.destroy(),
+                AnyFS::Async(fs) => futures::executor::block_on(fs.destroy()),
+            }
+            self.meta.destroyed.store(true, Relaxed);
         }
 
         if let Some((mountpoint, _mount)) = std::mem::take(&mut *self.mount.lock().unwrap()) {
@@ -241,59 +334,81 @@ impl<FS: Filesystem> Drop for Session<FS> {
 }
 
 /// The background session data structure
+#[cfg(feature = "threaded")]
 pub struct BackgroundSession {
-    /// Thread guard of the background session
-    pub guard: JoinHandle<io::Result<()>>,
+    /// Thread guard of the main session loop
+    pub main_loop_guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
     #[cfg(feature = "abi-7-11")]
-    sender: ChannelSender,
+    extra_notification_sender: Sender<Notification>,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }
 
+#[cfg(feature = "threaded")]
 impl BackgroundSession {
     /// Create a new background session for the given session by running its
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
-    pub fn new<FS: Filesystem + Send + 'static>(se: Session<FS>) -> io::Result<BackgroundSession> {
+    pub fn new<L, S, A>(se: Session<L, S, A>) -> io::Result<BackgroundSession>
+    where
+        L: LegacyFS + Send + Sync + 'static,
+        S: SyncFS + Send + Sync + 'static,
+        A: AsyncFS + Send + Sync + 'static,
+    {
         #[cfg(feature = "abi-7-11")]
-        let sender = se.ch.sender();
-        // Take the fuse_session, so that we can unmount it
+        let extra_notification_sender = se.ns.clone();
+
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
-        let guard = thread::spawn(move || {
-            let mut se = se;
-            se.run()
-        });
+
+        // The main session (se) is moved into this thread.
+        let main_loop_guard = thread::spawn(move || se.run_blocking());
+
         Ok(BackgroundSession {
-            guard,
+            main_loop_guard,
             #[cfg(feature = "abi-7-11")]
-            sender,
+            extra_notification_sender,
             _mount: mount,
         })
     }
     /// Unmount the filesystem and join the background thread.
     pub fn join(self) {
         let Self {
-            guard,
+            main_loop_guard,
             #[cfg(feature = "abi-7-11")]
-                sender: _,
+                extra_notification_sender: _,
             _mount,
         } = self;
+        // Unmount the filesystem
         drop(_mount);
-        guard.join().unwrap().unwrap();
+        // Stop the background thread
+        let res = main_loop_guard
+            .join()
+            .expect("Failed to join the background thread");
+        // An error is expected, since the thread was active when the unmount occured.
+        info!("Session loop end with result {res:?}.");
     }
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Notifier {
-        Notifier::new(self.sender.clone())
+    #[must_use]
+    pub fn get_notification_sender(&self) -> Sender<Notification> {
+        self.extra_notification_sender.clone()
     }
 }
 
 // replace with #[derive(Debug)] if Debug ever gets implemented for
 // thread_scoped::JoinGuard
+#[cfg(feature = "threaded")]
 impl fmt::Debug for BackgroundSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "BackgroundSession {{ guard: JoinGuard<()> }}",)
+        let mut builder = f.debug_struct("BackgroundSession");
+        builder.field("main_loop_guard", &self.main_loop_guard);
+        #[cfg(feature = "abi-7-11")]
+        {
+            builder.field("sender", &self.extra_notification_sender);
+        }
+        builder.field("_mount", &self._mount);
+        builder.finish()
     }
 }
