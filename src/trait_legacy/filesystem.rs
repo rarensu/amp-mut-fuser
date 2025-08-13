@@ -251,6 +251,9 @@ pub trait Filesystem {
     /// filesystem may set, to change the way the file is opened. See fuse_file_info
     /// structure in <fuse_common.h> for more details.
     fn open(&mut self, req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
+        // This value forces the kernel to always call `open()` before `read()` to
+        // prevent the kernel from serving data directly from the page cache
+        // in case of faulty default permissions
         reply.opened(0, 0);
     }
 

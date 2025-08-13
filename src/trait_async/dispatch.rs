@@ -1,6 +1,6 @@
 use crate::ll::{self, Errno, Operation, Request as AnyRequest, fuse_abi as abi};
 use crate::request::RequestHandler;
-use crate::session::SessionMeta;
+use crate::session::{SessionMeta, SessionACL};
 use crate::{Forget, KernelConfig};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -399,7 +399,18 @@ impl RequestHandler {
                 let result = fs
                     .access(self.meta, self.request.nodeid().into(), x.mask())
                     .await;
-                reply!(ok_or_err, result);
+                match result {
+                    Ok(()) => {
+                        reply!(ok);
+                    },
+                    Err(Errno::ENOSYS) if se_meta.allowed != SessionACL::All => {
+                        // Access was not denied (see above) so it is allowed.
+                        reply!(ok);
+                    },
+                    Err(e) => {
+                        reply!(error, e);
+                    }
+                }
             }
             Operation::Create(x) => {
                 let result = fs
