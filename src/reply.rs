@@ -1,43 +1,26 @@
 //! Filesystem operation reply
 //!
-//! A reply is passed to filesystem operation implementations and must be used to send back the
-//! result of an operation. The reply can optionally be sent to another thread to asynchronously
-//! work on an operation and provide the result later. Also it allows replying with a block of
-//! data without cloning the data. A reply *must always* be used (by calling either ok() or
-//! error() exactly once).
+//! A reply handler object is created to guarantee that each fuse request receives a reponse exactly once.
+//! Either the request logic will call the one of the reply handler's self-destructive methods,
+//! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
 
-use crate::ll::{
-    self, Generation,
-    reply::{DirEntPlusList, DirEntryPlus},
-};
-use crate::ll::{
-    INodeNo,
-    reply::{DirEntList, DirEntOffset, DirEntry},
-};
-#[cfg(feature = "abi-7-40")]
-use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
-use libc::c_int;
-use log::{error, warn};
-use std::convert::AsRef;
-use std::ffi::OsStr;
+#[cfg(feature = "abi-7-21")]
+use crate::ll::reply::DirentPlusBuf;
+use crate::ll::{self, reply::DirentBuf, reply::DirEntry};
+use crate::{ll::Errno, KernelConfig};
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
+#[cfg(feature = "serializable")]
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::IoSlice;
-#[cfg(feature = "abi-7-40")]
-use std::os::fd::BorrowedFd;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+use zerocopy::IntoBytes;
 
-#[cfg(target_os = "macos")]
-use std::time::SystemTime;
-
-use crate::{FileAttr, FileType};
-
-/// Generic reply callback to send data
-pub trait ReplySender: Send + Sync + Unpin + 'static {
+/// Generic method to send Filesystem replies
+pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
     /// Send data.
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()>;
-    /// Open a backing file
-    #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: BorrowedFd<'_>) -> std::io::Result<BackingId>;
 }
 
 impl fmt::Debug for Box<dyn ReplySender> {
@@ -46,657 +29,642 @@ impl fmt::Debug for Box<dyn ReplySender> {
     }
 }
 
-/// Generic reply trait
-pub trait Reply {
-    /// Create a new reply for the given request
-    fn new<S: ReplySender>(unique: u64, sender: S) -> Self;
-}
-
-///
-/// Raw reply
-///
+/// `ReplyHander` is a struct which holds the unique identifiers needed to reply
+/// to a specific request. Traits are implemented on the struct so that ownership
+/// of the struct determines whether the identifiers have ever been used.
+/// This guarantees that a reply is send at most once per request.
 #[derive(Debug)]
-pub(crate) struct ReplyRaw {
+pub(crate) struct ReplyHandler {
     /// Unique id of the request to reply to
-    unique: ll::RequestId,
+    pub unique: ll::RequestId,
     /// Closure to call for sending the reply
-    sender: Option<Box<dyn ReplySender>>,
+    pub sender: Option<Box<dyn ReplySender>>,
 }
 
-impl Reply for ReplyRaw {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyRaw {
+impl ReplyHandler {
+    /// Create a reply handler for a specific request identifier
+    pub(crate) fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyHandler {
         let sender = Box::new(sender);
-        ReplyRaw {
+        ReplyHandler {
             unique: ll::RequestId(unique),
             sender: Some(sender),
         }
     }
-}
 
-impl ReplyRaw {
-    /// Reply to a request with the given error code and data. Must be called
-    /// only once (the `ok` and `error` methods ensure this by consuming `self`)
-    fn send_ll_mut(&mut self, response: &ll::Response<'_>) {
+    /// Reply to a request with a formatted reponse. Can be called
+    /// more than once (the `&mut self` argument does not consume `self`)
+    /// Avoid using this variant unless you know what you are doing!
+    pub(crate) fn send_ll_mut(&mut self, response: &ll::Response<'_>) {
         assert!(self.sender.is_some());
         let sender = self.sender.take().unwrap();
         let res = response.with_iovec(self.unique, |iov| sender.send(iov));
         if let Err(err) = res {
-            error!("Failed to send FUSE reply: {}", err);
+            error!("Failed to send FUSE reply: {err}");
         }
     }
-    fn send_ll(mut self, response: &ll::Response<'_>) {
-        self.send_ll_mut(response)
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        assert_ne!(err, 0);
-        self.send_ll(&ll::Response::new_error(ll::Errno::from_i32(err)));
+    /// Reply to a request with a formatted reponse. May be called
+    /// only once (the `mut self` argument consumes `self`).
+    /// Use this variant for general replies.
+    pub(crate) fn send_ll(mut self, response: &ll::Response<'_>) {
+        self.send_ll_mut(response);
     }
 }
 
-impl Drop for ReplyRaw {
+/// Drop is implemented on `ReplyHandler` so that if the program logic fails
+/// (for example, due to an interrupt or a panic),
+/// a reply will be sent when the Reply Handler falls out of scope.
+impl Drop for ReplyHandler {
     fn drop(&mut self) {
         if self.sender.is_some() {
             warn!(
                 "Reply not sent for operation {}, replying with I/O error",
                 self.unique.0
             );
-            self.send_ll_mut(&ll::Response::new_error(ll::Errno::EIO));
+            self.send_ll_mut(&ll::Response::new_error(Errno::EIO));
         }
     }
 }
 
-///
-/// Empty reply
-///
-#[derive(Debug)]
-pub struct ReplyEmpty {
-    reply: ReplyRaw,
+/// File types
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
+pub enum FileType {
+    /// Named pipe (`S_IFIFO`)
+    NamedPipe,
+    /// Character device (`S_IFCHR`)
+    CharDevice,
+    /// Block device (`S_IFBLK`)
+    BlockDevice,
+    /// Directory (`S_IFDIR`)
+    Directory,
+    /// Regular file (`S_IFREG`)
+    RegularFile,
+    /// Symbolic link (`S_IFLNK`)
+    Symlink,
+    /// Unix domain socket (`S_IFSOCK`)
+    Socket,
 }
 
-impl Reply for ReplyEmpty {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyEmpty {
-        ReplyEmpty {
-            reply: Reply::new(unique, sender),
-        }
+/// File attributes
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
+pub struct FileAttr {
+    /// Unique number for this file
+    pub ino: u64,
+    /// Size in bytes
+    pub size: u64,
+    /// Size in blocks
+    pub blocks: u64,
+    /// Time of last access
+    pub atime: SystemTime,
+    /// Time of last modification
+    pub mtime: SystemTime,
+    /// Time of last change
+    pub ctime: SystemTime,
+    /// Time of creation (macOS only)
+    pub crtime: SystemTime,
+    /// Kind of file (directory, file, pipe, etc)
+    pub kind: FileType,
+    /// Permissions
+    pub perm: u16,
+    /// Number of hard links
+    pub nlink: u32,
+    /// User id
+    pub uid: u32,
+    /// Group id
+    pub gid: u32,
+    /// Rdev
+    pub rdev: u32,
+    /// Block size
+    pub blksize: u32,
+    /// Flags (macOS only, see chflags(2))
+    pub flags: u32,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
+/// An entry in the kernel's file cache
+pub struct Entry {
+    /// file inode number
+    pub ino: u64,
+    /// file generation number
+    pub generation: Option<u64>,
+    /// duration to cache file identity
+    pub file_ttl: Duration,
+    /// file attributes
+    pub attr: FileAttr,
+    /// duration to cache file attributes
+    pub attr_ttl: Duration,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
+/// Open file handle response data
+pub struct Open {
+    /// File handle for the opened file
+    pub fh: u64,
+    /// Flags for the opened file
+    pub flags: u32,
+    /// Optional backing id for passthrough
+    pub backing_id: Option<u32>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Copy, Clone, PartialEq, Debug)]
+/// Xtimes response data
+pub struct XTimes {
+    /// Backup time
+    pub bkuptime: SystemTime,
+    /// Creation time
+    pub crtime: SystemTime,
+}
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+/// Statfs response data
+pub struct Statfs {
+    /// Total blocks (in units of frsize)
+    pub blocks: u64,
+    /// Free blocks
+    pub bfree: u64,
+    /// Free blocks for unprivileged users
+    pub bavail: u64,
+    /// Total inodes
+    pub files: u64,
+    /// Free inodes
+    pub ffree: u64,
+    /// Filesystem block size
+    pub bsize: u32,
+    /// Maximum filename length
+    pub namelen: u32,
+    /// Fundamental file system block size
+    pub frsize: u32,
+}
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+/// File lock response data
+pub struct Lock {
+    /// start of locked byte range
+    pub start: u64,
+    /// end of locked byte range
+    pub end: u64,
+    // NOTE: lock field is defined as u32 in fuse_kernel.h in libfuse. However, it is treated as signed
+    // TODO enum {F_RDLCK, F_WRLCK, F_UNLCK}
+    /// kind of lock (read and/or write)
+    pub typ: i32,
+    /// PID of process blocking our lock
+    pub pid: u32,
+}
+
+/// `Xattr` represents the response for extended attribute operations (`getxattr`, `listxattr`).
+/// It can either indicate the size of the attribute data or provide the data itself
+/// using `Bytes` for flexible ownership.
+#[derive(Clone, Debug)]
+pub enum Xattr {
+    /// Indicates the size of the extended attribute data. Used when the caller
+    /// provides a zero-sized buffer to query the required buffer size.
+    Size(u32),
+    /// Contains the extended attribute data. `Bytes` allows this data to be
+    /// returned in a zero-copy data ownership model.
+    Data(Vec<u8>),
+}
+
+#[cfg(feature = "abi-7-11")]
+#[derive(Clone, Debug)]
+/// File io control reponse data
+pub struct Ioctl {
+    /// Result of the ioctl operation
+    pub result: i32,
+    /// Data to be returned with the ioctl operation
+    pub data: Bytes,
+}
+
+//
+// Methods to reply to a request for each kind of data
+//
+
+impl ReplyHandler {
+    /// Reply to a general request with an error code
+    pub fn error(self, err: Errno) {
+        self.send_ll(&ll::Response::new_error(err));
     }
-}
 
-impl ReplyEmpty {
-    /// Reply to a request with nothing
+    /// Reply to a general request with no data
     pub fn ok(self) {
-        self.reply.send_ll(&ll::Response::new_empty());
+        self.send_ll(&ll::Response::new_empty());
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Data reply
-///
-#[derive(Debug)]
-pub struct ReplyData {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyData {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyData {
-        ReplyData {
-            reply: Reply::new(unique, sender),
+    /// Reply to a general request with no data or an error
+    pub fn ok_or_err(self, result: Result<(), Errno>) {
+        match result {
+            Ok(()) => self.ok(),
+            Err(err) => self.error(err),
         }
     }
-}
 
-impl ReplyData {
-    /// Reply to a request with the given data
+    /// Reply to a general request with data
     pub fn data(self, data: &[u8]) {
-        self.reply.send_ll(&ll::Response::new_slice(data));
+        self.send_ll(&ll::Response::new_slice(data));
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Entry reply
-///
-#[derive(Debug)]
-pub struct ReplyEntry {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyEntry {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyEntry {
-        ReplyEntry {
-            reply: Reply::new(unique, sender),
+    /// Reply to a general request with data or an error
+    pub fn data_or_err(self, result: Result<Vec<u8>, Errno>) {
+        match result {
+            Ok(data) => self.data(&data),
+            Err(err) => self.error(err),
         }
     }
-}
 
-impl ReplyEntry {
-    /// Reply to a request with the given entry
-    pub fn entry(self, ttl: &Duration, attr: &FileAttr, generation: u64) {
-        self.reply.send_ll(&ll::Response::new_entry(
-            ll::INodeNo(attr.ino),
-            ll::Generation(generation),
-            &attr.into(),
-            *ttl,
-            *ttl,
+    // Reply to an init request with available features
+    pub fn config(self, capabilities: u64, config: KernelConfig) {
+        let flags = capabilities & config.requested; // use features requested by fs and reported as capable by kernel
+
+        let init = ll::fuse_abi::fuse_init_out {
+            major: ll::fuse_abi::FUSE_KERNEL_VERSION,
+            minor: ll::fuse_abi::FUSE_KERNEL_MINOR_VERSION,
+            max_readahead: config.max_readahead,
+            #[cfg(not(feature = "abi-7-36"))]
+            flags: flags as u32,
+            #[cfg(feature = "abi-7-36")]
+            flags: (flags | ll::fuse_abi::consts::FUSE_INIT_EXT) as u32,
+            #[cfg(not(feature = "abi-7-13"))]
+            unused: 0,
+            #[cfg(feature = "abi-7-13")]
+            max_background: config.max_background,
+            #[cfg(feature = "abi-7-13")]
+            congestion_threshold: config.congestion_threshold(),
+            max_write: config.max_write,
+            #[cfg(feature = "abi-7-23")]
+            time_gran: config.time_gran.as_nanos() as u32,
+            #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
+            reserved: [0; 9],
+            #[cfg(feature = "abi-7-28")]
+            max_pages: config.max_pages(),
+            #[cfg(feature = "abi-7-28")]
+            unused2: 0,
+            #[cfg(all(feature = "abi-7-28", not(feature = "abi-7-36")))]
+            reserved: [0; 8],
+            #[cfg(feature = "abi-7-36")]
+            flags2: (flags >> 32) as u32,
+            #[cfg(all(feature = "abi-7-36", not(feature = "abi-7-40")))]
+            reserved: [0; 7],
+            #[cfg(feature = "abi-7-40")]
+            max_stack_depth: config.max_stack_depth,
+            #[cfg(feature = "abi-7-40")]
+            reserved: [0; 6],
+        };
+        self.send_ll(&ll::Response::new_data(init.as_bytes()));
+    }
+
+    /// Reply to a request with a file entry
+    pub fn entry(self, entry: &Entry) {
+        self.send_ll(&ll::Response::new_entry(
+            ll::INodeNo(entry.ino),
+            ll::Generation(entry.generation.unwrap_or(1)),
+            entry.file_ttl,
+            &entry.attr,
+            entry.attr_ttl,
         ));
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Attribute Reply
-///
-#[derive(Debug)]
-pub struct ReplyAttr {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyAttr {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyAttr {
-        ReplyAttr {
-            reply: Reply::new(unique, sender),
+    /// Reply to a request with a file entry or an error
+    pub fn entry_or_err(self, result: Result<Entry, Errno>) {
+        match result {
+            Ok(entry) => self.entry(&entry),
+            Err(err) => self.error(err),
         }
     }
-}
 
-impl ReplyAttr {
-    /// Reply to a request with the given attribute
-    pub fn attr(self, ttl: &Duration, attr: &FileAttr) {
-        self.reply
-            .send_ll(&ll::Response::new_attr(ttl, &attr.into()));
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// XTimes Reply
-///
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-pub struct ReplyXTimes {
-    reply: ReplyRaw,
-}
-
-#[cfg(target_os = "macos")]
-impl Reply for ReplyXTimes {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyXTimes {
-        ReplyXTimes {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl ReplyXTimes {
-    /// Reply to a request with the given xtimes
-    pub fn xtimes(self, bkuptime: SystemTime, crtime: SystemTime) {
-        self.reply
-            .send_ll(&ll::Response::new_xtimes(bkuptime, crtime))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Open Reply
-///
-#[derive(Debug)]
-pub struct ReplyOpen {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyOpen {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyOpen {
-        ReplyOpen {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
-
-impl ReplyOpen {
-    /// Reply to a request with the given open result
-    pub fn opened(self, fh: u64, flags: u32) {
-        #[cfg(feature = "abi-7-40")]
-        assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
-        self.reply
-            .send_ll(&ll::Response::new_open(ll::FileHandle(fh), flags, 0))
-    }
-
-    /// Registers a fd for passthrough, returning a `BackingId`.  Once you have the backing ID,
-    /// you can pass it as the 3rd parameter of `OpenReply::opened_passthrough()`.  This is done in
-    /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
-    /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
-    #[cfg(feature = "abi-7-40")]
-    pub fn open_backing(&self, fd: impl std::os::fd::AsFd) -> std::io::Result<BackingId> {
-        self.reply.sender.as_ref().unwrap().open_backing(fd.as_fd())
-    }
-
-    /// Reply to a request with an opened backing id.  Call ReplyOpen::open_backing() to get one of
-    /// these.
-    #[cfg(feature = "abi-7-40")]
-    pub fn opened_passthrough(self, fh: u64, flags: u32, backing_id: &BackingId) {
-        self.reply.send_ll(&ll::Response::new_open(
-            ll::FileHandle(fh),
-            flags | FOPEN_PASSTHROUGH,
-            backing_id.backing_id,
-        ))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Write Reply
-///
-#[derive(Debug)]
-pub struct ReplyWrite {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyWrite {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyWrite {
-        ReplyWrite {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
-
-impl ReplyWrite {
-    /// Reply to a request with the given open result
-    pub fn written(self, size: u32) {
-        self.reply.send_ll(&ll::Response::new_write(size))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Statfs Reply
-///
-#[derive(Debug)]
-pub struct ReplyStatfs {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyStatfs {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyStatfs {
-        ReplyStatfs {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
-
-impl ReplyStatfs {
-    /// Reply to a request with the given open result
-    #[allow(clippy::too_many_arguments)]
-    pub fn statfs(
-        self,
-        blocks: u64,
-        bfree: u64,
-        bavail: u64,
-        files: u64,
-        ffree: u64,
-        bsize: u32,
-        namelen: u32,
-        frsize: u32,
-    ) {
-        self.reply.send_ll(&ll::Response::new_statfs(
-            blocks, bfree, bavail, files, ffree, bsize, namelen, frsize,
-        ))
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Create reply
-///
-#[derive(Debug)]
-pub struct ReplyCreate {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyCreate {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyCreate {
-        ReplyCreate {
-            reply: Reply::new(unique, sender),
-        }
-    }
-}
-
-impl ReplyCreate {
-    /// Reply to a request with the given entry
-    pub fn created(self, ttl: &Duration, attr: &FileAttr, generation: u64, fh: u64, flags: u32) {
-        #[cfg(feature = "abi-7-40")]
-        assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
-        self.reply.send_ll(&ll::Response::new_create(
+    /// Reply to a request with file attributes
+    pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
+        self.send_ll(&ll::Response::new_attr(
             ttl,
-            &attr.into(),
-            ll::Generation(generation),
-            ll::FileHandle(fh),
-            flags,
-            0,
-        ))
+            &attr,
+        ));
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Lock Reply
-///
-#[derive(Debug)]
-pub struct ReplyLock {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyLock {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyLock {
-        ReplyLock {
-            reply: Reply::new(unique, sender),
+    /// Reply to a request with file attributes or an error
+    pub fn attr_or_err(self, result: Result<(FileAttr, Duration), Errno>) {
+        match result {
+            Ok((attr, ttl)) => self.attr(&attr, &ttl),
+            Err(err) => self.error(err),
         }
     }
-}
 
-impl ReplyLock {
-    /// Reply to a request with the given open result
-    pub fn locked(self, start: u64, end: u64, typ: i32, pid: u32) {
-        self.reply.send_ll(&ll::Response::new_lock(&ll::Lock {
-            range: (start, end),
-            typ,
-            pid,
-        }))
+    #[cfg(target_os = "macos")]
+    /// Reply to a request with xtimes attributes
+    pub fn xtimes(self, xtimes: XTimes) {
+        self.send_ll(&ll::Response::new_xtimes(xtimes.bkuptime, xtimes.crtime))
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Bmap Reply
-///
-#[derive(Debug)]
-pub struct ReplyBmap {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyBmap {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyBmap {
-        ReplyBmap {
-            reply: Reply::new(unique, sender),
+    #[cfg(target_os = "macos")]
+    /// Reply to a request with xtimes attributes or an error
+    pub fn xtimes_or_err(self, result: Result<XTimes, Errno>) {
+        match result {
+            Ok(xtimes) => self.xtimes(xtimes),
+            Err(err) => self.error(err),
         }
     }
-}
 
-impl ReplyBmap {
-    /// Reply to a request with the given open result
+    /// Reply to a request with a newly opened file handle
+    pub fn opened(self, open: &Open) {
+        self.send_ll(&ll::Response::new_open(
+            ll::FileHandle(open.fh),
+            open.flags,
+            open.backing_id.unwrap_or(0),
+        ));
+    }
+
+    /// Reply to a request with a newly opened file handle or an error
+    pub fn opened_or_err(self, result: Result<Open, Errno>) {
+        match result {
+            Ok(open) => self.opened(&open),
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Reply to a request with the number of bytes written
+    pub fn written(self, size: u32) {
+        self.send_ll(&ll::Response::new_write(size));
+    }
+
+    /// Reply to a request with the number of bytes written or an error
+    pub fn written_or_err(self, result: Result<u32, Errno>) {
+        match result {
+            Ok(size) => self.written(size),
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Reply to a statfs request with filesystem information
+    pub fn statfs(self, statfs: &Statfs) {
+        self.send_ll(&ll::Response::new_statfs(
+            statfs.blocks,
+            statfs.bfree,
+            statfs.bavail,
+            statfs.files,
+            statfs.ffree,
+            statfs.bsize,
+            statfs.namelen,
+            statfs.frsize,
+        ));
+    }
+
+    /// Reply to a statfs request with filesystem information or an error
+    pub fn statfs_or_err(self, result: Result<Statfs, Errno>) {
+        match result {
+            Ok(statfs) => self.statfs(&statfs),
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Reply to a request with a newly created file entry and its newly open file handle
+    pub fn created(self, entry: &Entry, open: &Open) {
+        self.send_ll(&ll::Response::new_create(
+            &entry.file_ttl,
+            &entry.attr.into(),
+            &entry.attr_ttl,
+            ll::Generation(entry.generation.unwrap_or(1)),
+            ll::FileHandle(open.fh),
+            open.flags,
+            open.backing_id.unwrap_or(0),
+        ));
+    }
+
+    /// Reply to a request with a newly created file entry and its newly open file handle or an error
+    pub fn created_or_err(self, result: Result<(Entry, Open), Errno>) {
+        match result {
+            Ok((entry, open)) => self.created(&entry, &open),
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Reply to a request with a file lock
+    pub fn locked(self, lock: &Lock) {
+        self.send_ll(&ll::Response::new_lock(&ll::Lock {
+            range: (lock.start, lock.end),
+            typ: lock.typ,
+            pid: lock.pid,
+        }));
+    }
+
+    /// Reply to a request with a file lock or an error
+    pub fn locked_or_err(self, result: Result<Lock, Errno>) {
+        match result {
+            Ok(lock) => self.locked(&lock),
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Reply to a request with a bmap
     pub fn bmap(self, block: u64) {
-        self.reply.send_ll(&ll::Response::new_bmap(block))
+        self.send_ll(&ll::Response::new_bmap(block));
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Ioctl Reply
-///
-#[derive(Debug)]
-pub struct ReplyIoctl {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyIoctl {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyIoctl {
-        ReplyIoctl {
-            reply: Reply::new(unique, sender),
+    /// Reply to a request with a bmap or an error
+    pub fn bmap_or_err(self, result: Result<u64, Errno>) {
+        match result {
+            Ok(block) => self.bmap(block),
+            Err(err) => self.error(err),
         }
     }
-}
 
-impl ReplyIoctl {
-    /// Reply to a request with the given open result
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with an ioctl
     pub fn ioctl(self, result: i32, data: &[u8]) {
-        self.reply
-            .send_ll(&ll::Response::new_ioctl(result, &[IoSlice::new(data)]));
+        self.send_ll(&ll::Response::new_ioctl(result, data));
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Poll Reply
-///
-#[derive(Debug)]
-#[cfg(feature = "abi-7-11")]
-pub struct ReplyPoll {
-    reply: ReplyRaw,
-}
-
-#[cfg(feature = "abi-7-11")]
-impl Reply for ReplyPoll {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyPoll {
-        ReplyPoll {
-            reply: Reply::new(unique, sender),
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with an ioctl or an error
+    pub fn ioctl_or_err(self, result: Result<Ioctl, Errno>) {
+        match result {
+            Ok(ioctl) => self.ioctl(ioctl.result, &ioctl.data),
+            Err(err) => self.error(err),
         }
     }
-}
 
-#[cfg(feature = "abi-7-11")]
-impl ReplyPoll {
-    /// Reply to a request with the given poll result
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with a poll events
     pub fn poll(self, revents: u32) {
-        self.reply.send_ll(&ll::Response::new_poll(revents))
+        self.send_ll(&ll::Response::new_poll(revents));
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Directory reply
-///
-#[derive(Debug)]
-pub struct ReplyDirectory {
-    reply: ReplyRaw,
-    data: DirEntList,
-}
-
-impl ReplyDirectory {
-    /// Creates a new ReplyDirectory with a specified buffer size.
-    pub fn new<S: ReplySender>(unique: u64, sender: S, size: usize) -> ReplyDirectory {
-        ReplyDirectory {
-            reply: Reply::new(unique, sender),
-            data: DirEntList::new(size),
+    #[cfg(feature = "abi-7-11")]
+    /// Reply to a request with a poll events or an error
+    pub fn poll_or_err(self, result: Result<u32, Errno>) {
+        match result {
+            Ok(revents) => self.poll(revents),
+            Err(err) => self.error(err),
         }
     }
 
-    /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
-    /// A transparent offset value can be provided for each entry. The kernel uses these
-    /// value to request the next entries in further readdir calls
-    #[must_use]
-    pub fn add<T: AsRef<OsStr>>(&mut self, ino: u64, offset: i64, kind: FileType, name: T) -> bool {
-        let name = name.as_ref();
-        self.data.push(&DirEntry::new(
-            INodeNo(ino),
-            DirEntOffset(offset),
-            kind,
-            name,
-        ))
+    /// Reply to a request with a filled directory buffer
+    pub fn dir(
+        self,
+        entries_list: &[DirEntry],
+        min_offset: i64,
+        size: usize,
+        /* blank space */
+    ) {
+        let mut buf = DirentBuf::new(size);
+        for item in entries_list.iter() {
+            if item.offset <= min_offset {
+                log::debug!(
+                    "ReplyHandler::dir: skipping item with offset #{}",
+                    item.offset
+                );
+                continue;
+            }
+            log::debug!(
+                "ReplyHandler::dir: processing item with offset #{}",
+                item.offset
+            );
+            match buf.push(item) {
+                Ok(true) => {
+                    log::debug!("ReplyHandler::dir: buffer full!");
+                    break;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    log::error!("ReplyHandler::dir: abort!");
+                    self.error(e);
+                    return;
+                }
+            }
+        }
+        self.send_ll(&buf.into());
     }
 
-    /// Reply to a request with the filled directory buffer
-    pub fn ok(self) {
-        self.reply.send_ll(&self.data.into());
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// DirectoryPlus reply
-///
-#[derive(Debug)]
-pub struct ReplyDirectoryPlus {
-    reply: ReplyRaw,
-    buf: DirEntPlusList,
-}
-
-impl ReplyDirectoryPlus {
-    /// Creates a new ReplyDirectory with a specified buffer size.
-    pub fn new<S: ReplySender>(unique: u64, sender: S, size: usize) -> ReplyDirectoryPlus {
-        ReplyDirectoryPlus {
-            reply: Reply::new(unique, sender),
-            buf: DirEntPlusList::new(size),
+    /// Reply to a request with a filled directory buffer or an error
+    pub fn dir_or_err(
+        self,
+        result: Result<Vec<DirEntry>, Errno>,
+        min_offset: i64,
+        size: usize,
+        /* blank space */
+    ) {
+        match result {
+            Ok(entries) => self.dir(&entries, min_offset, size),
+            Err(err) => self.error(err),
         }
     }
 
-    /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
-    /// A transparent offset value can be provided for each entry. The kernel uses these
-    /// value to request the next entries in further readdir calls
-    pub fn add<T: AsRef<OsStr>>(
-        &mut self,
-        ino: u64,
-        offset: i64,
-        name: T,
-        ttl: &Duration,
-        attr: &FileAttr,
-        generation: u64,
-    ) -> bool {
-        let name = name.as_ref();
-        self.buf.push(&DirEntryPlus::new(
-            INodeNo(ino),
-            Generation(generation),
-            DirEntOffset(offset),
-            name,
-            *ttl,
-            attr.into(),
-            *ttl,
-        ))
+    #[cfg(feature = "abi-7-21")]
+    // Reply to a request with a filled directory plus buffer
+    pub fn dirplus(
+        self,
+        entries_plus_list: &DirentPlusList,
+        min_offset: i64,
+        size: usize,
+        /* blank space */
+    ) {
+        let mut buf = DirentPlusBuf::new(size);
+        let entries_safe_borrow = match entries_plus_list.lock() {
+            Ok(entries) => entries,
+            Err(e) => {
+                log::error!("ReplyHandler::dirplus: Borrow Error: {e:?}");
+                // Alternatively, consider a panic if the borrow fails.
+                self.error(Errno::EIO);
+                return;
+            }
+        };
+        for (dirent, entry) in entries_safe_borrow.iter() {
+            if dirent.offset <= min_offset {
+                log::debug!(
+                    "ReplyHandler::dirplus: skipping item with offset #{}",
+                    dirent.offset
+                );
+                continue;
+            }
+            log::debug!(
+                "ReplyHandler::dirplus: processing item with offset #{}",
+                dirent.offset
+            );
+            match buf.push(dirent, entry) {
+                Ok(true) => {
+                    log::debug!("ReplyHandler::dirplus: buffer full!");
+                    break;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    log::error!("ReplyHandler::dirplus: abort!");
+                    self.error(e);
+                    return;
+                }
+            }
+        }
+        self.send_ll(&buf.into());
     }
 
-    /// Reply to a request with the filled directory buffer
-    pub fn ok(self) {
-        self.reply.send_ll(&self.buf.into());
-    }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Xattr reply
-///
-#[derive(Debug)]
-pub struct ReplyXattr {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyXattr {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyXattr {
-        ReplyXattr {
-            reply: Reply::new(unique, sender),
+    #[cfg(feature = "abi-7-21")]
+    // Reply to a request with a filled directory plus buffer or an error
+    pub fn dirplus_or_err(
+        self,
+        result: Result<DirentPlusList, Errno>,
+        min_offset: i64,
+        size: usize,
+        /* blank space */
+    ) {
+        match result {
+            Ok(entries) => self.dirplus(&entries, min_offset, size),
+            Err(err) => self.error(err),
         }
     }
-}
 
-impl ReplyXattr {
-    /// Reply to a request with the size of the xattr.
-    pub fn size(self, size: u32) {
-        self.reply.send_ll(&ll::Response::new_xattr_size(size))
-    }
-
-    /// Reply to a request with the data in the xattr.
-    pub fn data(self, data: &[u8]) {
-        self.reply.send_ll(&ll::Response::new_slice(data))
-    }
-
-    /// Reply to a request with the given error code.
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
-}
-
-///
-/// Lseek Reply
-///
-#[derive(Debug)]
-pub struct ReplyLseek {
-    reply: ReplyRaw,
-}
-
-impl Reply for ReplyLseek {
-    fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyLseek {
-        ReplyLseek {
-            reply: Reply::new(unique, sender),
+    /// Reply to a request with extended attribute information
+    pub fn xattr(self, reply: Xattr) {
+        match reply {
+            Xattr::Size(s) => self.xattr_size(s),
+            Xattr::Data(d) => self.xattr_data(&d),
         }
     }
-}
 
-impl ReplyLseek {
-    /// Reply to a request with seeked offset
+    /// Reply to a request with the size of an extended attribute
+    pub fn xattr_size(self, size: u32) {
+        self.send_ll(&ll::Response::new_xattr_size(size));
+    }
+
+    /// Reply to a request with the data of an extended attribute
+    pub fn xattr_data(self, data: &[u8]) {
+        self.send_ll(&ll::Response::new_slice(data));
+    }
+
+    /// Reply to a request with extended attribute information or an error
+    pub fn xattr_or_err(self, result: Result<Xattr, Errno>) {
+        match result {
+            Ok(xattr) => self.xattr(xattr),
+            Err(err) => self.error(err),
+        }
+    }
+
+    #[cfg(feature = "abi-7-24")]
+    /// Reply to a request with a seeked offset
     pub fn offset(self, offset: i64) {
-        self.reply.send_ll(&ll::Response::new_lseek(offset))
+        self.send_ll(&ll::Response::new_lseek(offset));
     }
 
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
+    #[cfg(feature = "abi-7-24")]
+    /// Reply to a request with a seeked offset or an error
+    pub fn offset_or_err(self, result: Result<i64, Errno>) {
+        match result {
+            Ok(offset) => self.offset(offset),
+            Err(err) => self.error(err),
+        }
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unreadable_literal)] // ugly hardcoded literals for testing
+#[allow(clippy::cast_possible_truncation)] // predetermined literals will not be truncated
 mod test {
+    #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::{FileAttr, FileType};
+    #[cfg(feature = "abi-7-24")]
+    use std::ffi::OsStr;
     use std::io::IoSlice;
+    #[cfg(feature = "abi-7-24")]
+    use std::os::unix::ffi::OsStrExt;
     use std::sync::mpsc::{SyncSender, sync_channel};
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
@@ -739,15 +707,10 @@ mod test {
         fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
             let mut v = vec![];
             for x in data {
-                v.extend_from_slice(x)
+                v.extend_from_slice(x);
             }
             assert_eq!(self.expected, v);
             Ok(())
-        }
-
-        #[cfg(feature = "abi-7-40")]
-        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
-            unreachable!()
         }
     }
 
@@ -764,8 +727,8 @@ mod test {
                 0x00, 0x00, 0x12, 0x34, 0x78, 0x56,
             ],
         };
-        let reply: ReplyRaw = Reply::new(0xdeadbeef, sender);
-        reply.send_ll(&ll::Response::new_data(data.as_bytes()));
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.send_ll(&ll::Response::new_data(data.as_bytes()));
     }
 
     #[test]
@@ -776,8 +739,8 @@ mod test {
                 0x00, 0x00,
             ],
         };
-        let reply: ReplyRaw = Reply::new(0xdeadbeef, sender);
-        reply.error(66);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.error(Errno::from_i32(66));
     }
 
     #[test]
@@ -788,8 +751,8 @@ mod test {
                 0x00, 0x00,
             ],
         };
-        let reply: ReplyEmpty = Reply::new(0xdeadbeef, sender);
-        reply.ok();
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.ok();
     }
 
     #[test]
@@ -800,125 +763,147 @@ mod test {
                 0x00, 0x00, 0xde, 0xad, 0xbe, 0xef,
             ],
         };
-        let reply: ReplyData = Reply::new(0xdeadbeef, sender);
-        reply.data(&[0xde, 0xad, 0xbe, 0xef]);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.data(&[0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    macro_rules! default_attr_struct {
+        () => {{
+            let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+            FileAttr {
+                ino: 0x11,
+                size: 0x22,
+                blocks: 0x33,
+                atime: time,
+                mtime: time,
+                ctime: time,
+                crtime: time,
+                kind: FileType::RegularFile,
+                perm: 0o644,
+                nlink: 0x55,
+                uid: 0x66,
+                gid: 0x77,
+                rdev: 0x88,
+                flags: 0x99,
+                blksize: 0xbb,
+            }
+        }};
+    }
+
+    macro_rules! default_attr_bytes {
+        () => {{
+            let mut expected = Vec::new();
+            expected.extend_from_slice(&[
+                // inode attributes
+                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ino */
+                0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
+                0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* blocks */
+            ]);
+            expected.extend_from_slice(&[
+                // timestamps (s)
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* atime */
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* mtime */
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ctime */
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* crtime */
+            ]);
+            expected.extend_from_slice(&[
+                // timestamps (nanos)
+                0x78, 0x56, 0x00, 0x00, /* atime */
+                0x78, 0x56, 0x00, 0x00, /* mtime */
+                0x78, 0x56, 0x00, 0x00, /* ctime */
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[0x78, 0x56, 0x00, 0x00 /* crtime */]);
+            expected.extend_from_slice(&[
+                // access attributes
+                0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00, 0x77, 0x00,
+                0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[
+                // macos flags
+                0x99, 0x00, 0x00, 0x00,
+            ]);
+            #[cfg(feature = "abi-7-9")]
+            expected.extend_from_slice(&[
+                // block size
+                0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ]);
+            // return
+            expected
+        }};
     }
 
     #[test]
     fn reply_entry() {
-        let mut expected = if cfg!(target_os = "macos") {
-            vec![
-                0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56,
-                0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
-                0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x99, 0x00, 0x00, 0x00,
-            ]
-        } else {
-            vec![
-                0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00,
-                0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
-            ]
-        };
-
-        if cfg!(feature = "abi-7-9") {
-            expected.extend(vec![0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        }
+        // prepare the expected message
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&[
+            // FUSE header
+            0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, /* request id */
+        ]);
+        expected.extend_from_slice(&[
+            // ino
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+            // generation
+            0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+            // file ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
+        ]);
+        expected.extend_from_slice(&[
+            // attr ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* whole seconds */
+            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, /* nanoseconds */
+        ]);
+        expected.extend(default_attr_bytes!().iter());
+        // correct the header using the actual length
         expected[0] = (expected.len()) as u8;
-
+        // test reply will be compare with the expected message
         let sender = AssertSender { expected };
-        let reply: ReplyEntry = Reply::new(0xdeadbeef, sender);
-        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+        // prepare the test reply
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let ttl = Duration::new(0x8765, 0x4321);
-        let attr = FileAttr {
-            ino: 0x11,
-            size: 0x22,
-            blocks: 0x33,
-            atime: time,
-            mtime: time,
-            ctime: time,
-            crtime: time,
-            kind: FileType::RegularFile,
-            perm: 0o644,
-            nlink: 0x55,
-            uid: 0x66,
-            gid: 0x77,
-            rdev: 0x88,
-            flags: 0x99,
-            blksize: 0xbb,
-        };
-        reply.entry(&ttl, &attr, 0xaa);
+        let attr = default_attr_struct!();
+        // send the test reply
+        replyhandler.entry(&Entry {
+            ino: attr.ino,
+            generation: Some(0xaa),
+            file_ttl: ttl,
+            attr,
+            attr_ttl: ttl,
+        });
     }
 
     #[test]
     fn reply_attr() {
-        let mut expected = if cfg!(target_os = "macos") {
-            vec![
-                0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56,
-                0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00,
-                0x66, 0x00, 0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x99, 0x00,
-                0x00, 0x00,
-            ]
-        } else {
-            vec![
-                0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00,
-                0x00, 0x00, 0x66, 0x00, 0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
-            ]
-        };
+        let mut expected = vec![
+            // FUSE header
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, /* request id */
+        ];
+        expected.extend_from_slice(&[
+            // ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
+            0x21, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* nanoseconds */
+        ]);
+        expected.extend(default_attr_bytes!().iter());
 
-        if cfg!(feature = "abi-7-9") {
-            expected.extend_from_slice(&[0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        }
+        // correct size field of header
         expected[0] = expected.len() as u8;
 
         let sender = AssertSender { expected };
-        let reply: ReplyAttr = Reply::new(0xdeadbeef, sender);
-        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let ttl = Duration::new(0x8765, 0x4321);
-        let attr = FileAttr {
-            ino: 0x11,
-            size: 0x22,
-            blocks: 0x33,
-            atime: time,
-            mtime: time,
-            ctime: time,
-            crtime: time,
-            kind: FileType::RegularFile,
-            perm: 0o644,
-            nlink: 0x55,
-            uid: 0x66,
-            gid: 0x77,
-            rdev: 0x88,
-            flags: 0x99,
-            blksize: 0xbb,
-        };
-        reply.attr(&ttl, &attr);
+        let attr = default_attr_struct!();
+        replyhandler.attr(&attr, &ttl);
     }
 
     #[test]
@@ -931,22 +916,65 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
             ],
         };
-        let reply: ReplyXTimes = Reply::new(0xdeadbeef, sender);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
-        reply.xtimes(time, time);
+        replyhandler.xtimes(XTimes {
+            bkuptime: time,
+            crtime: time,
+        });
     }
 
+    macro_rules! default_open_struct {
+        () => {{
+            #[cfg(feature = "abi-7-40")]
+            let backing_byte: u8 = 0x44;
+            #[cfg(not(feature = "abi-7-40"))]
+            let backing_byte: u8 = 0x00;
+            Open {
+                fh: 0x1122,
+                flags: 0x33,
+                backing_id: Some(u32::from(backing_byte)),
+            }
+        }};
+    }
+
+    macro_rules! default_open_bytes {
+        () => {{
+            #[cfg(feature = "abi-7-40")]
+            let backing_byte: u8 = 0x44;
+            #[cfg(not(feature = "abi-7-40"))]
+            let backing_byte: u8 = 0x00;
+            let mut expected = vec![
+                // file handle
+                0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ];
+            expected.extend_from_slice(&[
+                // flags
+                0x33, 0x00, 0x00, 0x00,
+            ]);
+            expected.extend_from_slice(&[
+                // backing id
+                backing_byte,
+                0x00,
+                0x00,
+                0x00,
+            ]);
+            // return
+            expected
+        }};
+    }
     #[test]
     fn reply_open() {
-        let sender = AssertSender {
-            expected: vec![
-                0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ],
-        };
-        let reply: ReplyOpen = Reply::new(0xdeadbeef, sender);
-        reply.opened(0x1122, 0x33);
+        let mut expected = vec![
+            // FUSE header
+            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // size
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // request id
+        ];
+        expected.extend(&default_open_bytes!());
+
+        let sender = AssertSender { expected };
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.opened(&default_open_struct!());
     }
 
     #[test]
@@ -957,8 +985,8 @@ mod test {
                 0x00, 0x00, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyWrite = Reply::new(0xdeadbeef, sender);
-        reply.written(0x1122);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.written(0x1122);
     }
 
     #[test]
@@ -974,74 +1002,62 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyStatfs = Reply::new(0xdeadbeef, sender);
-        reply.statfs(0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.statfs(&Statfs {
+            blocks: 0x11,
+            bfree: 0x22,
+            bavail: 0x33,
+            files: 0x44,
+            ffree: 0x55,
+            bsize: 0x66,
+            namelen: 0x77,
+            frsize: 0x88,
+        });
     }
 
     #[test]
     fn reply_create() {
-        let mut expected = if cfg!(target_os = "macos") {
-            vec![
-                0xa8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56,
-                0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
-                0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x99, 0x00, 0x00, 0x00, 0xbb, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]
-        } else {
-            vec![
-                0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00,
-                0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0xbb, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]
-        };
-
-        if cfg!(feature = "abi-7-9") {
-            let insert_at = expected.len() - 16;
-            expected.splice(
-                insert_at..insert_at,
-                vec![0xdd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            );
-        }
+        let mut expected = vec![
+            // FUSE header
+            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // size
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // request id
+        ];
+        expected.extend_from_slice(&[
+            // ino
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+            // generation
+            0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+            // file ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
+        ]);
+        expected.extend_from_slice(&[
+            // attr ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* whole seconds */
+            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, /* nanoseconds */
+        ]);
+        expected.extend(&default_attr_bytes!());
+        expected.extend(&default_open_bytes!());
         expected[0] = (expected.len()) as u8;
 
         let sender = AssertSender { expected };
-        let reply: ReplyCreate = Reply::new(0xdeadbeef, sender);
-        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let ttl = Duration::new(0x8765, 0x4321);
-        let attr = FileAttr {
-            ino: 0x11,
-            size: 0x22,
-            blocks: 0x33,
-            atime: time,
-            mtime: time,
-            ctime: time,
-            crtime: time,
-            kind: FileType::RegularFile,
-            perm: 0o644,
-            nlink: 0x55,
-            uid: 0x66,
-            gid: 0x77,
-            rdev: 0x88,
-            flags: 0x99,
-            blksize: 0xdd,
-        };
-        reply.created(&ttl, &attr, 0xaa, 0xbb, 0xcc);
+        let attr = default_attr_struct!();
+        let open = default_open_struct!();
+        replyhandler.created(
+            &Entry {
+                ino: attr.ino,
+                generation: Some(0xaa),
+                file_ttl: ttl,
+                attr,
+                attr_ttl: ttl,
+            },
+            &open,
+        );
     }
 
     #[test]
@@ -1053,8 +1069,13 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x44, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyLock = Reply::new(0xdeadbeef, sender);
-        reply.locked(0x11, 0x22, 0x33, 0x44);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.locked(&Lock {
+            start: 0x11,
+            end: 0x22,
+            typ: 0x33,
+            pid: 0x44,
+        });
     }
 
     #[test]
@@ -1065,8 +1086,8 @@ mod test {
                 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply: ReplyBmap = Reply::new(0xdeadbeef, sender);
-        reply.bmap(0x1234);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.bmap(0x1234);
     }
 
     #[test]
@@ -1081,10 +1102,140 @@ mod test {
                 0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
             ],
         };
-        let mut reply = ReplyDirectory::new(0xdeadbeef, sender, 4096);
-        assert!(!reply.add(0xaabb, 1, FileType::Directory, "hello"));
-        assert!(!reply.add(0xccdd, 2, FileType::RegularFile, "world.rs"));
-        reply.ok();
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let entries = vec![
+            DirEnt {
+                ino: 0xaabb,
+                offset: 1,
+                kind: FileType::Directory,
+                name: Vec::from(b"hello"),
+            },
+            DirEnt {
+                ino: 0xccdd,
+                offset: 2,
+                kind: FileType::RegularFile,
+                name: Vec::from(b"world.rs"),
+            },
+        ];
+        replyhandler.dir(&entries.into(), 0, std::mem::size_of::<u8>() * 128);
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-24")]
+    fn reply_directory_plus() {
+        // prepare the expected file attribute portion of the message
+        // see test::reply_entry() for details
+        let mut entry_bytes = Vec::new();
+        entry_bytes.extend_from_slice(&[
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
+        ]);
+        let mut attr_bytes = default_attr_bytes!();
+
+        let mut expected = Vec::new();
+
+        expected.extend_from_slice(&[
+            // FUSE header
+            0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
+            0x00, 0x00,
+        ]);
+
+        /* ------ file 1 ------- */
+        // entry 1 and attr 1 get a specific ino value
+        entry_bytes[0] = 0xbb;
+        entry_bytes[1] = 0xaa;
+        attr_bytes[0] = 0xbb;
+        attr_bytes[1] = 0xaa;
+        // entry 1 and attr 1 have the directory
+        let i = if cfg!(target_os = "macos") { 73 } else { 61 };
+        attr_bytes[i] = 0x41;
+        expected.extend_from_slice(&entry_bytes);
+        expected.extend_from_slice(&attr_bytes);
+        // dirent 1
+        // see test::reply_directory() for details
+        expected.extend_from_slice(&[
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c,
+            0x6f, 0x00, 0x00, 0x00,
+        ]);
+
+        /* ------ file 2 ------- */
+        let mut attr_bytes = default_attr_bytes!();
+        // entry 2 and attr 2 get a specific ino value
+        entry_bytes[0] = 0xdd;
+        entry_bytes[1] = 0xcc;
+        attr_bytes[0] = 0xdd;
+        attr_bytes[1] = 0xcc;
+        expected.extend_from_slice(&entry_bytes);
+        expected.extend_from_slice(&attr_bytes);
+        // dirent 2
+        expected.extend_from_slice(&[
+            0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c,
+            0x64, 0x2e, 0x72, 0x73,
+        ]);
+        // correct the header
+        expected[0] = (expected.len()) as u8;
+        // test reply will be compared to expected
+        let sender = AssertSender { expected };
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+        let ttl = Duration::new(0x8765, 0x4321);
+        let attr1 = FileAttr {
+            ino: 0xaabb,
+            size: 0x22,
+            blocks: 0x33,
+            atime: time,
+            mtime: time,
+            ctime: time,
+            crtime: time,
+            kind: FileType::Directory,
+            perm: 0o644,
+            nlink: 0x55,
+            uid: 0x66,
+            gid: 0x77,
+            rdev: 0x88,
+            flags: 0x99,
+            blksize: 0xbb,
+        };
+        let mut attr2 = attr1; //implicit copy
+        attr2.ino = 0xccdd;
+        attr2.kind = FileType::RegularFile;
+        let generation = Some(0xaa);
+        let entries = vec![
+            (
+                DirEntry {
+                    ino: 0xaabb,
+                    offset: 1,
+                    kind: FileType::Directory,
+                    name: Bytes::from_static(OsStr::new("hello").as_bytes()),
+                },
+                Entry {
+                    ino: 0xaabb,
+                    generation,
+                    file_ttl: ttl,
+                    attr: attr1,
+                    attr_ttl: ttl,
+                },
+            ),
+            (
+                DirEntry {
+                    ino: 0xccdd,
+                    offset: 2,
+                    kind: FileType::RegularFile,
+                    name: Bytes::from_static(OsStr::new("world.rs").as_bytes()),
+                },
+                Entry {
+                    ino: 0xccdd,
+                    generation,
+                    file_ttl: ttl,
+                    attr: attr2,
+                    attr_ttl: ttl,
+                },
+            ),
+        ];
+        replyhandler.dirplus(&entries.into(), 0, std::mem::size_of::<u8>() * 4096);
     }
 
     #[test]
@@ -1095,8 +1246,8 @@ mod test {
                 0x00, 0x00, 0x78, 0x56, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let reply = ReplyXattr::new(0xdeadbeef, sender);
-        reply.size(0x12345678);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.xattr(Xattr::Size(0x12345678));
     }
 
     #[test]
@@ -1107,8 +1258,8 @@ mod test {
                 0x00, 0x00, 0x11, 0x22, 0x33, 0x44,
             ],
         };
-        let reply = ReplyXattr::new(0xdeadbeef, sender);
-        reply.data(&[0x11, 0x22, 0x33, 0x44]);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        replyhandler.xattr(Xattr::Data(Vec::from(&[0x11, 0x22, 0x33, 0x44])));
     }
 
     impl super::ReplySender for SyncSender<()> {
@@ -1116,19 +1267,14 @@ mod test {
             self.send(()).unwrap();
             Ok(())
         }
-
-        #[cfg(feature = "abi-7-40")]
-        fn open_backing(&self, _fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
-            unreachable!()
-        }
     }
 
     #[test]
-    fn async_reply() {
+    fn threaded_reply() {
         let (tx, rx) = sync_channel::<()>(1);
-        let reply: ReplyEmpty = Reply::new(0xdeadbeef, tx);
+        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, tx);
         thread::spawn(move || {
-            reply.ok();
+            replyhandler.ok();
         });
         rx.recv().unwrap();
     }

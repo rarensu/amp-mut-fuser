@@ -28,19 +28,24 @@ pub use ll::fuse_abi::fuse_forget_one;
 pub use mnt::mount_options::MountOption;
 #[cfg(feature = "abi-7-11")]
 pub use notify::{Notifier, PollHandle};
+#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::ReplyIoctl;
+#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::ReplyDirectoryPlus;
+#[cfg(feature = "abi-7-24")]
+pub use trait_legacy::ReplyLseek;
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
 #[cfg(feature = "abi-7-11")]
-pub use reply::ReplyPoll;
+pub use trait_legacy::ReplyPoll;
 #[cfg(target_os = "macos")]
-pub use reply::ReplyXTimes;
-pub use reply::ReplyXattr;
-pub use reply::{Reply, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen};
-pub use reply::{
-    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyDirectoryPlus, ReplyIoctl, ReplyLock, ReplyLseek,
-    ReplyStatfs, ReplyWrite,
+pub use trait_legacy::ReplyXTimes;
+pub use trait_legacy::{
+    ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyXattr,
+    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite,
 };
 pub use request::Request;
+pub use reply::{FileAttr, FileType};
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
@@ -89,62 +94,6 @@ const fn default_init_flags(#[allow(unused_variables)] capabilities: u64) -> u64
         }
         flags
     }
-}
-
-/// File types
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-pub enum FileType {
-    /// Named pipe (S_IFIFO)
-    NamedPipe,
-    /// Character device (S_IFCHR)
-    CharDevice,
-    /// Block device (S_IFBLK)
-    BlockDevice,
-    /// Directory (S_IFDIR)
-    Directory,
-    /// Regular file (S_IFREG)
-    RegularFile,
-    /// Symbolic link (S_IFLNK)
-    Symlink,
-    /// Unix domain socket (S_IFSOCK)
-    Socket,
-}
-
-/// File attributes
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-pub struct FileAttr {
-    /// Inode number
-    pub ino: u64,
-    /// Size in bytes
-    pub size: u64,
-    /// Size in blocks
-    pub blocks: u64,
-    /// Time of last access
-    pub atime: SystemTime,
-    /// Time of last modification
-    pub mtime: SystemTime,
-    /// Time of last change
-    pub ctime: SystemTime,
-    /// Time of creation (macOS only)
-    pub crtime: SystemTime,
-    /// Kind of file (directory, file, pipe, etc)
-    pub kind: FileType,
-    /// Permissions
-    pub perm: u16,
-    /// Number of hard links
-    pub nlink: u32,
-    /// User id
-    pub uid: u32,
-    /// Group id
-    pub gid: u32,
-    /// Rdev
-    pub rdev: u32,
-    /// Block size
-    pub blksize: u32,
-    /// Flags (macOS only, see chflags(2))
-    pub flags: u32,
 }
 
 /// Configuration of the fuse kernel module connection

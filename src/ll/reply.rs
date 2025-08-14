@@ -79,9 +79,9 @@ impl<'a> Response<'a> {
     pub(crate) fn new_entry(
         ino: INodeNo,
         generation: Generation,
-        attr: &Attr,
-        attr_ttl: Duration,
         entry_ttl: Duration,
+        attr: &crate::FileAttr,
+        attr_ttl: Duration,
     ) -> Self {
         let d = abi::fuse_entry_out {
             nodeid: ino.into(),
@@ -90,17 +90,17 @@ impl<'a> Response<'a> {
             attr_valid: attr_ttl.as_secs(),
             entry_valid_nsec: entry_ttl.subsec_nanos(),
             attr_valid_nsec: attr_ttl.subsec_nanos(),
-            attr: attr.attr,
+            attr: fuse_attr_from_attr(attr),
         };
         Self::from_struct(d.as_bytes())
     }
 
-    pub(crate) fn new_attr(ttl: &Duration, attr: &Attr) -> Self {
+    pub(crate) fn new_attr(ttl: &Duration, attr: &crate::reply::FileAttr) -> Self {
         let r = abi::fuse_attr_out {
             attr_valid: ttl.as_secs(),
             attr_valid_nsec: ttl.subsec_nanos(),
             dummy: 0,
-            attr: attr.attr,
+            attr: fuse_attr_from_attr(attr),
         };
         Self::from_struct(&r)
     }
@@ -189,8 +189,9 @@ impl<'a> Response<'a> {
 
     // TODO: Can flags be more strongly typed?
     pub(crate) fn new_create(
-        ttl: &Duration,
+        file_ttl: &Duration,
         attr: &Attr,
+        attr_ttl: &Duration,
         generation: Generation,
         fh: FileHandle,
         flags: u32,
@@ -203,10 +204,10 @@ impl<'a> Response<'a> {
             abi::fuse_entry_out {
                 nodeid: attr.attr.ino,
                 generation: generation.into(),
-                entry_valid: ttl.as_secs(),
-                attr_valid: ttl.as_secs(),
-                entry_valid_nsec: ttl.subsec_nanos(),
-                attr_valid_nsec: ttl.subsec_nanos(),
+                entry_valid: file_ttl.as_secs(),
+                attr_valid: attr_ttl.as_secs(),
+                entry_valid_nsec: file_ttl.subsec_nanos(),
+                attr_valid_nsec: attr_ttl.subsec_nanos(),
                 attr: attr.attr,
             },
             abi::fuse_open_out {
@@ -247,7 +248,7 @@ impl<'a> Response<'a> {
         Self::from_struct(&r)
     }
 
-    fn new_directory(list: EntListBuf) -> Self {
+    pub(crate) fn new_directory(list: EntListBuf) -> Self {
         assert!(list.buf.len() <= list.max_size);
         Self::Data(list.buf)
     }
@@ -262,7 +263,7 @@ impl<'a> Response<'a> {
         Self::from_struct(&r)
     }
 
-    fn from_struct<T: IntoBytes + Immutable + ?Sized>(data: &T) -> Self {
+    pub(crate) fn from_struct<T: IntoBytes + Immutable + ?Sized>(data: &T) -> Self {
         Self::Data(SmallVec::from_slice(data.as_bytes()))
     }
 }
@@ -295,7 +296,7 @@ pub(crate) fn mode_from_kind_and_perm(kind: FileType, perm: u16) -> u32 {
         | perm as u32
 }
 /// Returns a fuse_attr from FileAttr
-pub(crate) fn fuse_attr_from_attr(attr: &crate::FileAttr) -> abi::fuse_attr {
+pub(crate) fn fuse_attr_from_attr(attr: &crate::reply::FileAttr) -> abi::fuse_attr {
     let (atime_secs, atime_nanos) = time_from_system_time(&attr.atime);
     let (mtime_secs, mtime_nanos) = time_from_system_time(&attr.mtime);
     let (ctime_secs, ctime_nanos) = time_from_system_time(&attr.ctime);
@@ -351,12 +352,12 @@ impl From<crate::FileAttr> for Attr {
 }
 
 #[derive(Debug)]
-struct EntListBuf {
+pub(crate) struct EntListBuf {
     max_size: usize,
     buf: ResponseBuf,
 }
 impl EntListBuf {
-    fn new(max_size: usize) -> Self {
+    pub(crate) fn new(max_size: usize) -> Self {
         Self {
             max_size,
             buf: ResponseBuf::new(),
@@ -367,7 +368,7 @@ impl EntListBuf {
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
     #[must_use]
-    fn push(&mut self, ent: [&[u8]; 2]) -> bool {
+    pub(crate) fn push(&mut self, ent: [&[u8]; 2]) -> bool {
         let entlen = ent[0].len() + ent[1].len();
         let entsize = (entlen + size_of::<u64>() - 1) & !(size_of::<u64>() - 1); // 64bit align
         if self.buf.len() + entsize > self.max_size {
@@ -410,15 +411,15 @@ impl<T: AsRef<Path>> DirEntry<T> {
 
 /// Used to respond to [ReadDirPlus] requests.
 #[derive(Debug)]
-pub struct DirEntList(EntListBuf);
-impl From<DirEntList> for Response<'_> {
-    fn from(l: DirEntList) -> Self {
+pub struct DirentBuf(EntListBuf);
+impl From<DirentBuf> for Response<'_> {
+    fn from(l: DirentBuf) -> Self {
         assert!(l.0.buf.len() <= l.0.max_size);
         Response::new_directory(l.0)
     }
 }
 
-impl DirEntList {
+impl DirentBuf {
     pub(crate) fn new(max_size: usize) -> Self {
         Self(EntListBuf::new(max_size))
     }
@@ -439,77 +440,47 @@ impl DirEntList {
 }
 
 #[derive(Debug)]
-pub struct DirEntryPlus<T: AsRef<Path>> {
-    #[allow(unused)] // We use `attr.ino` instead
-    ino: INodeNo,
-    generation: Generation,
-    offset: DirEntOffset,
-    name: T,
-    entry_valid: Duration,
-    attr: Attr,
-    attr_valid: Duration,
-}
+pub(crate) struct DirentPlusBuf(EntListBuf);
 
-impl<T: AsRef<Path>> DirEntryPlus<T> {
-    pub fn new(
-        ino: INodeNo,
-        generation: Generation,
-        offset: DirEntOffset,
-        name: T,
-        entry_valid: Duration,
-        attr: Attr,
-        attr_valid: Duration,
-    ) -> Self {
-        Self {
-            ino,
-            generation,
-            offset,
-            name,
-            entry_valid,
-            attr,
-            attr_valid,
-        }
-    }
-}
-
-/// Used to respond to [ReadDir] requests.
-#[derive(Debug)]
-pub struct DirEntPlusList(EntListBuf);
-impl From<DirEntPlusList> for Response<'_> {
-    fn from(l: DirEntPlusList) -> Self {
+#[cfg(feature = "abi-7-21")]
+impl From<DirentPlusBuf> for Response<'_> {
+    fn from(l: DirentPlusBuf) -> Self {
         assert!(l.0.buf.len() <= l.0.max_size);
         Response::new_directory(l.0)
     }
 }
 
-impl DirEntPlusList {
+#[cfg(feature = "abi-7-21")]
+impl DirentPlusBuf {
     pub(crate) fn new(max_size: usize) -> Self {
         Self(EntListBuf::new(max_size))
     }
     /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
-    #[must_use]
-    pub fn push<T: AsRef<Path>>(&mut self, x: &DirEntryPlus<T>) -> bool {
-        let name = x.name.as_ref().as_os_str().as_bytes();
+    pub fn push(
+        &mut self,
+        x: &DirEntry,
+        y: &crate::Entry,
+    ) -> Result<bool, Errno> {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {
-                nodeid: x.attr.attr.ino,
-                generation: x.generation.into(),
-                entry_valid: x.entry_valid.as_secs(),
-                attr_valid: x.attr_valid.as_secs(),
-                entry_valid_nsec: x.entry_valid.subsec_nanos(),
-                attr_valid_nsec: x.attr_valid.subsec_nanos(),
-                attr: x.attr.attr,
+                nodeid: y.ino,
+                generation: y.generation.unwrap_or(1),
+                entry_valid: y.file_ttl.as_secs(),
+                attr_valid: y.attr_ttl.as_secs(),
+                entry_valid_nsec: y.file_ttl.subsec_nanos(),
+                attr_valid_nsec: y.attr_ttl.subsec_nanos(),
+                attr: fuse_attr_from_attr(&y.attr),
             },
             dirent: abi::fuse_dirent {
-                ino: x.attr.attr.ino,
-                off: x.offset.into(),
-                namelen: name.len().try_into().expect("Name too long"),
-                typ: x.attr.attr.mode >> 12,
+                ino: x.ino,
+                off: x.offset,
+                namelen: x.name.len().try_into().expect("Name too long"),
+                typ: mode_from_kind_and_perm(x.kind, 0) >> 12,
             },
         };
-        self.0.push([header.as_bytes(), name])
+        Ok(self.0.push([header.as_bytes(), &x.name]))
     }
 }
 
@@ -611,7 +582,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), &attr.into(), ttl, ttl);
+        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr.into(), ttl);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected
@@ -802,6 +773,7 @@ mod test {
         let r = Response::new_create(
             &ttl,
             &attr.into(),
+            &ttl,
             Generation(0xaa),
             FileHandle(0xbb),
             0xcc,
@@ -880,7 +852,7 @@ mod test {
             0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00,
             0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
         ];
-        let mut buf = DirEntList::new(4096);
+        let mut buf = DirentBuf::new(4096);
         assert!(!buf.push(&DirEntry::new(
             INodeNo(0xaabb),
             DirEntOffset(1),
