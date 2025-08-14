@@ -385,7 +385,6 @@ pub trait Filesystem: Send + Sync {
     async fn opendir(&self, req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
         warn!("[Not Implemented] open(ino: {ino:#x?}, flags: {flags})");
         Err(Errno::ENOSYS)
-        // TODO: maybe Open{0, 0} instead?
     }
 
     /// Read directory.

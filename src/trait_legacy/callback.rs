@@ -752,6 +752,7 @@ pub trait CallbackDirectoryPlus: CallbackErr {
 pub(crate) struct DirectoryPlusHandler {
     buf: Option<EntListBuf>,
     handler: Option<ReplyHandler>,
+    attr_ttl_override: bool,
 }
 #[cfg(feature = "abi-7-21")]
 impl DirectoryPlusHandler {
@@ -759,7 +760,12 @@ impl DirectoryPlusHandler {
         DirectoryPlusHandler {
             buf: Some(EntListBuf::new(max_size)),
             handler: Some(handler),
+            attr_ttl_override: false,
         }
+    }
+    /// Disable attribute cacheing.
+    pub fn attr_ttl_override(&mut self) {
+        self.attr_ttl_override = true;
     }
 }
 #[cfg(feature = "abi-7-21")]
@@ -795,9 +801,17 @@ impl CallbackDirectoryPlus for DirectoryPlusHandler {
                     nodeid: ino,
                     generation,
                     entry_valid: ttl.as_secs(),
-                    attr_valid: ttl.as_secs(),
+                    attr_valid: if self.attr_ttl_override {
+                        0
+                    } else {
+                        ttl.as_secs()
+                    },
                     entry_valid_nsec: ttl.subsec_nanos(),
-                    attr_valid_nsec: ttl.subsec_nanos(),
+                    attr_valid_nsec: if self.attr_ttl_override {
+                        0
+                    } else {
+                        ttl.subsec_nanos()
+                    },
                     attr: fuse_attr_from_attr(attr),
                 },
                 dirent: crate::ll::fuse_abi::fuse_dirent {

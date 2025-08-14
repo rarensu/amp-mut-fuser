@@ -251,10 +251,8 @@ pub trait Filesystem {
     /// filesystem may set, to change the way the file is opened. See fuse_file_info
     /// structure in <fuse_common.h> for more details.
     fn open(&mut self, req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        // This value forces the kernel to always call `open()` before `read()` to
-        // prevent the kernel from serving data directly from the page cache
-        // in case of faulty default permissions
-        reply.opened(0, 0);
+        warn!("[Not Implemented] open(ino: {ino:#x?}, flags: {flags})");
+        reply.error(ENOSYS);
     }
 
     /// Read data.
@@ -382,7 +380,8 @@ pub trait Filesystem {
     /// directory stream operations in case the contents of the directory can change
     /// between opendir and releasedir.
     fn opendir(&mut self, req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        reply.opened(0, 0);
+        warn!("[Not Implemented] opendir(ino: {ino:#x?}, flags: {flags})");
+        reply.error(ENOSYS);
     }
 
     /// Read directory.

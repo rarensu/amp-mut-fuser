@@ -2,14 +2,13 @@ use bytes::Bytes;
 use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FileAttr, FileType, MountOption, RequestMeta,
-    trait_async::Filesystem,
+    trait_sync::Filesystem,
 };
 use std::ffi::OsStr;
 use std::time::{Duration, UNIX_EPOCH};
 
-use async_trait::async_trait;
-
 const TTL: Duration = Duration::from_secs(1); // 1 second
+// NOTE: TTL of FileAttr is ignored when using 'allow-root'
 
 const HELLO_DIR_ATTR: FileAttr = FileAttr {
     ino: 1,
@@ -75,9 +74,8 @@ impl HelloFS {
     }
 }
 
-#[async_trait]
 impl Filesystem for HelloFS {
-    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
+    fn lookup(&mut self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
         if parent == 1 && name.as_encoded_bytes() == self.hello_filename {
             Ok(Entry {
                 ino: 2,
@@ -91,8 +89,8 @@ impl Filesystem for HelloFS {
         }
     }
 
-    async fn getattr(
-        &self,
+    fn getattr(
+        &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: Option<u64>,
@@ -105,8 +103,8 @@ impl Filesystem for HelloFS {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    async fn read(
-        &self,
+    fn read(
+        &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -132,8 +130,8 @@ impl Filesystem for HelloFS {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    async fn readdir(
-        &self,
+    fn readdir(
+        &mut self,
         _req: RequestMeta,
         ino: u64,
         _fh: u64,
@@ -232,7 +230,7 @@ fn main() {
 
 #[cfg(test)]
 mod test {
-    use fuser::{Errno, FileType, RequestMeta, trait_async::Filesystem};
+    use fuser::{Errno, FileType, RequestMeta, trait_sync::Filesystem};
     use std::ffi::{OsStr, OsString};
     use std::os::unix::ffi::OsStrExt;
 
@@ -351,7 +349,7 @@ mod test {
     fn test_create_fails_readonly() {
         let hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = futures::executor::block_on(fuser::trait_async::Filesystem::create(
+        let result = futures::executor::block_on(fuser::trait_sync::Filesystem::create(
             &hellofs,
             req,
             1,

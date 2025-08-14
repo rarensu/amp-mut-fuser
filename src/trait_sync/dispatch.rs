@@ -15,7 +15,7 @@ impl RequestHandler {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch_sync<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
+    pub(crate) fn dispatch_sync<FS: Filesystem>(mut self, fs: &mut FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
         let op = if let Ok(op) = self.request.operation() {
             op
@@ -94,6 +94,9 @@ impl RequestHandler {
                     x.name().as_os_str(),
                     /* blank space */
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.entry_or_err(result);
             }
             Operation::Forget(x) => {
@@ -120,6 +123,9 @@ impl RequestHandler {
                     None,
                     /* blank space */
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.attr_or_err(result);
             }
             Operation::SetAttr(x) => {
@@ -139,6 +145,9 @@ impl RequestHandler {
                     x.bkuptime(),
                     x.flags(),
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.attr_or_err(result);
             }
             Operation::ReadLink(_) => {
@@ -154,6 +163,9 @@ impl RequestHandler {
                     x.umask(),
                     x.rdev(),
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.entry_or_err(result);
             }
             Operation::MkDir(x) => {
@@ -164,6 +176,9 @@ impl RequestHandler {
                     x.mode(),
                     x.umask(),
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.entry_or_err(result);
             }
             Operation::Unlink(x) => {
@@ -191,6 +206,9 @@ impl RequestHandler {
                     x.link_name().as_os_str(),
                     x.target(),
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.entry_or_err(result);
             }
             Operation::Rename(x) => {
@@ -211,6 +229,9 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.dest().name.as_os_str(),
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.entry_or_err(result);
             }
             Operation::Open(x) => {
@@ -374,6 +395,7 @@ impl RequestHandler {
                             || se_meta.allowed == SessionACL::RootAndOwner) =>
                     {
                         // Access was not denied (see above) so it is allowed.
+                        debug!("Access granted by SessionACL");
                         self.replyhandler.ok();
                     }
                     Err(e) => self.replyhandler.error(e),
@@ -388,6 +410,9 @@ impl RequestHandler {
                     x.umask(),
                     x.flags(),
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.created_or_err(result);
             }
             Operation::GetLk(x) => {
@@ -501,6 +526,9 @@ impl RequestHandler {
                     x.offset(),
                     x.size(),
                 );
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 self.replyhandler.dirplus_or_err(
                     result,
                     x.offset(),

@@ -80,23 +80,36 @@ impl<'a> Response<'a> {
         file_ttl: Duration,
         attr: &crate::FileAttr,
         attr_ttl: Duration,
+        attr_ttl_override: bool,
     ) -> Self {
         let d = abi::fuse_entry_out {
             nodeid: ino.into(),
             generation: generation.into(),
             entry_valid: file_ttl.as_secs(),
-            attr_valid: attr_ttl.as_secs(),
+            attr_valid: if attr_ttl_override {
+                0
+            } else {
+                attr_ttl.as_secs()
+            },
             entry_valid_nsec: file_ttl.subsec_nanos(),
-            attr_valid_nsec: attr_ttl.subsec_nanos(),
+            attr_valid_nsec: if attr_ttl_override {
+                0
+            } else {
+                attr_ttl.subsec_nanos()
+            },
             attr: fuse_attr_from_attr(attr),
         };
         Self::from_struct(d.as_bytes())
     }
 
-    pub(crate) fn new_attr(ttl: &Duration, attr: &Attr) -> Self {
+    pub(crate) fn new_attr(ttl: &Duration, attr: &Attr, attr_ttl_override: bool) -> Self {
         let r = abi::fuse_attr_out {
-            attr_valid: ttl.as_secs(),
-            attr_valid_nsec: ttl.subsec_nanos(),
+            attr_valid: if attr_ttl_override { 0 } else { ttl.as_secs() },
+            attr_valid_nsec: if attr_ttl_override {
+                0
+            } else {
+                ttl.subsec_nanos()
+            },
             dummy: 0,
             attr: attr.attr,
         };
@@ -187,8 +200,10 @@ impl<'a> Response<'a> {
 
     // TODO: Can flags be more strongly typed?
     pub(crate) fn new_create(
-        ttl: &Duration,
+        file_ttl: &Duration,
         attr: &Attr,
+        attr_ttl: &Duration,
+        attr_ttl_override: bool,
         generation: Generation,
         fh: FileHandle,
         flags: u32,
@@ -201,10 +216,18 @@ impl<'a> Response<'a> {
             abi::fuse_entry_out {
                 nodeid: attr.attr.ino,
                 generation: generation.into(),
-                entry_valid: ttl.as_secs(),
-                attr_valid: ttl.as_secs(),
-                entry_valid_nsec: ttl.subsec_nanos(),
-                attr_valid_nsec: ttl.subsec_nanos(),
+                entry_valid: file_ttl.as_secs(),
+                attr_valid: if attr_ttl_override {
+                    0
+                } else {
+                    attr_ttl.as_secs()
+                },
+                entry_valid_nsec: file_ttl.subsec_nanos(),
+                attr_valid_nsec: if attr_ttl_override {
+                    0
+                } else {
+                    attr_ttl.subsec_nanos()
+                },
                 attr: attr.attr,
             },
             abi::fuse_open_out {
@@ -441,15 +464,28 @@ impl DirentPlusBuf {
     /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
-    pub fn push(&mut self, x: &crate::Dirent, y: &crate::Entry) -> Result<bool, Errno> {
+    pub fn push(
+        &mut self,
+        x: &crate::Dirent,
+        y: &crate::Entry,
+        attr_ttl_override: bool,
+    ) -> Result<bool, Errno> {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {
                 nodeid: y.ino,
                 generation: y.generation.unwrap_or(1),
                 entry_valid: y.file_ttl.as_secs(),
-                attr_valid: y.attr_ttl.as_secs(),
+                attr_valid: if attr_ttl_override {
+                    0
+                } else {
+                    y.attr_ttl.as_secs()
+                },
                 entry_valid_nsec: y.file_ttl.subsec_nanos(),
-                attr_valid_nsec: y.attr_ttl.subsec_nanos(),
+                attr_valid_nsec: if attr_ttl_override {
+                    0
+                } else {
+                    y.attr_ttl.subsec_nanos()
+                },
                 attr: fuse_attr_from_attr(&y.attr),
             },
             dirent: abi::fuse_dirent {
@@ -563,7 +599,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr, ttl);
+        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr, ttl, false);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected
@@ -622,7 +658,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_attr(&ttl, &attr.into());
+        let r = Response::new_attr(&ttl, &attr.into(), false);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected
@@ -754,6 +790,8 @@ mod test {
         let r = Response::new_create(
             &ttl,
             &attr.into(),
+            &ttl,
+            false,
             Generation(0xaa),
             FileHandle(0xbb),
             0xcc,

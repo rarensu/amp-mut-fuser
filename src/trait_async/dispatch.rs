@@ -19,7 +19,38 @@ impl RequestHandler {
         debug!("{}", self.request);
         macro_rules! reply {
             // must not include items borrowed from Request<'_> in these arguments!
+            (attr_or_err $(, $args:expr )* ) => {
+                reply!(with_ttl_override @ attr_or_err $(, $args )* )
+            };
+            (entry_or_err $(, $args:expr )* ) => {
+                reply!(with_ttl_override @ entry_or_err $(, $args )* )
+            };
+            (created_or_err $(, $args:expr )* ) => {
+                reply!(with_ttl_override @ created_or_err $(, $args )* )
+            };
+            (dirplus_or_err $(, $args:expr )* ) => {
+                reply!(with_ttl_override @ dirplus_or_err $(, $args )* )
+            };
+            (with_ttl_override @ $method:ident $(, $args:expr )* ) => {
+                let mut replyhandler = self.replyhandler;
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    replyhandler.attr_ttl_override();
+                }
+                #[cfg(not(feature = "threaded"))]
+                replyhandler.$method( $( $args ),* );
+                #[cfg(all(feature = "threaded", not(feature = "tokio")))]
+                std::thread::spawn( move || {
+                    replyhandler.$method( $( $args ),* );
+                });
+                #[cfg(all(feature = "threaded", feature = "tokio"))]
+                tokio::task::spawn_blocking( move || {
+                    replyhandler.$method( $( $args ),* );
+                });
+            };
             ($method:ident $(, $args:expr )* ) => {
+                reply!(regular @ $method $(, $args )* )
+            };
+            (regular @ $method:ident $(, $args:expr )* ) => {
                 let replyhandler = self.replyhandler;
                 #[cfg(not(feature = "threaded"))]
                 replyhandler.$method( $( $args ),* );
@@ -408,6 +439,7 @@ impl RequestHandler {
                             || se_meta.allowed == SessionACL::RootAndOwner) =>
                     {
                         // Access was not denied (see above) so it is allowed.
+                        debug!("Access granted by SessionACL");
                         reply!(ok);
                     }
                     Err(e) => {

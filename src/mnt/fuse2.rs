@@ -7,7 +7,6 @@ use std::{
     io,
     os::unix::prelude::{FromRawFd, OsStrExt},
     path::Path,
-    sync::Arc,
 };
 
 /// Ensures that an os error is never 0/Success

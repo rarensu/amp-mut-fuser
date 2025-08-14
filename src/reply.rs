@@ -48,6 +48,8 @@ pub(crate) struct ReplyHandler {
     pub unique: ll::RequestId,
     /// Closure to call for sending the reply
     pub sender: Option<Box<dyn ReplySender>>,
+    /// Option to disable attribute cacheing
+    pub attr_ttl_override: bool,
 }
 
 impl ReplyHandler {
@@ -57,6 +59,7 @@ impl ReplyHandler {
         ReplyHandler {
             unique: ll::RequestId(unique),
             sender: Some(sender),
+            attr_ttl_override: false,
         }
     }
 
@@ -348,12 +351,14 @@ impl ReplyHandler {
 
     /// Reply to a request with a file entry
     pub fn entry(self, entry: &Entry) {
+        let attr_ttl_override = self.attr_ttl_override;
         self.send_ll(&ll::Response::new_entry(
             ll::INodeNo(entry.ino),
             ll::Generation(entry.generation.unwrap_or(1)),
             entry.file_ttl,
             &entry.attr,
             entry.attr_ttl,
+            attr_ttl_override,
         ));
     }
 
@@ -367,7 +372,12 @@ impl ReplyHandler {
 
     /// Reply to a request with file attributes
     pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
-        self.send_ll(&ll::Response::new_attr(ttl, &attr.into()));
+        let attr_ttl_override = self.attr_ttl_override;
+        self.send_ll(&ll::Response::new_attr(
+            ttl,
+            &attr.into(),
+            attr_ttl_override,
+        ));
     }
 
     /// Reply to a request with file attributes or an error
@@ -447,9 +457,12 @@ impl ReplyHandler {
 
     /// Reply to a request with a newly created file entry and its newly open file handle
     pub fn created(self, entry: &Entry, open: &Open) {
+        let attr_ttl_override = self.attr_ttl_override;
         self.send_ll(&ll::Response::new_create(
             &entry.file_ttl,
             &entry.attr.into(),
+            &entry.attr_ttl,
+            attr_ttl_override,
             ll::Generation(entry.generation.unwrap_or(1)),
             ll::FileHandle(open.fh),
             open.flags,
@@ -616,7 +629,7 @@ impl ReplyHandler {
                 "ReplyHandler::dirplus: processing item with offset #{}",
                 dirent.offset
             );
-            match buf.push(dirent, entry) {
+            match buf.push(dirent, entry, self.attr_ttl_override) {
                 Ok(true) => {
                     log::debug!("ReplyHandler::dirplus: buffer full!");
                     break;
@@ -691,6 +704,11 @@ impl ReplyHandler {
     /// Disable this replyhandler. No reply will be sent.
     pub fn disable(mut self) {
         self.sender = None;
+    }
+
+    /// Disable attribute cacheing.
+    pub fn attr_ttl_override(&mut self) {
+        self.attr_ttl_override = true;
     }
 }
 
