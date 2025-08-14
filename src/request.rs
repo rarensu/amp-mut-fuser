@@ -9,7 +9,7 @@
 use log::{debug, error, info, warn};
 use std::convert::Into;
 
-use crate::channel::{ChannelSender};
+use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
 use crate::reply::ReplyHandler;
 
@@ -49,8 +49,8 @@ pub struct Forget {
 }
 
 impl RequestHandler {
-    /// Create a new request from the given data
-    pub(crate) fn new(sender: ChannelSender, data: Vec<u8>) -> Option<RequestHandler> {
+    /// Create a new request from the given data, and a Channel to receive the reply
+    pub(crate) fn new(sender: Channel, data: Vec<u8>) -> Option<RequestHandler> {
         let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {

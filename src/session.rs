@@ -95,13 +95,14 @@ impl<FS: Filesystem> Session<FS> {
     ) -> io::Result<Session<FS>> {
         let mountpoint = mountpoint.as_ref();
         info!("Mounting {}", mountpoint.display());
-        // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
-        // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
-        // to handle the auto_unmount option
-        let (file, mount) = if options.contains(&MountOption::AutoUnmount)
+        // Create the channel for fuse messages
+        let (ch, mount) = if options.contains(&MountOption::AutoUnmount)
             && !(options.contains(&MountOption::AllowRoot)
                 || options.contains(&MountOption::AllowOther))
         {
+            // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
+            // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
+            // to handle the auto_unmount option
             warn!(
                 "Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling"
             );
@@ -111,8 +112,6 @@ impl<FS: Filesystem> Session<FS> {
         } else {
             Mount::new(mountpoint, options)?
         };
-
-        let ch = Channel::new(file);
         let allowed = if options.contains(&MountOption::AllowRoot) {
             SessionACL::RootAndOwner
         } else if options.contains(&MountOption::AllowOther) {
@@ -128,7 +127,7 @@ impl<FS: Filesystem> Session<FS> {
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
         // Create the channel for fuse messages
-        let ch = Channel::new(Arc::new(fd.into()));
+        let ch = Channel::new(fd.into());
         Session::from_mount(filesystem, ch, acl, None)
     }
 
@@ -171,9 +170,8 @@ impl<FS: Filesystem> Session<FS> {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
             match self.ch.receive(buf) {
-                Ok(size) => {
-                    let data = Vec::from(&buf[..size]);
-                    match RequestHandler::new(self.ch.sender(), data) {
+                Ok(data) => {
+                    match RequestHandler::new(self.ch.clone(), data) {
                         // Dispatch request
                         Some(req) => req.dispatch_legacy(&mut self.filesystem, &self.meta),
                         // Quit loop on illegal request

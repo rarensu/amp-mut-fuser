@@ -4,10 +4,9 @@
 //! Either the request logic will call the one of the reply handler's self-destructive methods,
 //! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
 
-#[cfg(feature = "abi-7-21")]
-use crate::ll::reply::DirentPlusBuf;
-use crate::ll::{self, reply::DirentBuf, reply::DirEntry};
-use crate::{ll::Errno, KernelConfig};
+
+use crate::ll; // too many structs to list
+use crate::{Errno, KernelConfig};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 #[cfg(feature = "serializable")]
@@ -29,10 +28,17 @@ impl fmt::Debug for Box<dyn ReplySender> {
     }
 }
 
-/// `ReplyHander` is a struct which holds the unique identifiers needed to reply
-/// to a specific request. Traits are implemented on the struct so that ownership
-/// of the struct determines whether the identifiers have ever been used.
-/// This guarantees that a reply is send at most once per request.
+/// Primary ReplySender implementation for sending data to a Channel
+impl ReplySender for crate::channel::Channel {
+    /// Send data.
+    fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
+        crate::channel::Channel::send(&self, data)
+    }
+}
+
+/// `ReplyHandler` is a struct which holds the unique identifiers needed to reply
+/// to a specific request. Replying methods consume `self` to guarantee at most one 
+/// reply is sent per request.
 #[derive(Debug)]
 pub(crate) struct ReplyHandler {
     /// Unique id of the request to reply to
@@ -156,6 +162,28 @@ pub struct Entry {
     /// duration to cache file attributes
     pub attr_ttl: Duration,
 }
+
+#[derive(Clone, Debug)]
+// TODO: implement Deserialize on Bytes or Dirent, somehow
+// #[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
+/// A single directory entry.
+pub struct Dirent {
+    /// file inode number
+    pub ino: u64,
+    /// entry number in directory
+    pub offset: i64,
+    /// kind of file
+    pub kind: FileType,
+    /// name of file
+    pub name: Vec<u8>,
+}
+
+/// A list of directory entries.
+pub type DirentList = Vec<Dirent>;
+
+#[cfg(feature = "abi-7-21")]
+/// A list of directory entries, plus additional file data for the kernel cache.
+pub type DirentPlusList = Vec<(Dirent, Entry)>;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
@@ -498,15 +526,17 @@ impl ReplyHandler {
         }
     }
 
+    // Note: trait_legacy has its own implementation of this function;
+    // this one is for (future) Sync/Async traits
     /// Reply to a request with a filled directory buffer
     pub fn dir(
         self,
-        entries_list: &[DirEntry],
+        entries_list: &DirentList,
         min_offset: i64,
         size: usize,
         /* blank space */
     ) {
-        let mut buf = DirentBuf::new(size);
+        let mut buf = ll::reply::DirentBuf::new(size);
         for item in entries_list.iter() {
             if item.offset <= min_offset {
                 log::debug!(
@@ -519,17 +549,9 @@ impl ReplyHandler {
                 "ReplyHandler::dir: processing item with offset #{}",
                 item.offset
             );
-            match buf.push(item) {
-                Ok(true) => {
-                    log::debug!("ReplyHandler::dir: buffer full!");
-                    break;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    log::error!("ReplyHandler::dir: abort!");
-                    self.error(e);
-                    return;
-                }
+            if buf.push(item) {
+                log::debug!("ReplyHandler::dir: buffer full!");
+                break;
             }
         }
         self.send_ll(&buf.into());
@@ -538,7 +560,7 @@ impl ReplyHandler {
     /// Reply to a request with a filled directory buffer or an error
     pub fn dir_or_err(
         self,
-        result: Result<Vec<DirEntry>, Errno>,
+        result: Result<DirentList, Errno>,
         min_offset: i64,
         size: usize,
         /* blank space */
@@ -550,6 +572,8 @@ impl ReplyHandler {
     }
 
     #[cfg(feature = "abi-7-21")]
+    // Note: trait_legacy has its own implementation of this function
+    // this one is for (future) Sync/Async traits
     // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
         self,
@@ -558,17 +582,8 @@ impl ReplyHandler {
         size: usize,
         /* blank space */
     ) {
-        let mut buf = DirentPlusBuf::new(size);
-        let entries_safe_borrow = match entries_plus_list.lock() {
-            Ok(entries) => entries,
-            Err(e) => {
-                log::error!("ReplyHandler::dirplus: Borrow Error: {e:?}");
-                // Alternatively, consider a panic if the borrow fails.
-                self.error(Errno::EIO);
-                return;
-            }
-        };
-        for (dirent, entry) in entries_safe_borrow.iter() {
+        let mut buf = ll::reply::DirentPlusBuf::new(size);
+        for (dirent, entry) in entries_plus_list.iter() {
             if dirent.offset <= min_offset {
                 log::debug!(
                     "ReplyHandler::dirplus: skipping item with offset #{}",
@@ -580,17 +595,9 @@ impl ReplyHandler {
                 "ReplyHandler::dirplus: processing item with offset #{}",
                 dirent.offset
             );
-            match buf.push(dirent, entry) {
-                Ok(true) => {
-                    log::debug!("ReplyHandler::dirplus: buffer full!");
-                    break;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    log::error!("ReplyHandler::dirplus: abort!");
-                    self.error(e);
-                    return;
-                }
+            if buf.push(dirent, entry) {
+                log::debug!("ReplyHandler::dirplus: buffer full!");
+                break;
             }
         }
         self.send_ll(&buf.into());
@@ -1104,13 +1111,13 @@ mod test {
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
         let entries = vec![
-            DirEnt {
+            Dirent {
                 ino: 0xaabb,
                 offset: 1,
                 kind: FileType::Directory,
                 name: Vec::from(b"hello"),
             },
-            DirEnt {
+            Dirent {
                 ino: 0xccdd,
                 offset: 2,
                 kind: FileType::RegularFile,
@@ -1205,7 +1212,7 @@ mod test {
         let generation = Some(0xaa);
         let entries = vec![
             (
-                DirEntry {
+                Dirent {
                     ino: 0xaabb,
                     offset: 1,
                     kind: FileType::Directory,
@@ -1220,7 +1227,7 @@ mod test {
                 },
             ),
             (
-                DirEntry {
+                Dirent {
                     ino: 0xccdd,
                     offset: 2,
                     kind: FileType::RegularFile,

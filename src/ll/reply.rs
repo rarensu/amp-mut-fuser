@@ -2,8 +2,6 @@ use std::{
     convert::TryInto,
     io::IoSlice,
     mem::size_of,
-    os::unix::prelude::OsStrExt,
-    path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -382,6 +380,8 @@ impl EntListBuf {
     }
 }
 
+/*
+// TODO: strong typing on `offset` values.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 pub struct DirEntOffset(pub i64);
 impl From<DirEntOffset> for i64 {
@@ -389,25 +389,7 @@ impl From<DirEntOffset> for i64 {
         x.0
     }
 }
-
-#[derive(Debug)]
-pub struct DirEntry<T: AsRef<Path>> {
-    ino: INodeNo,
-    offset: DirEntOffset,
-    kind: FileType,
-    name: T,
-}
-
-impl<T: AsRef<Path>> DirEntry<T> {
-    pub fn new(ino: INodeNo, offset: DirEntOffset, kind: FileType, name: T) -> DirEntry<T> {
-        DirEntry::<T> {
-            ino,
-            offset,
-            kind,
-            name,
-        }
-    }
-}
+*/
 
 /// Used to respond to [ReadDirPlus] requests.
 #[derive(Debug)]
@@ -427,18 +409,19 @@ impl DirentBuf {
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
     #[must_use]
-    pub fn push<T: AsRef<Path>>(&mut self, ent: &DirEntry<T>) -> bool {
-        let name = ent.name.as_ref().as_os_str().as_bytes();
+    pub fn push(&mut self, ent: &crate::reply::Dirent) -> bool {
         let header = abi::fuse_dirent {
             ino: ent.ino.into(),
-            off: ent.offset.0,
-            namelen: name.len().try_into().expect("Name too long"),
+            off: ent.offset,
+            namelen: ent.name.len().try_into().expect("Name too long"),
             typ: mode_from_kind_and_perm(ent.kind, 0) >> 12,
         };
-        self.0.push([header.as_bytes(), name])
+        self.0.push([header.as_bytes(), &ent.name])
     }
 }
 
+/// Data buffer used to respond to [`ReaddirPlus`] requests.
+#[cfg(feature = "abi-7-21")]
 #[derive(Debug)]
 pub(crate) struct DirentPlusBuf(EntListBuf);
 
@@ -460,9 +443,9 @@ impl DirentPlusBuf {
     /// value to request the next entries in further readdir calls
     pub fn push(
         &mut self,
-        x: &DirEntry,
+        x: &crate::reply::Dirent,
         y: &crate::Entry,
-    ) -> Result<bool, Errno> {
+    ) -> bool {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {
                 nodeid: y.ino,
@@ -480,7 +463,7 @@ impl DirentPlusBuf {
                 typ: mode_from_kind_and_perm(x.kind, 0) >> 12,
             },
         };
-        Ok(self.0.push([header.as_bytes(), &x.name]))
+        self.0.push([header.as_bytes(), &x.name])
     }
 }
 
@@ -853,18 +836,22 @@ mod test {
             0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
         ];
         let mut buf = DirentBuf::new(4096);
-        assert!(!buf.push(&DirEntry::new(
-            INodeNo(0xaabb),
-            DirEntOffset(1),
-            FileType::Directory,
-            "hello"
-        )));
-        assert!(!buf.push(&DirEntry::new(
-            INodeNo(0xccdd),
-            DirEntOffset(2),
-            FileType::RegularFile,
-            "world.rs"
-        )));
+        assert!(
+            !buf.push(&crate::reply::Dirent {
+                ino: 0xaabb,
+                offset: 1,
+                kind: FileType::Directory,
+                name: "hello".into()
+            })
+        );
+        assert!(
+            !buf.push(&crate::reply::Dirent {
+                ino: 0xccdd,
+                offset: 2,
+                kind: FileType::RegularFile,
+                name: "world.rs".into()
+            })
+        );
         let r: Response<'_> = buf.into();
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),

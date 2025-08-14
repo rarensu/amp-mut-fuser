@@ -20,7 +20,7 @@ use std::{convert::AsRef, io::ErrorKind};
 
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
 use crate::ll::fuse_abi::consts::*;
-pub use crate::ll::{TimeOrNow, fuse_abi::consts};
+pub use crate::ll::{Errno, TimeOrNow, fuse_abi::consts};
 use crate::mnt::mount_options::check_option_conflicts;
 use crate::session::MAX_WRITE_SIZE;
 #[cfg(feature = "abi-7-16")]
@@ -65,7 +65,7 @@ mod session;
 
 /// Legacy Filesystem trait with callbacks
 pub mod trait_legacy;
-pub use trait_legacy::Filesystem;
+pub use trait_legacy::{Filesystem, Request};
 
 /// We generally support async reads
 #[cfg(all(not(target_os = "macos"), not(feature = "abi-7-10")))]
