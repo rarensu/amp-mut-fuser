@@ -1,74 +1,74 @@
-//! Filesystem operation request
+//! Filesystem operation request handler
 //!
 //! A request represents information about a filesystem operation the kernel driver wants us to
 //! perform.
 //!
-//! TODO: This module is meant to go away soon in favor of `ll::Request`.
+//! The handler ensures the private data remains owned while the request is being processed.
 
-use log::{debug, error, warn};
-use std::convert::TryFrom;
-#[cfg(feature = "abi-7-28")]
-use std::convert::TryInto;
-#[cfg(feature = "abi-7-11")]
-use crate::PollHandle;
-use crate::channel::ChannelSender;
-use crate::ll::Request as _;
-use crate::reply::{ReplyHandler};
-use crate::{ll};
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
+use std::convert::Into;
+
+use crate::channel::{ChannelSender};
+use crate::ll::{AnyRequest, Request as RequestTrait};
+use crate::reply::ReplyHandler;
 
 /// Request data structure
 #[derive(Debug)]
-pub struct Request<'a> {
-    /// Channel sender for sending the reply
-    ch: ChannelSender,
-    /// Request raw data
-    #[allow(unused)]
-    data: &'a [u8],
+pub(crate) struct RequestHandler {
     /// Parsed request
-    pub(crate) request: ll::AnyRequest<'a>,
+    pub request: AnyRequest,
+    /// Request metadata
+    pub meta: RequestMeta,
+    /// Closure-like object to guarantee a response is sent
+    pub replyhandler: ReplyHandler,
 }
 
-impl<'a> Request<'a> {
+/// Request metadata structure
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct RequestMeta {
+    /// The unique identifier of this request
+    pub unique: u64,
+    /// The uid of this request
+    pub uid: u32,
+    /// The gid of this request
+    pub gid: u32,
+    /// The pid of this request
+    pub pid: u32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+/// Target of a `forget` or `batch_forget` operation.
+pub struct Forget {
+    /// Inode of the file to be forgotten.
+    pub ino: u64,
+    /// The number of times the file has been looked up (and not yet forgotten).
+    /// When a `forget` operation is received, the filesystem should typically
+    /// decrement its internal reference count for the inode by `nlookup`.
+    pub nlookup: u64,
+}
+
+impl RequestHandler {
     /// Create a new request from the given data
-    pub(crate) fn new(ch: ChannelSender, data: &'a [u8]) -> Option<Request<'a>> {
-        let request = match ll::AnyRequest::try_from(data) {
+    pub(crate) fn new(sender: ChannelSender, data: Vec<u8>) -> Option<RequestHandler> {
+        let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
-                error!("{}", err);
+                error!("{err}");
                 return None;
             }
         };
-
-        Some(Self { ch, data, request })
-    }
-
-    /// Create a reply object for this request that can be passed to the filesystem
-    /// implementation and makes sure that a request is replied exactly once
-    fn reply(&self) -> ReplyHandler {
-        ReplyHandler::new(self.request.unique().into(), self.ch.clone())
-    }
-
-    /// Returns the unique identifier of this request
-    #[inline]
-    pub fn unique(&self) -> u64 {
-        self.request.unique().into()
-    }
-
-    /// Returns the uid of this request
-    #[inline]
-    pub fn uid(&self) -> u32 {
-        self.request.uid()
-    }
-
-    /// Returns the gid of this request
-    #[inline]
-    pub fn gid(&self) -> u32 {
-        self.request.gid()
-    }
-
-    /// Returns the pid of this request
-    #[inline]
-    pub fn pid(&self) -> u32 {
-        self.request.pid()
+        let meta = RequestMeta {
+            unique: request.unique().into(),
+            uid: request.uid(),
+            gid: request.gid(),
+            pid: request.pid(),
+        };
+        let replyhandler = ReplyHandler::new(request.unique().into(), sender);
+        Some(Self {
+            request,
+            meta,
+            replyhandler,
+        })
     }
 }

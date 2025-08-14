@@ -3,8 +3,8 @@ use log::{debug, error, info, warn};
 use std::sync::atomic::Ordering::Relaxed;
 
 use crate::ll::{self, Operation, Request as AnyRequest};
-use crate::session::{Session};
-use crate::request::Request;
+use crate::session::{SessionACL, SessionMeta};
+use crate::request::{RequestHandler, RequestMeta};
 use crate::{ll::Errno, KernelConfig,};
 
 #[cfg(feature = "abi-7-24")]
@@ -21,83 +21,95 @@ use super::{PollHandle, ReplyIoctl, ReplyPoll};
 #[cfg(feature = "abi-7-21")]
 use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
 
+#[derive(Debug)]
+/// Userspace metadata for a given request
+pub struct Request<'r> {
+    meta: &'r RequestMeta,
+}
+
+impl<'r> Request<'r> {
+    /// Creates a legacy-compatible Request from the given RequestMeta
+    pub fn new(meta: &'r RequestMeta) -> Self {
+        Request { meta }
+    }
+}
+
+// Helper functions for compatibility with Legacy Filesystem
 impl Request<'_> {
+    /// Returns the unique identifier of this request
+    #[inline]
+    pub fn unique(&self) -> u64 {
+        self.meta.unique
+    }
+
+    /// Returns the uid of this request
+    #[inline]
+    pub fn uid(&self) -> u32 {
+        self.meta.uid
+    }
+
+    /// Returns the gid of this request
+    #[inline]
+    pub fn gid(&self) -> u32 {
+        self.meta.gid
+    }
+
+    /// Returns the pid of this request
+    #[inline]
+    pub fn pid(&self) -> u32 {
+        self.meta.pid
+    }
+
+    /// Returns a copy of this Request's data as a RequestMeta
+    pub fn meta(&self) -> RequestMeta {
+        *self.meta
+    }
+}
+
+impl RequestHandler {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch_legacy<FS: Filesystem>(mut self, se: &mut Session<FS>) {
+    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
-        let unique = self.request.unique();
-
-    
-        let op = self.request.operation().map_err(|_| Errno::ENOSYS)?;
-        // Implement allow_root & access check for auto_unmount
-        if (se.allowed == SessionACL::RootAndOwner
-            && self.request.uid() != se.session_owner
+        let op = if let Ok(op) = self.request.operation() {
+            op
+        } else {
+            self.replyhandler.error(Errno::ENOSYS);
+            return;
+        };
+        // Implementation of `--allow-root` & required access check for `--auto-unmount`
+        let access_denied = if (se_meta.allowed == SessionACL::RootAndOwner
+            && self.request.uid() != se_meta.session_owner
             && self.request.uid() != 0)
-            || (se.allowed == SessionACL::Owner && self.request.uid() != se.session_owner)
+            || (se_meta.allowed == SessionACL::Owner && self.request.uid() != se_meta.session_owner)
         {
-            #[cfg(feature = "abi-7-21")]
-            {
-                match op {
-                    // Only allow operations that the kernel may issue without a uid set
-                    ll::Operation::Init(_)
-                    | ll::Operation::Destroy(_)
-                    | ll::Operation::Read(_)
-                    | ll::Operation::ReadDir(_)
-                    | ll::Operation::ReadDirPlus(_)
-                    | ll::Operation::BatchForget(_)
-                    | ll::Operation::Forget(_)
-                    | ll::Operation::Write(_)
-                    | ll::Operation::FSync(_)
-                    | ll::Operation::FSyncDir(_)
-                    | ll::Operation::Release(_)
-                    | ll::Operation::ReleaseDir(_) => {}
-                    _ => {
-                        return Err(Errno::EACCES);
-                    }
-                }
+            match op {
+                // Only allow operations that the kernel may issue without a uid set
+                Operation::Init(_)
+                | Operation::Destroy(_)
+                | Operation::Read(_)
+                | Operation::ReadDir(_)
+                | Operation::Forget(_)
+                | Operation::Write(_)
+                | Operation::FSync(_)
+                | Operation::FSyncDir(_)
+                | Operation::Release(_)
+                | Operation::ReleaseDir(_) => false,
+                #[cfg(feature = "abi-7-16")]
+                Operation::BatchForget(_) => false,
+                #[cfg(feature = "abi-7-21")]
+                Operation::ReadDirPlus(_) => false,
+                _ => true,
             }
-            #[cfg(all(feature = "abi-7-16", not(feature = "abi-7-21")))]
-            {
-                match op {
-                    // Only allow operations that the kernel may issue without a uid set
-                    ll::Operation::Init(_)
-                    | ll::Operation::Destroy(_)
-                    | ll::Operation::Read(_)
-                    | ll::Operation::ReadDir(_)
-                    | ll::Operation::BatchForget(_)
-                    | ll::Operation::Forget(_)
-                    | ll::Operation::Write(_)
-                    | ll::Operation::FSync(_)
-                    | ll::Operation::FSyncDir(_)
-                    | ll::Operation::Release(_)
-                    | ll::Operation::ReleaseDir(_) => {}
-                    _ => {
-                        return Err(Errno::EACCES);
-                    }
-                }
-            }
-            #[cfg(not(feature = "abi-7-16"))]
-            {
-                match op {
-                    // Only allow operations that the kernel may issue without a uid set
-                    ll::Operation::Init(_)
-                    | ll::Operation::Destroy(_)
-                    | ll::Operation::Read(_)
-                    | ll::Operation::ReadDir(_)
-                    | ll::Operation::Forget(_)
-                    | ll::Operation::Write(_)
-                    | ll::Operation::FSync(_)
-                    | ll::Operation::FSyncDir(_)
-                    | ll::Operation::Release(_)
-                    | ll::Operation::ReleaseDir(_) => {}
-                    _ => {
-                        return Err(Errno::EACCES);
-                    }
-                }
-            }
+        } else {
+            false
+        };
+        if access_denied {
+            self.replyhandler.error(Errno::EACCES);
+            return;
         }
+        let req = Request::new(&self.meta);
         match op {
             // Filesystem initialization
             Operation::Init(x) => {
@@ -105,16 +117,16 @@ impl Request<'_> {
                 let v = x.version();
                 if v < ll::Version(7, 6) {
                     error!("Unsupported FUSE ABI version {v}");
-                    self.reply().error(Errno::EPROTO);
+                    self.replyhandler.error(Errno::EPROTO);
                     return;
                 }
                 // Remember ABI version supported by kernel
-                se.proto_major = v.major();
-                se.proto_minor = v.minor();
+                se_meta.proto_major.store(v.major(), Relaxed);
+                se_meta.proto_minor.store(v.minor(), Relaxed);
                 let mut config = KernelConfig::new(x.capabilities(), x.max_readahead());
                 // Call filesystem init method and give it a chance to
                 // propose a different config or return an error
-                match se.filesystem.init(&self, &mut config) {
+                match fs.init(&req, &mut config) {
                     Ok(()) => {
                         // Reply with our desired version and settings. If the kernel supports a
                         // larger major version, it'll re-send a matching init message. If it
@@ -127,40 +139,40 @@ impl Request<'_> {
                             config.max_readahead,
                             config.max_write
                         );
-                        se.initialized = true;
-                        self.reply().config(x.capabilities(), config);
+                        se_meta.initialized.store(true, Relaxed);
+                        self.replyhandler.config(x.capabilities(), config);
                     }
                     Err(errno) => {
                         // Filesystem refused the config.
-                        self.reply().error(Errno::from_i32(errno));
+                        self.replyhandler.error(Errno::from_i32(errno));
                     }
                 }
             }
             // Any operation is invalid before initialization
-            _ if !se.initialized => {
+            _ if !se_meta.initialized.load(Relaxed) => {
                 warn!("Ignoring FUSE operation before init: {}", self.request);
-                self.reply().error(Errno::EIO);
+                self.replyhandler.error(Errno::EIO);
             }
             // Filesystem destroyed
             Operation::Destroy(_x) => {
-                se.filesystem.destroy();
-                se.destroyed = true;
-                self.reply().ok();
+                fs.destroy();
+                se_meta.destroyed.store(true, Relaxed);
+                self.replyhandler.ok();
             }
             // Any operation is invalid after destroy
-            _ if se.destroyed => {
+            _ if se_meta.destroyed.load(Relaxed) => {
                 warn!("Ignoring FUSE operation after destroy: {}", self.request);
-                self.reply().error(Errno::EIO);
+                self.replyhandler.error(Errno::EIO);
             }
             Operation::Interrupt(_) => {
                 // TODO: handle FUSE_INTERRUPT
-                self.reply().error(Errno::ENOSYS);
+                self.replyhandler.error(Errno::ENOSYS);
             }
             /* ------ Regular Operations ------ */
             Operation::Lookup(x) => {
-                let reply = ReplyEntry::new(Box::new(Some(self.reply())));
-                se.filesystem.lookup(
-                    &self,
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.lookup(
+                    &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     reply,
@@ -168,14 +180,13 @@ impl Request<'_> {
                 );
             }
             Operation::Forget(x) => {
-                se.filesystem.forget(&self, self.request.nodeid().into(), x.nlookup()); // no response
-                self.reply().disable(); // no reply
+                fs.forget(&req, self.request.nodeid().into(), x.nlookup()); // no response
             }
             Operation::GetAttr(_attr) => {
-                let reply = ReplyAttr::new(Box::new(Some(self.reply())));
+                let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
                 #[cfg(feature = "abi-7-9")]
-                se.filesystem.getattr(
-                    &self,
+                fs.getattr(
+                    &req,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into),
                     reply,
@@ -183,8 +194,8 @@ impl Request<'_> {
                 );
                 // Pre-abi-7-9 does not support providing a file handle.
                 #[cfg(not(feature = "abi-7-9"))]
-                se.filesystem.getattr(
-                    &self,
+                fs.getattr(
+                    &req,
                     self.request.nodeid().into(),
                     None,
                     reply,
@@ -192,9 +203,9 @@ impl Request<'_> {
                 );
             }
             Operation::SetAttr(x) => {
-                let reply = ReplyAttr::new(Box::new(Some(self.reply())));
-                se.filesystem.setattr(
-                    &self,
+                let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
+                fs.setattr(
+                    &req,
                     self.request.nodeid().into(),
                     x.mode(),
                     x.uid(),
@@ -212,13 +223,13 @@ impl Request<'_> {
                 );
             }
             Operation::ReadLink(_) => {
-                let reply = ReplyData::new(Box::new(Some(self.reply())));
-                se.filesystem.readlink(&self, self.request.nodeid().into(), reply);
+                let reply = ReplyData::new(Box::new(Some(self.replyhandler)));
+                fs.readlink(&req, self.request.nodeid().into(), reply);
             }
             Operation::MkNod(x) => {
-                let reply = ReplyEntry::new(Box::new(Some(self.reply())));
-                se.filesystem.mknod(
-                    &self,
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.mknod(
+                    &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     x.mode(),
@@ -228,9 +239,9 @@ impl Request<'_> {
                 );
             }
             Operation::MkDir(x) => {
-                let reply = ReplyEntry::new(Box::new(Some(self.reply())));
-                se.filesystem.mkdir(
-                    &self,
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.mkdir(
+                    &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     x.mode(),
@@ -239,9 +250,9 @@ impl Request<'_> {
                 );
             }
             Operation::Unlink(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.unlink(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.unlink(
+                    &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     reply,
@@ -249,18 +260,18 @@ impl Request<'_> {
                 );
             }
             Operation::RmDir(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.rmdir(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.rmdir(
+                    &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     reply,
                 );
             }
             Operation::SymLink(x) => {
-                let reply = ReplyEntry::new(Box::new(Some(self.reply())));
-                se.filesystem.symlink(
-                    &self,
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.symlink(
+                    &req,
                     self.request.nodeid().into(),
                     x.link_name().as_os_str(),
                     x.target(),
@@ -268,9 +279,9 @@ impl Request<'_> {
                 );
             }
             Operation::Rename(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.rename(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.rename(
+                    &req,
                     self.request.nodeid().into(),
                     x.src().name.as_os_str(),
                     x.dest().dir.into(),
@@ -280,9 +291,9 @@ impl Request<'_> {
                 );
             }
             Operation::Link(x) => {
-                let reply = ReplyEntry::new(Box::new(Some(self.reply())));
-                se.filesystem.link(
-                    &self,
+                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                fs.link(
+                    &req,
                     x.inode_no().into(),
                     self.request.nodeid().into(),
                     x.dest().name.as_os_str(),
@@ -290,13 +301,13 @@ impl Request<'_> {
                 );
             }
             Operation::Open(x) => {
-                let reply = ReplyOpen::new(Box::new(Some(self.reply())));
-                se.filesystem.open(&self, self.request.nodeid().into(), x.flags(), reply);
+                let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
+                fs.open(&req, self.request.nodeid().into(), x.flags(), reply);
             }
             Operation::Read(x) => {
-                let reply = ReplyData::new(Box::new(Some(self.reply())));
-                se.filesystem.read(
-                    &self,
+                let reply = ReplyData::new(Box::new(Some(self.replyhandler)));
+                fs.read(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
@@ -307,9 +318,9 @@ impl Request<'_> {
                 );
             }
             Operation::Write(x) => {
-                let reply = ReplyWrite::new(Box::new(Some(self.reply())));
-                se.filesystem.write(
-                    &self,
+                let reply = ReplyWrite::new(Box::new(Some(self.replyhandler)));
+                fs.write(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
@@ -321,9 +332,9 @@ impl Request<'_> {
                 );
             }
             Operation::Flush(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.flush(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.flush(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.lock_owner().into(),
@@ -331,9 +342,9 @@ impl Request<'_> {
                 );
             }
             Operation::Release(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.release(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.release(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.flags(),
@@ -343,9 +354,9 @@ impl Request<'_> {
                 );
             }
             Operation::FSync(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.fsync(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.fsync(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync(),
@@ -353,9 +364,9 @@ impl Request<'_> {
                 );
             }
             Operation::OpenDir(x) => {
-                let reply = ReplyOpen::new(Box::new(Some(self.reply())));
-                se.filesystem.opendir(
-                    &self,
+                let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
+                fs.opendir(
+                    &req,
                     self.request.nodeid().into(),
                     x.flags(),
                     reply,
@@ -363,20 +374,20 @@ impl Request<'_> {
                 );
             }
             Operation::ReadDir(x) => {
-                let container = DirectoryHandler::new(x.size() as usize, self.reply());
-                let reply = ReplyDirectory::new(Box::new(container));
-                se.filesystem.readdir(
-                    &self,
+                let callback = DirectoryHandler::new(x.size() as usize, self.replyhandler);
+                let reply = ReplyDirectory::new(Box::new(callback));
+                fs.readdir(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    x.ofself.fset(),
+                    x.offset(),
                     reply,
                 );
             }
             Operation::ReleaseDir(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.releasedir(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.releasedir(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.flags(),
@@ -384,9 +395,9 @@ impl Request<'_> {
                 );
             }
             Operation::FSyncDir(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.fsyncdir(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.fsyncdir(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync(),
@@ -394,13 +405,13 @@ impl Request<'_> {
                 );
             }
             Operation::StatFs(_) => {
-                let reply = ReplyStatfs::new(Box::new(Some(self.reply())));
-                se.filesystem.statfs(&self, self.request.nodeid().into(), reply);
+                let reply = ReplyStatfs::new(Box::new(Some(self.replyhandler)));
+                fs.statfs(&req, self.request.nodeid().into(), reply);
             }
             Operation::SetXAttr(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.setxattr(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.setxattr(
+                    &req,
                     self.request.nodeid().into(),
                     x.name(),
                     x.value(),
@@ -410,9 +421,9 @@ impl Request<'_> {
                 );
             }
             Operation::GetXAttr(x) => {
-                let reply = ReplyXattr::new(Box::new(Some(self.reply())));
-                se.filesystem.getxattr(
-                    &self,
+                let reply = ReplyXattr::new(Box::new(Some(self.replyhandler)));
+                fs.getxattr(
+                    &req,
                     self.request.nodeid().into(),
                     x.name(),
                     x.size_u32(),
@@ -420,9 +431,9 @@ impl Request<'_> {
                 );
             }
             Operation::ListXAttr(x) => {
-                let reply = ReplyXattr::new(Box::new(Some(self.reply())));
-                se.filesystem.listxattr(
-                    &self,
+                let reply = ReplyXattr::new(Box::new(Some(self.replyhandler)));
+                fs.listxattr(
+                    &req,
                     self.request.nodeid().into(),
                     x.size(),
                     reply,
@@ -430,9 +441,9 @@ impl Request<'_> {
                 );
             }
             Operation::RemoveXAttr(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.removexattr(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.removexattr(
+                    &req,
                     self.request.nodeid().into(),
                     x.name(),
                     reply,
@@ -440,9 +451,9 @@ impl Request<'_> {
                 );
             }
             Operation::Access(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.access(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.access(
+                    &req,
                     self.request.nodeid().into(),
                     x.mask(),
                     reply,
@@ -450,9 +461,9 @@ impl Request<'_> {
                 );
             }
             Operation::Create(x) => {
-                let reply = ReplyCreate::new(Box::new(Some(self.reply())));
-                se.filesystem.create(
-                    &self,
+                let reply = ReplyCreate::new(Box::new(Some(self.replyhandler)));
+                fs.create(
+                    &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     x.mode(),
@@ -462,9 +473,9 @@ impl Request<'_> {
                 );
             }
             Operation::GetLk(x) => {
-                let reply = ReplyLock::new(Box::new(Some(self.reply())));
-                se.filesystem.getlk(
-                    &self,
+                let reply = ReplyLock::new(Box::new(Some(self.replyhandler)));
+                fs.getlk(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.lock_owner().into(),
@@ -476,9 +487,9 @@ impl Request<'_> {
                 );
             }
             Operation::SetLk(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.setlk(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.setlk(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.lock_owner().into(),
@@ -491,9 +502,9 @@ impl Request<'_> {
                 );
             }
             Operation::SetLkW(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.setlk(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.setlk(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.lock_owner().into(),
@@ -506,24 +517,23 @@ impl Request<'_> {
                 );
             }
             Operation::BMap(x) => {
-                let reply = ReplyBmap::new(Box::new(Some(self.reply())));
-                se.filesystem.bmap(
-                    &self,
+                let reply = ReplyBmap::new(Box::new(Some(self.replyhandler)));
+                fs.bmap(
+                    &req,
                     self.request.nodeid().into(),
                     x.block_size(),
                     x.block(),
                     reply,
                 );
             }
-
             #[cfg(feature = "abi-7-11")]
             Operation::IoCtl(x) => {
                 if x.unrestricted() {
-                    self.reply().error(Errno::ENOSYS);
+                    self.replyhandler.error(Errno::ENOSYS);
                 } else {
-                    let reply = ReplyIoctl::new(Box::new(Some(self.reply())));
-                    se.filesystem.ioctl(
-                        &self,
+                    let reply = ReplyIoctl::new(Box::new(Some(self.replyhandler)));
+                    fs.ioctl(
+                        &req,
                         self.request.nodeid().into(),
                         x.file_handle().into(),
                         x.flags(),
@@ -536,9 +546,9 @@ impl Request<'_> {
             }
             #[cfg(feature = "abi-7-11")]
             Operation::Poll(x) => {
-                let reply = ReplyPoll::new(Box::new(Some(self.reply())));
-                se.filesystem.poll(
-                    &self,
+                let reply = ReplyPoll::new(Box::new(Some(self.replyhandler)));
+                fs.poll(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     PollHandle(x.kernel_handle()),
@@ -550,18 +560,17 @@ impl Request<'_> {
             #[cfg(feature = "abi-7-15")]
             Operation::NotifyReply(_) => {
                 // TODO: handle FUSE_NOTIFY_REPLY
-                self.reply().error(Errno::ENOSYS);
+                self.replyhandler.error(Errno::ENOSYS);
             }
             #[cfg(feature = "abi-7-16")]
             Operation::BatchForget(x) => {
-                se.filesystem.batch_forget(&self, x.nodes()); // no response
-                self.reply().disable(); // no reply
+                fs.batch_forget(&req, x.nodes());
             }
             #[cfg(feature = "abi-7-19")]
             Operation::FAllocate(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.fallocate(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.fallocate(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
@@ -572,10 +581,10 @@ impl Request<'_> {
             }
             #[cfg(feature = "abi-7-21")]
             Operation::ReadDirPlus(x) => {
-                let mut callback = DirectoryPlusHandler::new(x.size() as usize, self.reply());
+                let mut callback = DirectoryPlusHandler::new(x.size() as usize, self.replyhandler);
                 let reply = ReplyDirectoryPlus::new(Box::new(callback));
-                se.filesystem.readdirplus(
-                    &self,
+                fs.readdirplus(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
@@ -584,9 +593,9 @@ impl Request<'_> {
             }
             #[cfg(feature = "abi-7-23")]
             Operation::Rename2(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.rename(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.rename(
+                    &req,
                     x.from().dir.into(),
                     x.from().name.as_os_str(),
                     x.to().dir.into(),
@@ -597,9 +606,9 @@ impl Request<'_> {
             }
             #[cfg(feature = "abi-7-24")]
             Operation::Lseek(x) => {
-                let reply = ReplyLseek::new(Box::new(Some(self.reply())));
-                se.filesystem.lseek(
-                    &self,
+                let reply = ReplyLseek::new(Box::new(Some(self.replyhandler)));
+                fs.lseek(
+                    &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
@@ -610,9 +619,9 @@ impl Request<'_> {
             #[cfg(feature = "abi-7-28")]
             Operation::CopyFileRange(x) => {
                 let (i, o) = (x.src(), x.dest());
-                let reply = ReplyWrite::new(Box::new(Some(self.reply())));
-                se.filesystem.copy_file_range(
-                    &self,
+                let reply = ReplyWrite::new(Box::new(Some(self.replyhandler)));
+                fs.copy_file_range(
+                    &req,
                     i.inode.into(),
                     i.file_handle.into(),
                     i.offset,
@@ -626,9 +635,9 @@ impl Request<'_> {
             }
             #[cfg(target_os = "macos")]
             Operation::SetVolName(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.setvolname(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.setvolname(
+                    &req,
                     x.name(),
                     reply,
                     /* blank space */
@@ -636,9 +645,9 @@ impl Request<'_> {
             }
             #[cfg(target_os = "macos")]
             Operation::GetXTimes(x) => {
-                let reply = ReplyXTimes::new(Box::new(Some(self.reply())));
-                se.filesystem.getxtimes(
-                    &self,
+                let reply = ReplyXTimes::new(Box::new(Some(self.replyhandler)));
+                fs.getxtimes(
+                    &req,
                     x.nodeid().into(),
                     reply,
                     /* blank space */
@@ -646,9 +655,9 @@ impl Request<'_> {
             }
             #[cfg(target_os = "macos")]
             Operation::Exchange(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.reply())));
-                se.filesystem.exchange(
-                    &self,
+                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                fs.exchange(
+                    &req,
                     x.from().dir.into(),
                     x.from().name.as_os_str(),
                     x.to().dir.into(),
@@ -660,7 +669,7 @@ impl Request<'_> {
             #[cfg(feature = "abi-7-12")]
             Operation::CuseInit(_) => {
                 // TODO: handle CUSE_INIT
-                self.reply().error(Errno::ENOSYS);
+                self.replyhandler.error(Errno::ENOSYS);
             }
         }
     }

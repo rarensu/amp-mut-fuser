@@ -10,15 +10,15 @@ use std::path::Path;
 use std::time::SystemTime;
 
 #[cfg(feature = "abi-7-21")]
-use crate::ReplyDirectoryPlus;
+use super::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
-use crate::ReplyLseek;
+use super::ReplyLseek;
 #[cfg(target_os = "macos")]
-use crate::ReplyXTimes;
-use crate::Request;
+use super::ReplyXTimes;
+use super::Request;
 #[cfg(feature = "abi-7-11")]
-use crate::{PollHandle, ReplyIoctl, ReplyPoll};
-use crate::{
+use super::{PollHandle, ReplyIoctl, ReplyPoll};
+use super::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
 };

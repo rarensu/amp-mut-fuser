@@ -44,7 +44,7 @@ pub use trait_legacy::{
     ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyXattr,
     ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite,
 };
-pub use request::Request;
+pub use request::RequestMeta;
 pub use reply::{FileAttr, FileType};
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 #[cfg(feature = "abi-7-28")]

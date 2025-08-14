@@ -4,6 +4,7 @@ pub use crate::ll::fuse_abi::fuse_forget_one;
 pub use filesystem::Filesystem;
 
 mod dispatch;
+pub use dispatch::Request;
 
 mod callback;
 

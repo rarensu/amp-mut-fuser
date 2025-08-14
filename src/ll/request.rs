@@ -2174,23 +2174,25 @@ impl fmt::Display for Operation<'_> {
 
 /// Low-level request of a filesystem operation the kernel driver wants to perform.
 #[derive(Debug)]
-pub struct AnyRequest<'a> {
-    header: &'a fuse_in_header,
-    data: &'a [u8],
+pub struct AnyRequest {
+    raw: Vec<u8>,
+    header: fuse_in_header,
+    body_start: usize,
+    body_end: usize,
 }
-impl_request!(AnyRequest<'_>);
+impl_request!(AnyRequest);
 
-impl<'a> AnyRequest<'a> {
-    pub fn operation(&self) -> Result<Operation<'a>, RequestError> {
+impl<'a> AnyRequest {
+    pub fn operation(&'a self) -> Result<Operation<'a>, RequestError> {
         // Parse/check opcode
         let opcode = fuse_opcode::try_from(self.header.opcode)
             .map_err(|_: InvalidOpcodeError| RequestError::UnknownOperation(self.header.opcode))?;
         // Parse/check operation arguments
-        op::parse(self.header, &opcode, self.data).ok_or(RequestError::InsufficientData)
+        op::parse(&self.header, &opcode, &self.raw[self.body_start..self.body_end]).ok_or(RequestError::InsufficientData)
     }
 }
 
-impl fmt::Display for AnyRequest<'_> {
+impl fmt::Display for AnyRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Ok(op) = self.operation() {
             write!(
@@ -2208,14 +2210,14 @@ impl fmt::Display for AnyRequest<'_> {
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for AnyRequest<'a> {
+impl TryFrom<Vec<u8>> for AnyRequest {
     type Error = RequestError;
 
-    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
+    fn try_from(data: Vec<u8>) -> Result<Self, Self::Error> {
         // Parse a raw packet as sent by the kernel driver into typed data. Every request always
         // begins with a `fuse_in_header` struct followed by arguments depending on the opcode.
         let data_len = data.len();
-        let mut arg_iter = ArgumentIterator::new(data);
+        let mut arg_iter = ArgumentIterator::new(&data);
         // Parse header
         let header: &fuse_in_header = arg_iter
             .fetch()
@@ -2224,9 +2226,14 @@ impl<'a> TryFrom<&'a [u8]> for AnyRequest<'a> {
         if data_len < header.len as usize {
             return Err(RequestError::ShortRead(data_len, header.len as usize));
         }
+        let header = header.clone();
+        let body_start = size_of::<fuse_in_header>();
+        let body_end = data_len;
         Ok(Self {
+            raw: data,
             header,
-            data: &data[mem::size_of::<fuse_in_header>()..header.len as usize],
+            body_start,
+            body_end,
         })
     }
 }
@@ -2295,7 +2302,7 @@ mod tests {
 
     #[test]
     fn short_read_header() {
-        match AnyRequest::try_from(&INIT_REQUEST[..20]) {
+        match AnyRequest::try_from(INIT_REQUEST[..20].to_vec()) {
             Err(RequestError::ShortReadHeader(20)) => (),
             _ => panic!("Unexpected request parsing result"),
         }
@@ -2303,7 +2310,7 @@ mod tests {
 
     #[test]
     fn short_read() {
-        match AnyRequest::try_from(&INIT_REQUEST[..48]) {
+        match AnyRequest::try_from(INIT_REQUEST[..48].to_vec()) {
             Err(RequestError::ShortRead(48, 56)) => (),
             _ => panic!("Unexpected request parsing result"),
         }
@@ -2311,7 +2318,7 @@ mod tests {
 
     #[test]
     fn init() {
-        let req = AnyRequest::try_from(&INIT_REQUEST[..]).unwrap();
+        let req = AnyRequest::try_from(INIT_REQUEST[..].to_vec()).unwrap();
         assert_eq!(req.header.len, 56);
         assert_eq!(req.header.opcode, 26);
         assert_eq!(req.unique(), RequestId(0xdead_beef_baad_f00d));
@@ -2330,7 +2337,7 @@ mod tests {
 
     #[test]
     fn mknod() {
-        let req = AnyRequest::try_from(&MKNOD_REQUEST[..]).unwrap();
+        let req = AnyRequest::try_from(MKNOD_REQUEST[..].to_vec()).unwrap();
         #[cfg(not(feature = "abi-7-12"))]
         assert_eq!(req.header.len, 56);
         #[cfg(feature = "abi-7-12")]

@@ -6,11 +6,16 @@
 //! for filesystem operations under its mount point.
 
 use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
-use log::{info, warn};
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
 use nix::unistd::geteuid;
 use std::fmt;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{
+    AtomicBool, AtomicU32,
+    Ordering::{Acquire, Relaxed},
+};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::{io, ops::DerefMut};
@@ -18,7 +23,7 @@ use std::{io, ops::DerefMut};
 use crate::Filesystem;
 use crate::MountOption;
 use crate::ll::fuse_abi as abi;
-use crate::request::Request;
+use crate::request::RequestHandler;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::{channel::ChannelSender, notify::Notifier};
@@ -52,20 +57,27 @@ pub struct Session<FS: Filesystem> {
     /// Communication channel to the kernel driver
     pub(crate) ch: Channel,
     /// Handle to the mount.  Dropping this unmounts.
-    mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
+    pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
+    /// Session metadata
+    pub(crate) meta: SessionMeta,
+}
+
+/// Session metadata
+#[derive(Debug)]
+pub(crate) struct SessionMeta {
     /// Whether to restrict access to owner, root + owner, or unrestricted
     /// Used to implement allow_root and auto_unmount
     pub(crate) allowed: SessionACL,
     /// User that launched the fuser process
     pub(crate) session_owner: u32,
     /// FUSE protocol major version
-    pub(crate) proto_major: u32,
+    pub(crate) proto_major: AtomicU32,
     /// FUSE protocol minor version
-    pub(crate) proto_minor: u32,
+    pub(crate) proto_minor: AtomicU32,
     /// True if the filesystem is initialized (init operation done)
-    pub(crate) initialized: bool,
+    pub(crate) initialized: AtomicBool,
     /// True if the filesystem was destroyed (destroy operation done)
-    pub(crate) destroyed: bool,
+    pub(crate) destroyed: AtomicBool,
 }
 
 impl<FS: Filesystem> AsFd for Session<FS> {
@@ -108,34 +120,38 @@ impl<FS: Filesystem> Session<FS> {
         } else {
             SessionACL::Owner
         };
-
-        Ok(Session {
-            filesystem,
-            ch,
-            mount: Arc::new(Mutex::new(Some((mountpoint.to_owned(), mount)))),
-            allowed,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
-        })
+        let mount = Some((mountpoint.to_owned(), mount));
+        Ok(Session::from_mount(filesystem, ch, allowed, mount))
     }
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
+        // Create the channel for fuse messages
         let ch = Channel::new(Arc::new(fd.into()));
+        Session::from_mount(filesystem, ch, acl, None)
+    }
+
+    /// Assemble a Session that has been mounted. Not recommended for regular users.
+    pub(crate) fn from_mount(
+        filesystem: FS,
+        ch: Channel,
+        allowed: SessionACL,
+        mount: Option<(PathBuf, Mount)>,
+    ) -> Self {
+        let meta = SessionMeta {
+            allowed,
+            session_owner: geteuid().as_raw(),
+            proto_major: AtomicU32::new(0),
+            proto_minor: AtomicU32::new(0),
+            initialized: AtomicBool::new(false),
+            destroyed: AtomicBool::new(false),
+        };
         Session {
             filesystem,
             ch,
-            mount: Arc::new(Mutex::new(None)),
-            allowed: acl,
-            session_owner: geteuid().as_raw(),
-            proto_major: 0,
-            proto_minor: 0,
-            initialized: false,
-            destroyed: false,
+            mount: Arc::new(Mutex::new(mount)),
+            meta,
         }
     }
 
@@ -155,11 +171,14 @@ impl<FS: Filesystem> Session<FS> {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
             match self.ch.receive(buf) {
-                Ok(size) => match Request::new(self.ch.sender(), &buf[..size]) {
-                    // Dispatch request
-                    Some(req) => req.dispatch_legacy(self),
-                    // Quit loop on illegal request
-                    None => break,
+                Ok(size) => {
+                    let data = Vec::from(&buf[..size]);
+                    match RequestHandler::new(self.ch.sender(), data) {
+                        // Dispatch request
+                        Some(req) => req.dispatch_legacy(&mut self.filesystem, &self.meta),
+                        // Quit loop on illegal request
+                        None => break,
+                    }
                 },
                 Err(err) => match err.raw_os_error() {
                     // Operation interrupted. Accordingly to FUSE, this is safe to retry
@@ -229,9 +248,9 @@ impl<FS: 'static + Filesystem + Send> Session<FS> {
 
 impl<FS: Filesystem> Drop for Session<FS> {
     fn drop(&mut self) {
-        if !self.destroyed {
+        if !self.meta.destroyed.load(Acquire) {
             self.filesystem.destroy();
-            self.destroyed = true;
+            self.meta.destroyed.store(true, Relaxed);
         }
 
         if let Some((mountpoint, _mount)) = std::mem::take(&mut *self.mount.lock().unwrap()) {
