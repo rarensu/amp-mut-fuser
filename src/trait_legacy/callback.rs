@@ -24,6 +24,8 @@ use std::fs::File;
 use std::io;
 #[cfg(feature = "abi-7-40")]
 use super::BackingId;
+#[cfg(feature = "abi-7-40")]
+use crate::consts::FOPEN_PASSTHROUGH;
 
 /* ------ Err ------ */
 
@@ -293,7 +295,7 @@ impl CallbackOpen for OpenHandler {
         if let Some(handler) = self.handler.take() {
             handler.opened(&Open {
                 fh,
-                flags,
+                flags: flags | FOPEN_PASSTHROUGH,
                 backing_id: Some(backing_id.backing_id),
             });
         }
