@@ -263,7 +263,7 @@ pub struct Ioctl {
     /// Result of the ioctl operation
     pub result: i32,
     /// Data to be returned with the ioctl operation
-    pub data: Bytes,
+    pub data: Vec<u8>,
 }
 
 //
@@ -499,7 +499,7 @@ impl ReplyHandler {
     #[cfg(feature = "abi-7-11")]
     /// Reply to a request with an ioctl
     pub fn ioctl(self, result: i32, data: &[u8]) {
-        self.send_ll(&ll::Response::new_ioctl(result, data));
+        self.send_ll(&ll::Response::new_ioctl(result, &[IoSlice::new(data)]));
     }
 
     #[cfg(feature = "abi-7-11")]

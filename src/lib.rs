@@ -15,7 +15,6 @@ use std::io;
 use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
-use std::time::SystemTime;
 use std::{convert::AsRef, io::ErrorKind};
 
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
@@ -294,7 +293,7 @@ pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
     options: &[MountOption],
 ) -> io::Result<()> {
     check_option_conflicts(options)?;
-    Session::new(filesystem, mountpoint.as_ref(), options).and_then(|mut se| se.run())
+    Session::new(filesystem, mountpoint.as_ref(), options).and_then(|se| se.run())
 }
 
 /// Mount the given filesystem to the given mountpoint. This function spawns

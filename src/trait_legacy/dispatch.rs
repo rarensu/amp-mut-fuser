@@ -2,6 +2,7 @@
 use log::{debug, error, info, warn};
 use std::sync::atomic::Ordering::Relaxed;
 
+use crate::channel::Channel;
 use crate::ll::{self, Operation, Request as AnyRequest};
 use crate::session::{SessionACL, SessionMeta};
 use crate::request::{RequestHandler, RequestMeta};
@@ -11,7 +12,7 @@ use crate::{ll::Errno, KernelConfig,};
 use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
-use super::callback::DirectoryHandler;
+use super::callback::{DirectoryHandler, OpenHandler};
 use super::{
     Filesystem, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
@@ -70,7 +71,7 @@ impl RequestHandler {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
+    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta, ch: &Channel) {
         debug!("{}", self.request);
         let op = if let Ok(op) = self.request.operation() {
             op
@@ -301,7 +302,8 @@ impl RequestHandler {
                 );
             }
             Operation::Open(x) => {
-                let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
+                let callback = OpenHandler::new(ch.clone(), self.replyhandler);
+                let reply = ReplyOpen::new(Box::new(callback));
                 fs.open(&req, self.request.nodeid().into(), x.flags(), reply);
             }
             Operation::Read(x) => {
@@ -364,7 +366,8 @@ impl RequestHandler {
                 );
             }
             Operation::OpenDir(x) => {
-                let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
+                let callback = OpenHandler::new(ch.clone(), self.replyhandler);
+                let reply = ReplyOpen::new(Box::new(callback));
                 fs.opendir(
                     &req,
                     self.request.nodeid().into(),
@@ -551,7 +554,10 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    PollHandle(x.kernel_handle()),
+                    PollHandle::new(
+                        ch.clone(),
+                        x.kernel_handle(),
+                    ),
                     x.events(),
                     x.flags(),
                     reply,

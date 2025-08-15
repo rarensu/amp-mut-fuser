@@ -5,7 +5,6 @@
 //! filesystem is mounted, the session loop receives, dispatches and replies to kernel requests
 //! for filesystem operations under its mount point.
 
-use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use nix::unistd::geteuid;
@@ -18,15 +17,13 @@ use std::sync::atomic::{
 };
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::{io, ops::DerefMut};
+use std::io;
 
 use crate::Filesystem;
 use crate::MountOption;
-use crate::ll::fuse_abi as abi;
-use crate::request::RequestHandler;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::{channel::ChannelSender, notify::Notifier};
+use crate::notify::Notifier;
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
@@ -174,7 +171,7 @@ impl<FS: Filesystem> Session<FS> {
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
     pub fn notifier(&self) -> Notifier {
-        Notifier::new(self.ch.sender())
+        Notifier::new(self.ch.clone())
     }
 }
 
@@ -189,15 +186,6 @@ impl SessionUnmounter {
     pub fn unmount(&mut self) -> io::Result<()> {
         drop(std::mem::take(&mut *self.mount.lock().unwrap()));
         Ok(())
-    }
-}
-
-fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
-    let off = alignment - (buf.as_ptr() as usize) % alignment;
-    if off == alignment {
-        buf
-    } else {
-        &mut buf[off..]
     }
 }
 
@@ -227,7 +215,7 @@ pub struct BackgroundSession {
     pub guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
     #[cfg(feature = "abi-7-11")]
-    sender: ChannelSender,
+    sender: Channel,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }
@@ -238,11 +226,11 @@ impl BackgroundSession {
     /// the filesystem is unmounted and the given session ends.
     pub fn new<FS: Filesystem + Send + 'static>(se: Session<FS>) -> io::Result<BackgroundSession> {
         #[cfg(feature = "abi-7-11")]
-        let sender = se.ch.sender();
+        let sender = se.ch.clone();
         // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         let guard = thread::spawn(move || {
-            let mut se = se;
+            //let mut se = se;
             se.run()
         });
         Ok(BackgroundSession {

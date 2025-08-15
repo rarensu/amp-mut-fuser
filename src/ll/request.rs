@@ -1367,7 +1367,7 @@ mod op {
         }
     }
     #[cfg(feature = "abi-7-16")]
-    use crate::Forget as ForgetAPI; // to distinguish from op::Forget (above)
+    use crate::request::Forget as ForgetAPI; // to distinguish from op::Forget (above)
     #[cfg(feature = "abi-7-16")]
     #[allow(clippy::from_over_into)] // because just a convenience function
     impl Into<Vec<ForgetAPI>> for BatchForget<'_> {

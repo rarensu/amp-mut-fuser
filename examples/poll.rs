@@ -245,7 +245,7 @@ impl fuser::Filesystem for FSelFS {
         let data = vec![elt; size.try_into().unwrap()];
         reply.data(data.as_slice());
     }
-
+    #[cfg(feature = "abi-7-11")]
     fn poll(
         &mut self,
         _req: &Request,

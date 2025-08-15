@@ -444,7 +444,7 @@ impl DirentPlusBuf {
     pub fn push(
         &mut self,
         x: &crate::reply::Dirent,
-        y: &crate::Entry,
+        y: &crate::reply::Entry,
     ) -> bool {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {

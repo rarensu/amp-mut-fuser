@@ -45,21 +45,21 @@ nix::ioctl_write_ptr!(
 /// make that call (if the channel hasn't already been closed).
 #[derive(Debug)]
 pub struct BackingId {
-    channel: Weak<File>,
+    channel: crate::channel::Channel,
     /// The backing_id field passed to and from the kernel
-    pub(crate) backing_id: u32,
+    pub backing_id: u32,
 }
 
 impl BackingId {
-    pub(crate) fn create(channel: &Arc<File>, fd: impl AsFd) -> std::io::Result<Self> {
+    pub(crate) fn create(channel: &crate::channel::Channel, fd: impl AsFd) -> std::io::Result<Self> {
         let map = fuse_backing_map {
             fd: fd.as_fd().as_raw_fd() as u32,
             flags: 0,
             padding: 0,
         };
-        let id = unsafe { fuse_dev_ioc_backing_open(channel.as_raw_fd(), &map) }?;
+        let id = unsafe { fuse_dev_ioc_backing_open(channel.raw_fd, &map) }?;
         Ok(Self {
-            channel: Arc::downgrade(channel),
+            channel: channel.clone(),
             backing_id: id as u32,
         })
     }
@@ -67,8 +67,6 @@ impl BackingId {
 
 impl Drop for BackingId {
     fn drop(&mut self) {
-        if let Some(ch) = self.channel.upgrade() {
-            let _ = unsafe { fuse_dev_ioc_backing_close(ch.as_raw_fd(), &self.backing_id) };
-        }
+        let _ = unsafe { fuse_dev_ioc_backing_close(self.channel.raw_fd, &self.backing_id) };
     }
 }

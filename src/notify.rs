@@ -4,7 +4,7 @@ use std::io;
 use std::{convert::TryInto, ffi::OsStr};
 
 use crate::{
-    channel::ChannelSender,
+    channel::Channel,
     ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification},
 
     // What we're sending here aren't really replies, but they
@@ -22,7 +22,7 @@ pub struct PollHandle {
 }
 
 impl PollHandle {
-    pub(crate) fn new(cs: ChannelSender, kh: u64) -> Self {
+    pub(crate) fn new(cs: Channel, kh: u64) -> Self {
         Self {
             handle: kh,
             notifier: Notifier::new(cs),
@@ -49,10 +49,10 @@ impl std::fmt::Debug for PollHandle {
 
 /// A handle by which the application can send notifications to the server
 #[derive(Debug, Clone)]
-pub struct Notifier(ChannelSender);
+pub struct Notifier(Channel);
 
 impl Notifier {
-    pub(crate) fn new(cs: ChannelSender) -> Self {
+    pub(crate) fn new(cs: Channel) -> Self {
         Self(cs)
     }
 
@@ -65,7 +65,7 @@ impl Notifier {
 
     /// Invalidate the kernel cache for a given directory entry
     #[cfg(feature = "abi-7-12")]
-    pub fn inval_entry(&self, parent: u64, name: &OsStr) -> io::Result<()> {
+    pub fn inval_entry(&self, parent: u64, name: &[u8]) -> io::Result<()> {
         let notif = Notification::new_inval_entry(parent, name).map_err(Self::too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_INVAL_ENTRY, &notif)
     }
@@ -90,7 +90,7 @@ impl Notifier {
     /// Invalidate the kernel cache for a given directory entry and inform
     /// inotify watchers of a file deletion.
     #[cfg(feature = "abi-7-18")]
-    pub fn delete(&self, parent: u64, child: u64, name: &OsStr) -> io::Result<()> {
+    pub fn delete(&self, parent: u64, child: u64, name: &[u8]) -> io::Result<()> {
         let notif = Notification::new_delete(parent, child, name).map_err(Self::too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif)
     }
