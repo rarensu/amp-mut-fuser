@@ -1,31 +1,10 @@
+use std::io;
 use std::fs::File;
+use std::fmt;
 use std::os::fd::{AsFd, AsRawFd};
 use std::sync::{Arc, Weak};
 
-#[repr(C)]
-struct fuse_backing_map {
-    fd: u32,
-    flags: u32,
-    padding: u64,
-}
-
-const FUSE_DEV_IOC_MAGIC: u8 = 229;
-const FUSE_DEV_IOC_BACKING_OPEN: u8 = 1;
-const FUSE_DEV_IOC_BACKING_CLOSE: u8 = 2;
-
-nix::ioctl_write_ptr!(
-    fuse_dev_ioc_backing_open,
-    FUSE_DEV_IOC_MAGIC,
-    FUSE_DEV_IOC_BACKING_OPEN,
-    fuse_backing_map
-);
-
-nix::ioctl_write_ptr!(
-    fuse_dev_ioc_backing_close,
-    FUSE_DEV_IOC_MAGIC,
-    FUSE_DEV_IOC_BACKING_CLOSE,
-    u32
-);
+use crate::ll::fuse_ioctl::{ioctl_open_backing, ioctl_close_backing};
 
 /// A reference to a previously opened fd intended to be used for passthrough
 ///
@@ -44,29 +23,69 @@ nix::ioctl_write_ptr!(
 /// FUSE_DEV_IOC_BACKING_CLOSE call.  It holds a weak reference on the fuse channel to allow it to
 /// make that call (if the channel hasn't already been closed).
 #[derive(Debug)]
-pub struct BackingId {
+pub struct Backing {
+    file: File,
     channel: crate::channel::Channel,
     /// The backing_id field passed to and from the kernel
-    pub backing_id: u32,
+    pub id: u32,
 }
-
-impl BackingId {
-    pub(crate) fn create(channel: &crate::channel::Channel, fd: impl AsFd) -> std::io::Result<Self> {
-        let map = fuse_backing_map {
-            fd: fd.as_fd().as_raw_fd() as u32,
-            flags: 0,
-            padding: 0,
-        };
-        let id = unsafe { fuse_dev_ioc_backing_open(channel.raw_fd, &map) }?;
-        Ok(Self {
-            channel: channel.clone(),
-            backing_id: id as u32,
-        })
+impl Drop for Backing {
+    fn drop(&mut self) {
+        if self.id > 0 {
+            let _ = ioctl_close_backing(self.channel.raw_fd, self.id);
+        }
     }
 }
 
-impl Drop for BackingId {
-    fn drop(&mut self) {
-        let _ = unsafe { fuse_dev_ioc_backing_close(self.channel.raw_fd, &self.backing_id) };
+pub trait BackingSender: Send + Sync + Unpin + 'static  {
+    fn open_backing(&self, file: File) -> io::Result<Backing>;
+    fn close_backing(&self, backing: Backing) -> io::Result<(u32)>;
+}
+
+impl fmt::Debug for Box<dyn BackingSender> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "Box<BackingSender>")
+    }
+}
+
+impl BackingSender for crate::channel::Channel {
+    fn open_backing(&self, file: File) -> std::io::Result<Backing> {
+        let id = ioctl_open_backing(self.raw_fd, file.as_fd().as_raw_fd() as u32)?;
+        Ok( Backing {
+            file,
+            channel: self.clone(),
+            id,
+        })
+    }
+    fn close_backing(&self, mut backing: Backing) -> std::io::Result<(u32)> {
+        let id = backing.id;
+        backing.id = 0; // this backing has been closed.
+        ioctl_close_backing(self.raw_fd, id)
+    }
+}
+
+#[derive(Debug)]
+/// `BackingHandler` needs documentation
+pub struct BackingHandler {
+    /// Closure to call for requesting a backing id
+    pub sender: Box<dyn BackingSender>,
+}
+
+impl BackingHandler {
+    /// Create a reply handler for a specific request identifier
+    pub fn new<S: BackingSender>(sender: S) -> BackingHandler {
+        let sender = Box::new(sender);
+        BackingHandler {
+            sender,
+        }
+    }
+}
+
+impl BackingHandler {
+    pub fn open_backing(&self, file: File) -> std::io::Result<Backing> {
+        self.sender.open_backing(file)
+    }
+    pub fn close_backing(&self, mut backing: Backing) -> std::io::Result<(u32)> {
+        self.sender.close_backing(backing)
     }
 }

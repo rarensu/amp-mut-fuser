@@ -91,9 +91,4 @@ impl Channel {
             Ok(())
         }
     }
-
-    #[cfg(feature = "abi-7-40")]
-    pub fn open_backing(&self, fd: File) -> io::Result<crate::passthrough::BackingId> {
-        crate::passthrough::BackingId::create(&self, fd.as_fd())
-    }
 }

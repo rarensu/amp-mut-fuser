@@ -12,6 +12,10 @@ use std::convert::Into;
 use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
 use crate::reply::ReplyHandler;
+#[cfg(feature = "abi-7-40")]
+use crate::passthrough::BackingHandler;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::NotificationHandler;
 
 /// Request data structure
 #[derive(Debug)]
@@ -22,6 +26,12 @@ pub(crate) struct RequestHandler {
     pub meta: RequestMeta,
     /// Closure-like object to guarantee a response is sent
     pub replyhandler: ReplyHandler,
+    #[cfg(feature = "abi-7-40")]
+    /// Closure-like object to enable opening and closing of Backing Id.
+    pub backinghandler: BackingHandler,
+    #[cfg(feature = "abi-7-11")]
+    /// Closure-like object to enable sending of notifications.
+    pub notificationhandler: NotificationHandler,
 }
 
 /// Request metadata structure
@@ -64,11 +74,19 @@ impl RequestHandler {
             gid: request.gid(),
             pid: request.pid(),
         };
+        #[cfg(feature = "abi-7-11")]
+        let notificationhandler = NotificationHandler::new(sender.clone());
+        #[cfg(feature = "abi-7-40")]
+        let backinghandler = BackingHandler::new(sender.clone());
         let replyhandler = ReplyHandler::new(request.unique().into(), sender);
         Some(Self {
             request,
             meta,
             replyhandler,
+            #[cfg(feature = "abi-7-40")]
+            backinghandler,
+            #[cfg(feature = "abi-7-11")]
+            notificationhandler,
         })
     }
 }

@@ -17,7 +17,7 @@ use super::ReplyLseek;
 use super::ReplyXTimes;
 use super::Request;
 #[cfg(feature = "abi-7-11")]
-use super::{PollHandle, ReplyIoctl, ReplyPoll};
+use super::{PollHandler, ReplyIoctl, ReplyPoll};
 use super::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
@@ -651,7 +651,7 @@ pub trait Filesystem {
         req: &Request<'_>,
         ino: u64,
         fh: u64,
-        ph: PollHandle,
+        ph: PollHandler,
         events: u32,
         flags: u32,
         reply: ReplyPoll,

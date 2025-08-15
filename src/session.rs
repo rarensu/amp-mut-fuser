@@ -23,7 +23,7 @@ use crate::Filesystem;
 use crate::MountOption;
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::notify::Notifier;
+use crate::notify::NotificationHandler;
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
@@ -170,8 +170,8 @@ impl<FS: Filesystem> Session<FS> {
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Notifier {
-        Notifier::new(self.ch.clone())
+    pub fn notifier(&self) -> NotificationHandler {
+        NotificationHandler::new(self.ch.clone())
     }
 }
 
@@ -254,8 +254,8 @@ impl BackgroundSession {
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Notifier {
-        Notifier::new(self.sender.clone())
+    pub fn notifier(&self) -> NotificationHandler {
+        NotificationHandler::new(self.sender.clone())
     }
 }
 

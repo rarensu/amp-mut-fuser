@@ -49,7 +49,7 @@ pub use callback::{
 pub struct PollHandle(pub u64);
 */
 #[cfg(feature = "abi-7-11")]
-use crate::notify::PollHandle;
+use crate::notify::PollHandler;
 
 /*
 #[cfg(feature = "abi-7-40")]
@@ -63,4 +63,4 @@ pub struct BackingId {
 }
 */
 #[cfg(feature = "abi-7-40")]
-use crate::passthrough::BackingId;
+use crate::passthrough::{Backing, BackingHandler};

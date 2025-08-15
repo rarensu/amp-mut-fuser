@@ -24,7 +24,7 @@ impl<FS: Filesystem> Session<FS> {
                 Ok(data) => {
                     match RequestHandler::new(self.ch.clone(), data) {
                         // Dispatch request
-                        Some(req) => req.dispatch_legacy(&mut self.filesystem, &self.meta, &self.ch),
+                        Some(req) => req.dispatch_legacy(&mut self.filesystem, &self.meta),
                         // Quit loop on illegal request
                         None => break,
                     }

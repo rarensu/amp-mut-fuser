@@ -10,20 +10,22 @@ use crate::XTimes;
 #[cfg(feature = "abi-7-21")]
 use crate::ll::reply::fuse_attr_from_attr;
 use crate::{
-    channel::Channel, ll::{reply::{mode_from_kind_and_perm, EntListBuf, Response}, Errno}, reply::{Entry, Lock, Open, ReplyHandler, Statfs}, FileAttr, FileType
+    ll::{reply::{mode_from_kind_and_perm, EntListBuf, Response}, Errno}, reply::{Entry, Lock, Open, ReplyHandler, Statfs}, FileAttr, FileType
 };
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
 
+/*
 #[cfg(feature = "abi-7-11")]
-use super::PollHandle;
+use super::PollHandler;
+*/
 
 #[cfg(feature = "abi-7-40")]
 use std::fs::File;
 #[cfg(feature = "abi-7-40")]
 use std::io;
 #[cfg(feature = "abi-7-40")]
-use super::BackingId;
+use super::{Backing, BackingHandler};
 #[cfg(feature = "abi-7-40")]
 use crate::consts::FOPEN_PASSTHROUGH;
 
@@ -246,29 +248,35 @@ pub trait CallbackOpen: CallbackErr {
     /// Reply to a request with an opened backing id.  Call `ReplyOpen::open_backing()`` to get one of
     /// these.
     #[cfg(feature = "abi-7-40")]
-    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &BackingId);
+    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &Backing);
 
-    /// Registers a fd for passthrough, returning a `BackingId`.  Once you have the backing ID,
+    /// Registers a fd for passthrough, returning a `Backing`.  Once you have the backing ID,
     /// you can pass it as the 3rd parameter of `ReplyOpen::opened_passthrough()`.  This is done in
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: File) -> io::Result<BackingId>;
+    fn open_backing(&self, fd: File) -> io::Result<Backing>;
 }
-
-
 
 /// Legacy callback handler for ReplyOpen
 #[derive(Debug)]
 pub(crate) struct OpenHandler {
-    #[allow(unused)]
-    channel: Channel,
     handler: Option<ReplyHandler>,
+    #[cfg(feature = "abi-7-40")]
+    backer: BackingHandler,
 }
+
 impl OpenHandler {
-    pub fn new(channel: Channel, handler: ReplyHandler) -> Self {
+    #[cfg(feature = "abi-7-40")]
+    pub fn new(handler: ReplyHandler, backer: BackingHandler) -> Self {
         OpenHandler {
-            channel,
+            handler: Some(handler),
+            backer,
+        }
+    }
+    #[cfg(not(feature = "abi-7-40"))]
+    pub fn new(handler: ReplyHandler) -> Self {
+        OpenHandler {
             handler: Some(handler),
         }
     }
@@ -291,18 +299,18 @@ impl CallbackOpen for OpenHandler {
         }
     }
     #[cfg(feature = "abi-7-40")]
-    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &BackingId) {
+    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &Backing) {
         if let Some(handler) = self.handler.take() {
             handler.opened(&Open {
                 fh,
                 flags: flags | FOPEN_PASSTHROUGH,
-                backing_id: Some(backing_id.backing_id),
+                backing_id: Some(backing_id.id),
             });
         }
     }
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: File) -> io::Result<BackingId> {
-        self.channel.open_backing(fd)
+    fn open_backing(&self, fd: File) -> io::Result<Backing> {
+        self.backer.open_backing(fd)
     }
 }
 
@@ -325,7 +333,7 @@ impl ReplyOpen {
     /// Reply to a request with an opened backing id.  Call `ReplyOpen::open_backing()`` to get one of
     /// these.
     #[cfg(feature = "abi-7-40")]
-    pub fn opened_passthrough(mut self, fh: u64, flags: u32, backing_id: &BackingId) {
+    pub fn opened_passthrough(mut self, fh: u64, flags: u32, backing_id: &Backing) {
         self.handler.opened_passthrough(fh, flags, backing_id);
     }
 
@@ -334,7 +342,7 @@ impl ReplyOpen {
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
-    pub fn open_backing(&self, fd: File) -> io::Result<BackingId> {
+    pub fn open_backing(&self, fd: File) -> io::Result<Backing> {
         self.handler.open_backing(fd)
     }
     default_error!();

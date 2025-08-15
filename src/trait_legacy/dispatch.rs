@@ -2,7 +2,6 @@
 use log::{debug, error, info, warn};
 use std::sync::atomic::Ordering::Relaxed;
 
-use crate::channel::Channel;
 use crate::ll::{self, Operation, Request as AnyRequest};
 use crate::session::{SessionACL, SessionMeta};
 use crate::request::{RequestHandler, RequestMeta};
@@ -18,7 +17,7 @@ use super::{
     ReplyEntry, ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
 #[cfg(feature = "abi-7-11")]
-use super::{PollHandle, ReplyIoctl, ReplyPoll};
+use super::{PollHandler, ReplyIoctl, ReplyPoll};
 #[cfg(feature = "abi-7-21")]
 use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
 
@@ -71,7 +70,7 @@ impl RequestHandler {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta, ch: &Channel) {
+    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
         let op = if let Ok(op) = self.request.operation() {
             op
@@ -302,7 +301,10 @@ impl RequestHandler {
                 );
             }
             Operation::Open(x) => {
-                let callback = OpenHandler::new(ch.clone(), self.replyhandler);
+                #[cfg(feature = "abi-7-40")]
+                let callback = OpenHandler::new(self.replyhandler, self.backinghandler);
+                #[cfg(not(feature = "abi-7-40"))]
+                let callback = OpenHandler::new(self.replyhandler);
                 let reply = ReplyOpen::new(Box::new(callback));
                 fs.open(&req, self.request.nodeid().into(), x.flags(), reply);
             }
@@ -366,7 +368,10 @@ impl RequestHandler {
                 );
             }
             Operation::OpenDir(x) => {
-                let callback = OpenHandler::new(ch.clone(), self.replyhandler);
+                #[cfg(feature = "abi-7-40")]
+                let callback = OpenHandler::new(self.replyhandler, self.backinghandler);
+                #[cfg(not(feature = "abi-7-40"))]
+                let callback = OpenHandler::new(self.replyhandler);                
                 let reply = ReplyOpen::new(Box::new(callback));
                 fs.opendir(
                     &req,
@@ -554,8 +559,8 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    PollHandle::new(
-                        ch.clone(),
+                    PollHandler::new(
+                        self.notificationhandler,
                         x.kernel_handle(),
                     ),
                     x.events(),

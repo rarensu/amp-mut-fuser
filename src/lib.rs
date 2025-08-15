@@ -26,7 +26,7 @@ use crate::session::MAX_WRITE_SIZE;
 pub use ll::fuse_abi::fuse_forget_one;
 pub use mnt::mount_options::MountOption;
 #[cfg(feature = "abi-7-11")]
-pub use notify::{Notifier, PollHandle};
+pub use notify::{NotificationHandler, PollHandler};
 #[cfg(feature = "abi-7-11")]
 pub use trait_legacy::ReplyIoctl;
 #[cfg(feature = "abi-7-11")]
@@ -34,7 +34,7 @@ pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
 pub use trait_legacy::ReplyLseek;
 #[cfg(feature = "abi-7-40")]
-pub use passthrough::BackingId;
+pub use passthrough::Backing;
 #[cfg(feature = "abi-7-11")]
 pub use trait_legacy::ReplyPoll;
 #[cfg(target_os = "macos")]
