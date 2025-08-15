@@ -63,4 +63,4 @@ pub struct BackingId {
 }
 */
 #[cfg(feature = "abi-7-40")]
-use crate::passthrough::{Backing, BackingHandler};
+use crate::passthrough::{BackingId, BackingHandler};

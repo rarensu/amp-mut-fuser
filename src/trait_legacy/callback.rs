@@ -25,7 +25,7 @@ use std::fs::File;
 #[cfg(feature = "abi-7-40")]
 use std::io;
 #[cfg(feature = "abi-7-40")]
-use super::{Backing, BackingHandler};
+use super::{BackingId, BackingHandler};
 #[cfg(feature = "abi-7-40")]
 use crate::consts::FOPEN_PASSTHROUGH;
 
@@ -248,14 +248,14 @@ pub trait CallbackOpen: CallbackErr {
     /// Reply to a request with an opened backing id.  Call `ReplyOpen::open_backing()`` to get one of
     /// these.
     #[cfg(feature = "abi-7-40")]
-    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &Backing);
+    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &BackingId);
 
     /// Registers a fd for passthrough, returning a `Backing`.  Once you have the backing ID,
     /// you can pass it as the 3rd parameter of `ReplyOpen::opened_passthrough()`.  This is done in
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: File) -> io::Result<Backing>;
+    fn open_backing(&self, fd: File) -> io::Result<BackingId>;
 }
 
 /// Legacy callback handler for ReplyOpen
@@ -299,7 +299,7 @@ impl CallbackOpen for OpenHandler {
         }
     }
     #[cfg(feature = "abi-7-40")]
-    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &Backing) {
+    fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &BackingId) {
         if let Some(handler) = self.handler.take() {
             handler.opened(&Open {
                 fh,
@@ -309,7 +309,7 @@ impl CallbackOpen for OpenHandler {
         }
     }
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: File) -> io::Result<Backing> {
+    fn open_backing(&self, fd: File) -> io::Result<BackingId> {
         self.backer.open_backing(fd)
     }
 }
@@ -333,7 +333,7 @@ impl ReplyOpen {
     /// Reply to a request with an opened backing id.  Call `ReplyOpen::open_backing()`` to get one of
     /// these.
     #[cfg(feature = "abi-7-40")]
-    pub fn opened_passthrough(mut self, fh: u64, flags: u32, backing_id: &Backing) {
+    pub fn opened_passthrough(mut self, fh: u64, flags: u32, backing_id: &BackingId) {
         self.handler.opened_passthrough(fh, flags, backing_id);
     }
 
@@ -342,7 +342,7 @@ impl ReplyOpen {
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
-    pub fn open_backing(&self, fd: File) -> io::Result<Backing> {
+    pub fn open_backing(&self, fd: File) -> io::Result<BackingId> {
         self.handler.open_backing(fd)
     }
     default_error!();

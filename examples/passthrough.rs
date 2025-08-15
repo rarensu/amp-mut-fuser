@@ -4,7 +4,7 @@
 
 use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::{
-    Backing, FileAttr, FileType, Filesystem, KernelConfig, MountOption, ReplyAttr,
+    BackingId, FileAttr, FileType, Filesystem, KernelConfig, MountOption, ReplyAttr,
     ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, Request, consts,
 };
 use libc::ENOENT;
@@ -33,8 +33,8 @@ const TTL: Duration = Duration::from_secs(1); // 1 second
 /// desired, but our little example filesystem only contains one file. :)
 #[derive(Debug, Default)]
 struct BackingCache {
-    by_handle: HashMap<u64, Rc<Backing>>,
-    by_inode: HashMap<u64, Weak<Backing>>,
+    by_handle: HashMap<u64, Rc<BackingId>>,
+    by_inode: HashMap<u64, Weak<BackingId>>,
     next_fh: u64,
 }
 
@@ -51,22 +51,22 @@ impl BackingCache {
     fn get_or(
         &mut self,
         ino: u64,
-        callback: impl Fn() -> std::io::Result<Backing>,
-    ) -> std::io::Result<(u64, Rc<Backing>)> {
+        callback: impl Fn() -> std::io::Result<BackingId>,
+    ) -> std::io::Result<(u64, Rc<BackingId>)> {
         let fh = self.next_fh();
 
-        let backing = if let Some(backing) = self.by_inode.get(&ino).and_then(Weak::upgrade) {
-            eprintln!("HIT! reusing {:?}", backing.id);
-            backing
+        let id = if let Some(id) = self.by_inode.get(&ino).and_then(Weak::upgrade) {
+            eprintln!("HIT! reusing {id:?}");
+            id
         } else {
-            let backing = Rc::new(callback()?);
-            self.by_inode.insert(ino, Rc::downgrade(&backing));
-            eprintln!("MISS! new {:?}", backing.id);
-            backing
+            let id = Rc::new(callback()?);
+            self.by_inode.insert(ino, Rc::downgrade(&id));
+            eprintln!("MISS! new {id:?}");
+            id
         };
 
-        self.by_handle.insert(fh, Rc::clone(&backing));
-        Ok((fh, backing))
+        self.by_handle.insert(fh, Rc::clone(&id));
+        Ok((fh, id))
     }
 
     /// Releases a file handle previously obtained from `get_or()`.  If this was a last user of a
@@ -75,7 +75,7 @@ impl BackingCache {
         eprintln!("Put fh {fh}");
         match self.by_handle.remove(&fh) {
             None => eprintln!("ERROR: Put fh {fh} but it wasn't found in cache!!\n"),
-            Some(backing) => eprintln!("Put fh {fh}, was {:?}\n", backing.id),
+            Some(id) => eprintln!("Put fh {fh}, was {id:?}\n"),
         }
     }
 }
@@ -169,7 +169,7 @@ impl Filesystem for PassthroughFs {
             return;
         }
 
-        let (fh, backing) = self
+        let (fh, id) = self
             .backing_cache
             .get_or(ino, || {
                 let file = File::open("/etc/os-release")?;
@@ -177,8 +177,8 @@ impl Filesystem for PassthroughFs {
             })
             .unwrap();
 
-        eprintln!("  -> opened_passthrough({fh:?}, 0, {:?});\n", backing.id);
-        reply.opened_passthrough(fh, 0, &backing);
+        eprintln!("  -> opened_passthrough({fh:?}, 0, {id:?});\n");
+        reply.opened_passthrough(fh, 0, &id);
     }
 
     fn release(

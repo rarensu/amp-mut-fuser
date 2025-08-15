@@ -22,14 +22,18 @@ use crate::ll::fuse_ioctl::{ioctl_open_backing, ioctl_close_backing};
 /// FUSE_DEV_IOC_BACKING_OPEN ioctl on an fd and has a Drop trait impl which makes a matching
 /// FUSE_DEV_IOC_BACKING_CLOSE call.  It holds a weak reference on the fuse channel to allow it to
 /// make that call (if the channel hasn't already been closed).
-#[derive(Debug)]
-pub struct Backing {
+pub struct BackingId {
     file: File,
     channel: crate::channel::Channel,
     /// The backing_id field passed to and from the kernel
     pub id: u32,
 }
-impl Drop for Backing {
+impl fmt::Debug for BackingId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "BackingId({:?})", &self.id)
+    }
+}
+impl Drop for BackingId {
     fn drop(&mut self) {
         if self.id > 0 {
             let _ = ioctl_close_backing(self.channel.raw_fd, self.id);
@@ -38,8 +42,8 @@ impl Drop for Backing {
 }
 
 pub trait BackingSender: Send + Sync + Unpin + 'static  {
-    fn open_backing(&self, file: File) -> io::Result<Backing>;
-    fn close_backing(&self, backing: Backing) -> io::Result<(u32)>;
+    fn open_backing(&self, file: File) -> io::Result<BackingId>;
+    fn close_backing(&self, backing: BackingId) -> io::Result<(u32)>;
 }
 
 impl fmt::Debug for Box<dyn BackingSender> {
@@ -49,15 +53,15 @@ impl fmt::Debug for Box<dyn BackingSender> {
 }
 
 impl BackingSender for crate::channel::Channel {
-    fn open_backing(&self, file: File) -> std::io::Result<Backing> {
+    fn open_backing(&self, file: File) -> std::io::Result<BackingId> {
         let id = ioctl_open_backing(self.raw_fd, file.as_fd().as_raw_fd() as u32)?;
-        Ok( Backing {
+        Ok( BackingId {
             file,
             channel: self.clone(),
             id,
         })
     }
-    fn close_backing(&self, mut backing: Backing) -> std::io::Result<(u32)> {
+    fn close_backing(&self, mut backing: BackingId) -> std::io::Result<(u32)> {
         let id = backing.id;
         backing.id = 0; // this backing has been closed.
         ioctl_close_backing(self.raw_fd, id)
@@ -82,10 +86,10 @@ impl BackingHandler {
 }
 
 impl BackingHandler {
-    pub fn open_backing(&self, file: File) -> std::io::Result<Backing> {
+    pub fn open_backing(&self, file: File) -> std::io::Result<BackingId> {
         self.sender.open_backing(file)
     }
-    pub fn close_backing(&self, mut backing: Backing) -> std::io::Result<(u32)> {
+    pub fn close_backing(&self, mut backing: BackingId) -> std::io::Result<(u32)> {
         self.sender.close_backing(backing)
     }
 }

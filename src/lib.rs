@@ -34,7 +34,7 @@ pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
 pub use trait_legacy::ReplyLseek;
 #[cfg(feature = "abi-7-40")]
-pub use passthrough::Backing;
+pub use passthrough::BackingId;
 #[cfg(feature = "abi-7-11")]
 pub use trait_legacy::ReplyPoll;
 #[cfg(target_os = "macos")]
