@@ -228,8 +228,9 @@ pub trait Filesystem {
     /// filesystem may set, to change the way the file is opened. See fuse_file_info
     /// structure in <fuse_common.h> for more details.
     fn open(&mut self, req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        warn!("[Not Implemented] open(ino: {ino:#x?}, flags: {flags})");
-        reply.error(ENOSYS);
+        //warn!("[Not Implemented] open(ino: {ino:#x?}, flags: {flags})");
+        //reply.error(ENOSYS);
+        reply.opened(0, 0);
     }
 
     /// Read data.
