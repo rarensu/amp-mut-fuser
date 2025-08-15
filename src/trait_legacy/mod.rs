@@ -6,6 +6,8 @@ pub use filesystem::Filesystem;
 mod dispatch;
 pub use dispatch::Request;
 
+mod run;
+
 mod callback;
 
 /* ------ Structs ------ */

@@ -35,7 +35,7 @@ pub const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Size of the buffer for reading a request from the kernel. Since the kernel may send
 /// up to MAX_WRITE_SIZE bytes in a write request, we use that value plus some extra space.
-const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
+pub const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
 
 #[derive(Default, Debug, Eq, PartialEq)]
 /// How requests should be filtered based on the calling UID.
@@ -154,45 +154,9 @@ impl<FS: Filesystem> Session<FS> {
         }
     }
 
-    /// Run the session loop that receives kernel requests and dispatches them to method
-    /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
-    /// having multiple buffers (which take up much memory), but the filesystem methods
-    /// may run concurrent by spawning threads.
-    pub fn run(&mut self) -> io::Result<()> {
-        // Buffer for receiving requests from the kernel. Only one is allocated and
-        // it is reused immediately after dispatching to conserve memory and allocations.
-        let mut buffer = vec![0; BUFFER_SIZE];
-        let buf = aligned_sub_buf(
-            buffer.deref_mut(),
-            std::mem::align_of::<abi::fuse_in_header>(),
-        );
-        loop {
-            // Read the next request from the given channel to kernel driver
-            // The kernel driver makes sure that we get exactly one request per read
-            match self.ch.receive(buf) {
-                Ok(data) => {
-                    match RequestHandler::new(self.ch.clone(), data) {
-                        // Dispatch request
-                        Some(req) => req.dispatch_legacy(&mut self.filesystem, &self.meta),
-                        // Quit loop on illegal request
-                        None => break,
-                    }
-                },
-                Err(err) => match err.raw_os_error() {
-                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                    Some(ENOENT) => continue,
-                    // Interrupted system call, retry
-                    Some(EINTR) => continue,
-                    // Explicitly try again
-                    Some(EAGAIN) => continue,
-                    // Filesystem was unmounted, quit the loop
-                    Some(ENODEV) => break,
-                    // Unhandled error
-                    _ => return Err(err),
-                },
-            }
-        }
-        Ok(())
+    /// This function starts the main Session loop of a Legacy Filesystem in the current thread.
+    pub fn run(mut self) -> io::Result<()> {
+        self.run_legacy()
     }
 
     /// Unmount the filesystem
