@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::ll::fuse_abi;
-use crate::ll::ioctl::ioctl_clone_fuse_fd;
+use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
 #[cfg(feature = "abi-7-40")]
 use crate::ll::ioctl::{ioctl_close_backing, ioctl_open_backing};
 use libc::{c_int, c_void, size_t};
@@ -237,7 +237,7 @@ impl Channel {
     }
     /// Writes data from the owned buffer.
     /// Blocks the current thread.
-    pub fn send(&self, bufs: &[IoSlice<'_>]) -> io::Result<()> {
+    pub fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         log::debug!("about to try a blocking write on fd {}", self.raw_fd);
         for x in bufs {
             log::debug!("the buf has length {}", x.len());
@@ -262,7 +262,7 @@ impl Channel {
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
     #[allow(unused)] // this stub is a placeholder for future non-tokio async i/o
-    pub async fn send_async(&self, bufs: &[IoSlice<'_>]) -> io::Result<()> {
+    pub async fn send_async(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let bufs = bufs
             .iter()
             .map(|v| Vec::from(v.as_ref()))
@@ -271,8 +271,8 @@ impl Channel {
         std::thread::spawn(move || {
             let bufs = bufs
                 .iter()
-                .map(|v| IoSlice::new(v))
-                .collect::<Vec<IoSlice<'_>>>();
+                .map(|v| io::IoSlice::new(v))
+                .collect::<Vec<io::IoSlice<'_>>>();
             thread_sender.send(&bufs)
         });
         unimplemented!("non-tokio async i/o not implemented");
@@ -301,17 +301,5 @@ impl Channel {
     /// ?
     pub fn new_fuse_worker(&self, main_fuse_fd: u32) -> std::io::Result<()> {
         ioctl_clone_fuse_fd(self.raw_fd, main_fuse_fd)
-    }
-    /// Registers a file descriptor with the kernel.
-    /// If the kernel accepts, it returns a backing ID.
-    #[cfg(feature = "abi-7-40")]
-    pub fn open_backing(&self, backing_fd: u32) -> std::io::Result<u32> {
-        ioctl_open_backing(self.raw_fd, backing_fd)
-    }
-
-    /// Deregisters a backing ID.
-    #[cfg(feature = "abi-7-40")]
-    pub fn close_backing(&self, backing_id: u32) -> std::io::Result<u32> {
-        ioctl_close_backing(self.raw_fd, backing_id)
     }
 }

@@ -161,7 +161,7 @@ where
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
-    pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
+    pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, acl: SessionACL) -> Self {
         // Create the channel for fuse messages
         let ch = Channel::new(fd.into());
         Session::from_mount(filesystem, ch, acl, None)
@@ -392,7 +392,7 @@ impl BackgroundSession {
     /// Unmount the filesystem and join the background thread.
     pub fn join(self) {
         let Self {
-            main_loop_guard,
+            guard,
             #[cfg(feature = "abi-7-11")]
                 extra_notification_sender: _,
             _mount,
@@ -400,7 +400,7 @@ impl BackgroundSession {
         // Unmount the filesystem
         drop(_mount);
         // Stop the background thread
-        let res = main_loop_guard
+        let res = guard
             .join()
             .expect("Failed to join the background thread");
         // An error is expected, since the thread was active when the unmount occured.
@@ -420,7 +420,7 @@ impl BackgroundSession {
 impl fmt::Debug for BackgroundSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         let mut builder = f.debug_struct("BackgroundSession");
-        builder.field("main_loop_guard", &self.main_loop_guard);
+        builder.field("main_loop_guard", &self.guard);
         #[cfg(feature = "abi-7-11")]
         {
             builder.field("sender", &self.extra_notification_sender);

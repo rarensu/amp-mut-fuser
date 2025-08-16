@@ -85,13 +85,13 @@ impl<'a> Response<'a> {
         let d = abi::fuse_entry_out {
             nodeid: ino.into(),
             generation: generation.into(),
-            entry_valid: file_ttl.as_secs(),
+            entry_valid: entry_ttl.as_secs(),
             attr_valid: if attr_ttl_override {
                 0
             } else {
                 attr_ttl.as_secs()
             },
-            entry_valid_nsec: file_ttl.subsec_nanos(),
+            entry_valid_nsec: entry_ttl.subsec_nanos(),
             attr_valid_nsec: if attr_ttl_override {
                 0
             } else {
@@ -102,7 +102,7 @@ impl<'a> Response<'a> {
         Self::from_struct(d.as_bytes())
     }
 
-    pub(crate) fn new_attr(ttl: &Duration, attr: &Attr, attr_ttl_override: bool) -> Self {
+    pub(crate) fn new_attr(ttl: &Duration, attr: &crate::FileAttr, attr_ttl_override: bool) -> Self {
         let r = abi::fuse_attr_out {
             attr_valid: if attr_ttl_override { 0 } else { ttl.as_secs() },
             attr_valid_nsec: if attr_ttl_override {

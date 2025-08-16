@@ -70,7 +70,34 @@ impl RequestHandler {
             reply!(error, Errno::ENOSYS);
             return;
         };
-        if self.access_denied(&op, se_meta) {
+        // Implementation of `--allow-root` & required access check for `--auto-unmount`
+        let access_denied = if (se_meta.allowed == SessionACL::RootAndOwner
+            && self.request.uid() != se_meta.session_owner
+            && self.request.uid() != 0)
+            || (se_meta.allowed == SessionACL::Owner && self.request.uid() != se_meta.session_owner)
+        {
+            match op {
+                // Only allow operations that the kernel may issue without a uid set
+                Operation::Init(_)
+                | Operation::Destroy(_)
+                | Operation::Read(_)
+                | Operation::ReadDir(_)
+                | Operation::Forget(_)
+                | Operation::Write(_)
+                | Operation::FSync(_)
+                | Operation::FSyncDir(_)
+                | Operation::Release(_)
+                | Operation::ReleaseDir(_) => false,
+                #[cfg(feature = "abi-7-16")]
+                Operation::BatchForget(_) => false,
+                #[cfg(feature = "abi-7-21")]
+                Operation::ReadDirPlus(_) => false,
+                _ => true,
+            }
+        } else {
+            false
+        };
+        if access_denied {
             reply!(error, Errno::EACCES);
             return;
         }
