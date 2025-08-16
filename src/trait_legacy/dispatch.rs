@@ -2,22 +2,22 @@
 use log::{debug, error, info, warn};
 use std::sync::atomic::Ordering::Relaxed;
 
-use crate::ll::{self, Operation, request::Request as AnyRequest};
-use crate::request::RequestHandler;
+use crate::ll::{self, Operation, Request as AnyRequest};
 use crate::session::{SessionACL, SessionMeta};
-use crate::{Errno, KernelConfig, RequestMeta};
+use crate::request::{RequestHandler, RequestMeta};
+use crate::{ll::Errno, KernelConfig,};
 
 #[cfg(feature = "abi-7-24")]
 use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
-use super::callback::DirectoryHandler;
+use super::callback::{DirectoryHandler, OpenHandler};
 use super::{
     Filesystem, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
 #[cfg(feature = "abi-7-11")]
-use super::{PollHandle, ReplyIoctl, ReplyPoll};
+use super::{PollHandler, ReplyIoctl, ReplyPoll};
 #[cfg(feature = "abi-7-21")]
 use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
 
@@ -34,7 +34,7 @@ impl<'r> Request<'r> {
     }
 }
 
-// Helper functions for compatibility with LegacyFilesystem
+// Helper functions for compatibility with Legacy Filesystem
 impl Request<'_> {
     /// Returns the unique identifier of this request
     #[inline]
@@ -59,6 +59,7 @@ impl Request<'_> {
     pub fn pid(&self) -> u32 {
         self.meta.pid
     }
+
     /// Returns a copy of this Request's data as a RequestMeta
     pub fn meta(&self) -> RequestMeta {
         *self.meta
@@ -69,7 +70,7 @@ impl RequestHandler {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch_legacy<FS: Filesystem>(mut self, fs: &mut FS, se_meta: &SessionMeta) {
+    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
         let op = if let Ok(op) = self.request.operation() {
             op
@@ -77,7 +78,34 @@ impl RequestHandler {
             self.replyhandler.error(Errno::ENOSYS);
             return;
         };
-        if self.access_denied(&op, se_meta) {
+        // Implementation of `--allow-root` & required access check for `--auto-unmount`
+        let access_denied = if (se_meta.allowed == SessionACL::RootAndOwner
+            && self.request.uid() != se_meta.session_owner
+            && self.request.uid() != 0)
+            || (se_meta.allowed == SessionACL::Owner && self.request.uid() != se_meta.session_owner)
+        {
+            match op {
+                // Only allow operations that the kernel may issue without a uid set
+                Operation::Init(_)
+                | Operation::Destroy(_)
+                | Operation::Read(_)
+                | Operation::ReadDir(_)
+                | Operation::Forget(_)
+                | Operation::Write(_)
+                | Operation::FSync(_)
+                | Operation::FSyncDir(_)
+                | Operation::Release(_)
+                | Operation::ReleaseDir(_) => false,
+                #[cfg(feature = "abi-7-16")]
+                Operation::BatchForget(_) => false,
+                #[cfg(feature = "abi-7-21")]
+                Operation::ReadDirPlus(_) => false,
+                _ => true,
+            }
+        } else {
+            false
+        };
+        if access_denied {
             self.replyhandler.error(Errno::EACCES);
             return;
         }
@@ -295,7 +323,11 @@ impl RequestHandler {
                 );
             }
             Operation::Open(x) => {
-                let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
+                #[cfg(feature = "abi-7-40")]
+                let callback = OpenHandler::new(self.replyhandler, self.backinghandler);
+                #[cfg(not(feature = "abi-7-40"))]
+                let callback = OpenHandler::new(self.replyhandler);
+                let reply = ReplyOpen::new(Box::new(callback));
                 fs.open(&req, self.request.nodeid().into(), x.flags(), reply);
             }
             Operation::Read(x) => {
@@ -358,7 +390,11 @@ impl RequestHandler {
                 );
             }
             Operation::OpenDir(x) => {
-                let reply = ReplyOpen::new(Box::new(Some(self.replyhandler)));
+                #[cfg(feature = "abi-7-40")]
+                let callback = OpenHandler::new(self.replyhandler, self.backinghandler);
+                #[cfg(not(feature = "abi-7-40"))]
+                let callback = OpenHandler::new(self.replyhandler);                
+                let reply = ReplyOpen::new(Box::new(callback));
                 fs.opendir(
                     &req,
                     self.request.nodeid().into(),
@@ -368,8 +404,8 @@ impl RequestHandler {
                 );
             }
             Operation::ReadDir(x) => {
-                let container = DirectoryHandler::new(x.size() as usize, self.replyhandler);
-                let reply = ReplyDirectory::new(Box::new(container));
+                let callback = DirectoryHandler::new(x.size() as usize, self.replyhandler);
+                let reply = ReplyDirectory::new(Box::new(callback));
                 fs.readdir(
                     &req,
                     self.request.nodeid().into(),
@@ -520,7 +556,6 @@ impl RequestHandler {
                     reply,
                 );
             }
-
             #[cfg(feature = "abi-7-11")]
             Operation::IoCtl(x) => {
                 if x.unrestricted() {
@@ -546,7 +581,10 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    PollHandle(x.kernel_handle()),
+                    PollHandler::new(
+                        self.notificationhandler,
+                        x.kernel_handle(),
+                    ),
                     x.events(),
                     x.flags(),
                     reply,

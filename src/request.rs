@@ -1,18 +1,21 @@
-//! Filesystem operation request
+//! Filesystem operation request handler
 //!
 //! A request represents information about a filesystem operation the kernel driver wants us to
 //! perform.
 //!
-//! TODO: This module is meant to go away soon in favor of `ll::Request`.
+//! The handler ensures the private data remains owned while the request is being processed.
 
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use std::convert::Into;
 
 use crate::channel::Channel;
-use crate::ll::{AnyRequest, Operation, Request as RequestTrait};
+use crate::ll::{AnyRequest, Request as RequestTrait};
 use crate::reply::ReplyHandler;
-use crate::session::{SessionACL, SessionMeta};
+#[cfg(feature = "abi-7-40")]
+use crate::passthrough::BackingHandler;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::NotificationHandler;
 
 /// Request data structure
 #[derive(Debug)]
@@ -23,6 +26,12 @@ pub(crate) struct RequestHandler {
     pub meta: RequestMeta,
     /// Closure-like object to guarantee a response is sent
     pub replyhandler: ReplyHandler,
+    #[cfg(feature = "abi-7-40")]
+    /// Closure-like object to enable opening and closing of Backing Id.
+    pub backinghandler: BackingHandler,
+    #[cfg(feature = "abi-7-11")]
+    /// Closure-like object to enable sending of notifications.
+    pub notificationhandler: NotificationHandler,
 }
 
 /// Request metadata structure
@@ -50,8 +59,8 @@ pub struct Forget {
 }
 
 impl RequestHandler {
-    /// Create a new request from the given data
-    pub(crate) fn new(ch: Channel, data: Vec<u8>) -> Option<RequestHandler> {
+    /// Create a new request from the given data, and a Channel to receive the reply
+    pub(crate) fn new(sender: Channel, data: Vec<u8>) -> Option<RequestHandler> {
         let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
@@ -65,41 +74,19 @@ impl RequestHandler {
             gid: request.gid(),
             pid: request.pid(),
         };
-        let replyhandler = ReplyHandler::new(request.unique().into(), ch);
+        #[cfg(feature = "abi-7-11")]
+        let notificationhandler = NotificationHandler::new(sender.clone());
+        #[cfg(feature = "abi-7-40")]
+        let backinghandler = BackingHandler::new(sender.clone());
+        let replyhandler = ReplyHandler::new(request.unique().into(), sender);
         Some(Self {
             request,
             meta,
             replyhandler,
+            #[cfg(feature = "abi-7-40")]
+            backinghandler,
+            #[cfg(feature = "abi-7-11")]
+            notificationhandler,
         })
-    }
-
-    /// Implementation to allow_root & access check for auto_unmount
-    pub(crate) fn access_denied(&self, op: &Operation<'_>, se_meta: &SessionMeta) -> bool {
-        if (se_meta.allowed == SessionACL::RootAndOwner
-            && self.request.uid() != se_meta.session_owner
-            && self.request.uid() != 0)
-            || (se_meta.allowed == SessionACL::Owner && self.request.uid() != se_meta.session_owner)
-        {
-            match op {
-                // Only allow operations that the kernel may issue without a uid set
-                Operation::Init(_)
-                | Operation::Destroy(_)
-                | Operation::Read(_)
-                | Operation::ReadDir(_)
-                | Operation::Forget(_)
-                | Operation::Write(_)
-                | Operation::FSync(_)
-                | Operation::FSyncDir(_)
-                | Operation::Release(_)
-                | Operation::ReleaseDir(_) => false,
-                #[cfg(feature = "abi-7-16")]
-                Operation::BatchForget(_) => false,
-                #[cfg(feature = "abi-7-21")]
-                Operation::ReadDirPlus(_) => false,
-                _ => true,
-            }
-        } else {
-            false
-        }
     }
 }

@@ -4,10 +4,8 @@
 //! Either the request logic will call the one of the reply handler's self-destructive methods,
 //! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
 
-use crate::channel::Channel;
-#[cfg(feature = "abi-7-21")]
-use crate::ll::reply::DirentPlusBuf;
-use crate::ll::{self, reply::DirentBuf};
+
+use crate::ll; // too many structs to list
 use crate::{Container, Errno, KernelConfig};
 use bytes::Bytes;
 #[allow(unused_imports)]
@@ -31,17 +29,17 @@ impl fmt::Debug for Box<dyn ReplySender> {
     }
 }
 
-/// Specialized implementation to send Filesystem replies to a FUSE Channel
-impl ReplySender for Channel {
+/// Primary ReplySender implementation for sending data to a Channel
+impl ReplySender for crate::channel::Channel {
+    /// Send data.
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-        Channel::send(self, data)
+        crate::channel::Channel::send(&self, data)
     }
 }
 
-/// `ReplyHander` is a struct which holds the unique identifiers needed to reply
-/// to a specific request. Traits are implemented on the struct so that ownership
-/// of the struct determines whether the identifiers have ever been used.
-/// This guarantees that a reply is send at most once per request.
+/// `ReplyHandler` is a struct which holds the unique identifiers needed to reply
+/// to a specific request. Replying methods consume `self` to guarantee at most one 
+/// reply is sent per request.
 #[derive(Debug)]
 pub(crate) struct ReplyHandler {
     /// Unique id of the request to reply to
@@ -511,7 +509,7 @@ impl ReplyHandler {
     #[cfg(feature = "abi-7-11")]
     /// Reply to a request with an ioctl
     pub fn ioctl(self, result: i32, data: &[u8]) {
-        self.send_ll(&ll::Response::new_ioctl(result, data));
+        self.send_ll(&ll::Response::new_ioctl(result, &[IoSlice::new(data)]));
     }
 
     #[cfg(feature = "abi-7-11")]
@@ -538,6 +536,8 @@ impl ReplyHandler {
         }
     }
 
+    // Note: trait_legacy has its own implementation of this function;
+    // this one is for (future) Sync/Async traits
     /// Reply to a request with a filled directory buffer
     pub fn dir(
         self,
@@ -546,7 +546,7 @@ impl ReplyHandler {
         size: usize,
         /* blank space */
     ) {
-        let mut buf = DirentBuf::new(size);
+        let mut buf = ll::reply::DirentBuf::new(size);
         let entries_safe_borrow = match entries_list.lock() {
             Ok(entries) => entries,
             Err(e) => {
@@ -568,17 +568,9 @@ impl ReplyHandler {
                 "ReplyHandler::dir: processing item with offset #{}",
                 item.offset
             );
-            match buf.push(item) {
-                Ok(true) => {
-                    log::debug!("ReplyHandler::dir: buffer full!");
-                    break;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    log::error!("ReplyHandler::dir: abort!");
-                    self.error(e);
-                    return;
-                }
+            if buf.push(item) {
+                log::debug!("ReplyHandler::dir: buffer full!");
+                break;
             }
         }
         self.send_ll(&buf.into());
@@ -599,6 +591,8 @@ impl ReplyHandler {
     }
 
     #[cfg(feature = "abi-7-21")]
+    // Note: trait_legacy has its own implementation of this function
+    // this one is for (future) Sync/Async traits
     // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
         self,
@@ -607,7 +601,7 @@ impl ReplyHandler {
         size: usize,
         /* blank space */
     ) {
-        let mut buf = DirentPlusBuf::new(size);
+        let mut buf = ll::reply::DirentPlusBuf::new(size);
         let entries_safe_borrow = match entries_plus_list.lock() {
             Ok(entries) => entries,
             Err(e) => {
@@ -629,17 +623,9 @@ impl ReplyHandler {
                 "ReplyHandler::dirplus: processing item with offset #{}",
                 dirent.offset
             );
-            match buf.push(dirent, entry, self.attr_ttl_override) {
-                Ok(true) => {
-                    log::debug!("ReplyHandler::dirplus: buffer full!");
-                    break;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    log::error!("ReplyHandler::dirplus: abort!");
-                    self.error(e);
-                    return;
-                }
+            if buf.push(dirent, entry) {
+                log::debug!("ReplyHandler::dirplus: buffer full!");
+                break;
             }
         }
         self.send_ll(&buf.into());

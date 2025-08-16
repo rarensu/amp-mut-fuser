@@ -1,3 +1,5 @@
+use crate::channel::Channel;
+
 use super::fuse3_sys::{
     fuse_session_destroy, fuse_session_fd, fuse_session_mount, fuse_session_new,
     fuse_session_unmount,

@@ -2,24 +2,32 @@ use libc::c_int;
 use std::convert::AsRef;
 use std::ffi::OsStr;
 use std::fmt::Debug;
-#[cfg(feature = "abi-7-40")]
-use std::fs::File;
 use std::time::Duration;
 use zerocopy::IntoBytes;
 
-#[cfg(feature = "abi-7-40")]
-use super::BackingId;
 #[cfg(target_os = "macos")]
 use crate::XTimes;
 #[cfg(feature = "abi-7-21")]
 use crate::ll::reply::fuse_attr_from_attr;
 use crate::{
-    Entry, Errno, FileAttr, FileType, Lock, Open, Statfs,
-    ll::reply::{EntListBuf, Response, mode_from_kind_and_perm},
-    reply::ReplyHandler,
+    ll::{reply::{mode_from_kind_and_perm, EntListBuf, Response}, Errno}, reply::{Entry, Lock, Open, ReplyHandler, Statfs}, FileAttr, FileType
 };
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
+
+/*
+#[cfg(feature = "abi-7-11")]
+use super::PollHandler;
+*/
+
+#[cfg(feature = "abi-7-40")]
+use std::fs::File;
+#[cfg(feature = "abi-7-40")]
+use std::io;
+#[cfg(feature = "abi-7-40")]
+use super::{BackingId, BackingHandler};
+#[cfg(feature = "abi-7-40")]
+use crate::consts::FOPEN_PASSTHROUGH;
 
 /* ------ Err ------ */
 
@@ -242,18 +250,47 @@ pub trait CallbackOpen: CallbackErr {
     #[cfg(feature = "abi-7-40")]
     fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &BackingId);
 
-    /// Registers a fd for passthrough, returning a `BackingId`.  Once you have the backing ID,
+    /// Registers a fd for passthrough, returning a `Backing`.  Once you have the backing ID,
     /// you can pass it as the 3rd parameter of `ReplyOpen::opened_passthrough()`.  This is done in
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&mut self, fd: File) -> std::io::Result<BackingId>;
+    fn open_backing(&self, fd: File) -> io::Result<BackingId>;
 }
 
 /// Legacy callback handler for ReplyOpen
-impl CallbackOpen for Option<ReplyHandler> {
+#[derive(Debug)]
+pub(crate) struct OpenHandler {
+    handler: Option<ReplyHandler>,
+    #[cfg(feature = "abi-7-40")]
+    backer: BackingHandler,
+}
+
+impl OpenHandler {
+    #[cfg(feature = "abi-7-40")]
+    pub fn new(handler: ReplyHandler, backer: BackingHandler) -> Self {
+        OpenHandler {
+            handler: Some(handler),
+            backer,
+        }
+    }
+    #[cfg(not(feature = "abi-7-40"))]
+    pub fn new(handler: ReplyHandler) -> Self {
+        OpenHandler {
+            handler: Some(handler),
+        }
+    }
+}
+impl CallbackErr for OpenHandler {
+    fn error(&mut self, err: c_int) {
+        if let Some(handler) = self.handler.take() {
+            handler.error(Errno::from_i32(err));
+        }
+    }
+}
+impl CallbackOpen for OpenHandler {
     fn opened(&mut self, fh: u64, flags: u32) {
-        if let Some(handler) = self.take() {
+        if let Some(handler) = self.handler.take() {
             handler.opened(&Open {
                 fh,
                 flags,
@@ -263,17 +300,17 @@ impl CallbackOpen for Option<ReplyHandler> {
     }
     #[cfg(feature = "abi-7-40")]
     fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &BackingId) {
-        if let Some(handler) = self.take() {
+        if let Some(handler) = self.handler.take() {
             handler.opened(&Open {
                 fh,
-                flags,
-                backing_id: Some(backing_id.backing_id),
+                flags: flags | FOPEN_PASSTHROUGH,
+                backing_id: Some(backing_id.id),
             });
         }
     }
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&mut self, _fd: File) -> std::io::Result<BackingId> {
-        unimplemented!("this method is not how you're meant to obtain a backing_id");
+    fn open_backing(&self, fd: File) -> io::Result<BackingId> {
+        self.backer.open_backing(fd)
     }
 }
 
@@ -305,7 +342,7 @@ impl ReplyOpen {
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
-    pub fn open_backing(&mut self, fd: File) -> std::io::Result<BackingId> {
+    pub fn open_backing(&self, fd: File) -> io::Result<BackingId> {
         self.handler.open_backing(fd)
     }
     default_error!();

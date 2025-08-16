@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, IoSlice},
+    io,
     os::unix::prelude::AsRawFd,
     sync::Arc,
 };

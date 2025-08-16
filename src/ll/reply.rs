@@ -77,7 +77,7 @@ impl<'a> Response<'a> {
     pub(crate) fn new_entry(
         ino: INodeNo,
         generation: Generation,
-        file_ttl: Duration,
+        entry_ttl: Duration,
         attr: &crate::FileAttr,
         attr_ttl: Duration,
         attr_ttl_override: bool,
@@ -111,7 +111,7 @@ impl<'a> Response<'a> {
                 ttl.subsec_nanos()
             },
             dummy: 0,
-            attr: attr.attr,
+            attr: fuse_attr_from_attr(attr),
         };
         Self::from_struct(&r)
     }
@@ -432,14 +432,15 @@ impl DirentBuf {
     /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
-    pub fn push(&mut self, ent: &crate::Dirent) -> Result<bool, Errno> {
+    #[must_use]
+    pub fn push(&mut self, ent: &crate::reply::Dirent) -> bool {
         let header = abi::fuse_dirent {
-            ino: ent.ino,
+            ino: ent.ino.into(),
             off: ent.offset,
             namelen: ent.name.len().try_into().expect("Name too long"),
             typ: mode_from_kind_and_perm(ent.kind, 0) >> 12,
         };
-        Ok(self.0.push([header.as_bytes(), &ent.name]))
+        self.0.push([header.as_bytes(), &ent.name])
     }
 }
 
@@ -495,7 +496,7 @@ impl DirentPlusBuf {
                 typ: mode_from_kind_and_perm(x.kind, 0) >> 12,
             },
         };
-        Ok(self.0.push([header.as_bytes(), &x.name]))
+        self.0.push([header.as_bytes(), &x.name])
     }
 }
 
@@ -872,22 +873,20 @@ mod test {
         ];
         let mut buf = DirentBuf::new(4096);
         assert!(
-            !buf.push(&crate::Dirent {
+            !buf.push(&crate::reply::Dirent {
                 ino: 0xaabb,
                 offset: 1,
                 kind: FileType::Directory,
                 name: "hello".into()
             })
-            .unwrap()
         );
         assert!(
-            !buf.push(&crate::Dirent {
+            !buf.push(&crate::reply::Dirent {
                 ino: 0xccdd,
                 offset: 2,
                 kind: FileType::RegularFile,
                 name: "world.rs".into()
             })
-            .unwrap()
         );
         let r: Response<'_> = buf.into();
         assert_eq!(

@@ -26,6 +26,7 @@ use crate::notify::{Notification, Notifier};
 use crate::{AnyFS, MountOption};
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
+use crate::notify::NotificationHandler;
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::trait_async::Filesystem as AsyncFS;
@@ -54,10 +55,26 @@ pub enum SessionACL {
     #[default]
     Owner,
 }
+/* // note: from since channel variant
+/// Session data structure
+#[derive(Debug)]
+pub struct Session<FS: Filesystem> {
+    /// Filesystem operation implementations
+    pub(crate) filesystem: FS,
+    /// Communication channel to the kernel driver
+    pub(crate) ch: Channel,
+    /// Handle to the mount.  Dropping this unmounts.
+    pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
+    /// Session metadata
+    pub(crate) meta: SessionMeta,
+}
+*/
 
 /// Session metadata
 #[derive(Debug)]
 pub(crate) struct SessionMeta {
+    /// Whether to restrict access to owner, root + owner, or unrestricted
+    /// Used to implement allow_root and auto_unmount
     pub(crate) allowed: SessionACL,
     /// User that launched the fuser process
     pub(crate) session_owner: u32,
@@ -139,20 +156,20 @@ where
             SessionACL::Owner
         };
         let mount = Some((mountpoint.to_owned(), mount));
-        Ok(Session::new(filesystem, ch, allowed, mount))
+        Ok(Session::from_mount(filesystem, ch, allowed, mount))
     }
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
-    pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, allowed: SessionACL) -> Self {
+    pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
         // Create the channel for fuse messages
         let ch = Channel::new(fd.into());
-        Session::new(filesystem, ch, allowed, None)
+        Session::from_mount(filesystem, ch, acl, None)
     }
 
-    /// Assemble a Session from raw parts. Not recommended for regular users.
+    /// Assemble a Session that has been mounted. Not recommended for regular users.
     #[allow(unused_mut)] // The filesystem mutates, but only under some combinations of features
-    pub(crate) fn new(
+    pub(crate) fn from_mount(
         mut filesystem: AnyFS<L, S, A>,
         ch: Channel,
         allowed: SessionACL,
@@ -190,11 +207,11 @@ where
         }
     }
 
-    /// Returns an object that can be used to send notifications directly to the kernel
+    /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Notifier {
+    pub fn notifier(&self) -> NotificationHandler {
         // Legacy notification method
-        Notifier::new(self.chs[0].clone())
+        NotificationHandler::new(self.ch.clone())
     }
 
     /// Returns an object that can be used to queue notifications for the Session to process
@@ -337,10 +354,10 @@ where
 #[cfg(feature = "threaded")]
 pub struct BackgroundSession {
     /// Thread guard of the main session loop
-    pub main_loop_guard: JoinHandle<io::Result<()>>,
+    pub guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
     #[cfg(feature = "abi-7-11")]
-    extra_notification_sender: Sender<Notification>,
+    sender: Channel,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }
@@ -357,17 +374,18 @@ impl BackgroundSession {
         A: AsyncFS + Send + Sync + 'static,
     {
         #[cfg(feature = "abi-7-11")]
-        let extra_notification_sender = se.ns.clone();
-
+        let sender = se.ch.clone();
+        // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
-
         // The main session (se) is moved into this thread.
-        let main_loop_guard = thread::spawn(move || se.run_blocking());
-
+        let guard = thread::spawn(move || {
+            //let mut se = se;
+            se.run()
+        });
         Ok(BackgroundSession {
-            main_loop_guard,
+            guard,
             #[cfg(feature = "abi-7-11")]
-            extra_notification_sender,
+            sender,
             _mount: mount,
         })
     }
@@ -391,9 +409,8 @@ impl BackgroundSession {
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    #[must_use]
-    pub fn get_notification_sender(&self) -> Sender<Notification> {
-        self.extra_notification_sender.clone()
+    pub fn notifier(&self) -> NotificationHandler {
+        NotificationHandler::new(self.sender.clone())
     }
 }
 

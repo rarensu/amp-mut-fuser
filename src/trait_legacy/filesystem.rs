@@ -1,18 +1,8 @@
-//! FUSE userspace library implementation
-//!
-//! This is an improved rewrite of the FUSE userspace library (lowlevel interface) to fully take
-//! advantage of Rust's architecture. The only thing we rely on in the real libfuse are mount
-//! and unmount calls which are needed to establish a fd to talk to the kernel driver.
-
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 #[cfg(feature = "abi-7-16")]
 use super::fuse_forget_one;
-#[cfg(feature = "abi-7-11")]
-use crate::notify::Notification;
-use crate::{FsStatus, KernelConfig, TimeOrNow};
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::Sender;
+use crate::{KernelConfig, TimeOrNow};
 use libc::{ENOSYS, EPERM, c_int};
 use log::warn;
 use std::ffi::OsStr;
@@ -27,7 +17,7 @@ use super::ReplyLseek;
 use super::ReplyXTimes;
 use super::Request;
 #[cfg(feature = "abi-7-11")]
-use super::{PollHandle, ReplyIoctl, ReplyPoll};
+use super::{PollHandler, ReplyIoctl, ReplyPoll};
 use super::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
@@ -50,22 +40,9 @@ pub trait Filesystem {
         Ok(())
     }
 
-    /// Initializes the notification event sender for the filesystem.
-    /// The boolean indicates whether the filesystem supports it.
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
-        false // Default: not supported
-    }
-
     /// Clean up filesystem.
     /// Called on filesystem exit.
     fn destroy(&mut self) {}
-
-    /// In a syncronous execution model where a sleep may occur,
-    /// The heartbeat may be used to alert the Filesystem that time has passed.
-    fn heartbeat(&mut self) -> FsStatus {
-        FsStatus::Default
-    }
 
     /// Look up a directory entry by name and get its attributes.
     fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
@@ -673,7 +650,7 @@ pub trait Filesystem {
         req: &Request<'_>,
         ino: u64,
         fh: u64,
-        ph: PollHandle,
+        ph: PollHandler,
         events: u32,
         flags: u32,
         reply: ReplyPoll,
