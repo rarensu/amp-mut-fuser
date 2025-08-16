@@ -24,16 +24,20 @@ where
     pub fn run_legacy(mut self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
-        const CH_IDX: usize = 0;
         let mut buffer = vec![0; BUFFER_SIZE];
         loop {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
-            match self.chs[CH_IDX].receive(&mut buffer) {
-                Ok(data) => match RequestHandler::new(self.chs[CH_IDX].clone(), self.queuer.clone(), data) {
+            match self.ch_main.receive(&mut buffer) {
+                Ok(data) => match RequestHandler::new(
+                    self.ch_main.clone(),
+                    self.ch_side.clone(),
+                    self.ch_internal.clone(),
+                    data
+                ) {
                     // Dispatch request
                     Some(req) => {
-                        debug!("Request {} on channel {CH_IDX}.", req.meta.unique);
+                        debug!("Request {}", req.meta.unique);
                         // Extract filesystem
                         match &mut self.filesystem {
                             AnyFS::Legacy(fs) => {

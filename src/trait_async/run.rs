@@ -37,15 +37,14 @@ where
             _ => FsStatus::Default,
         };
         let se = Arc::new(self);
-        // ch_idx=0 for the single-threaded case
         #[cfg(not(feature = "abi-7-11"))]
         let notify = false;
         #[cfg(feature = "abi-7-11")]
         let notify = se.meta.notify.load(Relaxed);
         if init_fs_status != FsStatus::Default || notify {
-            Session::do_all_events_async(se.clone(), 0).await
+            Session::do_all_events_async(se.clone()).await
         } else {
-            Session::do_requests_async(se.clone(), 0).await
+            Session::do_requests_async(se.clone()).await
         }
     }
 
@@ -53,22 +52,10 @@ where
     /// NOTE: Single-threaded concurrency is experimental.
     /// WARNING. Deadlocks can occur when using multiple concurrent loops, and the conditions are not well-documented.
     #[cfg(feature = "tokio")]
-    pub async fn run_concurrent_full(self) -> io::Result<()> {
-        let channel_count = self.chs.len();
-        if channel_count > 1 {
-            warn!("multiple full task loops! possible deadlocks");
-        }
+    pub async fn run_sequential(self) -> io::Result<()> {
         let se = Arc::new(self);
-        let mut futures = Vec::new();
-        for ch_idx in 0..(channel_count) {
-            futures.push(tokio::spawn(Session::do_all_events_async(
-                se.clone(),
-                ch_idx,
-            )))
-        }
-        for future in futures {
-            future.await.expect("Unable to await task?")?;
-        }
+        tokio::spawn(Session::do_all_events_async(se))
+            .await.expect("Unable to await task?")?;
         Ok(())
     }
 
@@ -77,25 +64,12 @@ where
     /// NOTE: Single-threaded concurrency is experimental.
     /// WARNING. Deadlocks can occur when using multiple concurrent loops, and the conditions are not well-documented.
     #[cfg(feature = "tokio")]
-    pub async fn run_concurrently_parts(self) -> io::Result<()> {
-        let channel_count = self.chs.len();
-        if channel_count > 0 {
-            error!("too many tasks loops! possible deadlocks");
-        }
+    pub async fn run_notifications_concurrently(self) -> io::Result<()> {
         let se = Arc::new(self);
         let mut futures = Vec::new();
-        // Alternate between request channel and notification channel.
-        // TODO: more fine-grained control.
-        for ch_idx in (0..(channel_count)).filter(|i| i % 2 == 0) {
-            futures.push(tokio::spawn(Session::do_requests_async(se.clone(), ch_idx)));
-        }
+        futures.push(tokio::spawn(Session::do_requests_async(se.clone())));
         #[cfg(feature = "abi-7-11")]
-        for ch_idx in (0..(channel_count)).filter(|i| i % 2 == 1) {
-            futures.push(tokio::spawn(Session::do_notifications_async(
-                se.clone(),
-                ch_idx,
-            )));
-        }
+        futures.push(tokio::spawn(Session::do_notifications_async(se.clone())));
         futures.push(tokio::spawn(Session::do_heartbeats_async(se.clone())));
         for future in futures {
             future.await.expect("Unable to await task?")?;
@@ -104,15 +78,12 @@ where
     }
 
     /// Process requests in a single task.
-    pub async fn do_requests_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
+    pub async fn do_requests_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
 
-        info!(
-            "Starting request loop on channel {ch_idx} with fd {}",
-            &se.chs[ch_idx].raw_fd
-        );
+        info!("Starting request loop");
         loop {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
@@ -120,11 +91,11 @@ where
             let mut updated_buffer = buffer;
             #[cfg(not(feature = "tokio"))]
             // Read a FUSE request (blocks until read succeeds)
-            let result = se.chs[ch_idx].receive(&mut updated_buffer);
+            let result = se.ch_main.receive(&mut updated_buffer);
             #[cfg(feature = "tokio")]
             // Read a FUSE request (await until read succeeds)
             // Move buffer into the helper function, receive the buffer back if it succeeds.
-            let (result, updated_buffer) = se.chs[ch_idx].receive_async(buffer).await;
+            let (result, updated_buffer) = se.ch_main.receive_async(buffer).await;
             if !updated_buffer.is_empty() {
                 // Re-use the buffer for the next loop iteration
                 buffer = updated_buffer;
@@ -133,7 +104,7 @@ where
             }
             match result {
                 Ok(data) => {
-                    if !Session::handle_one_request_async(&se, ch_idx, data).await {
+                    if !Session::handle_one_request_async(&se, data).await {
                         // false means invalid data; stop the loop
                         break;
                     }
@@ -159,14 +130,13 @@ where
 
     async fn handle_one_request_async(
         se: &Arc<Session<L, S, A>>,
-        ch_idx: usize,
         data: Vec<u8>,
     ) -> bool {
         // Parse data
-        match RequestHandler::new(se.chs[ch_idx].clone(), se.queuer.clone(), data) {
+        match RequestHandler::new(se.ch_main.clone(), se.ch_side.clone(), se.ch_internal.clone(), data) {
             // Request is valid
             Some(req) => {
-                debug!("Request {} on channel {ch_idx}.", req.meta.unique);
+                debug!("Request {}", req.meta.unique);
                 match &se.filesystem {
                     AnyFS::Async(fs) => {
                         // Dispatch request
@@ -188,12 +158,11 @@ where
     #[cfg(feature = "abi-7-11")]
     #[allow(unused)] // this function is reserved for future multithreaded implementations
     pub async fn do_notifications_async(
-        se: Arc<Session<L, S, A>>,
-        ch_idx: usize,
+        se: Arc<Session<L, S, A>>
     ) -> io::Result<()> {
-        let sender = se.get_ch(ch_idx);
+        let sender = se.ch_side.clone();
         info!(
-            "Starting notification loop on channel {ch_idx} with fd {}",
+            "Starting notification loop on side channel with fd {}",
             &sender.raw_fd
         );
         let notifier = NotificationHandler::new(sender);
@@ -206,7 +175,7 @@ where
                 match se.nr.recv() {
                     Ok(notification) => {
                         // Process the notification; blocks until sent
-                        Session::handle_one_notification_async(&se, notification, &notifier, ch_idx)
+                        Session::handle_one_notification_async(&se, notification, &notifier)
                             .await?
                     }
                     Err(RecvError) => {
@@ -233,10 +202,9 @@ where
         se: &Session<L, S, A>,
         notification: Notification,
         notifier: &NotificationHandler,
-        ch_idx: usize,
     ) -> io::Result<()> {
         debug!(
-            "Notification {:?} on channel {ch_idx}",
+            "Notification {:?}",
             &notification.label()
         );
         if let Notification::Stop = notification {
@@ -295,12 +263,12 @@ where
     /// Run the session loop in a single task.
     /// Alternates between processing requests, notifications, and heartbeats, without blocking.
     /// This variant executes sleep() to prevent busy loops.
-    pub async fn do_all_events_async(se: Arc<Session<L, S, A>>, ch_idx: usize) -> io::Result<()> {
+    pub async fn do_all_events_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
         #[cfg(feature = "abi-7-11")]
-        let notifier = NotificationHandler::new(se.get_ch(ch_idx));
-        info!("Starting full task loop on channel {ch_idx}");
+        let notifier = NotificationHandler::new(se.ch_side.clone());
+        info!("Starting full task loop");
         loop {
             // Check for outgoing Notifications (non-blocking)
             #[cfg(feature = "abi-7-11")]
@@ -311,7 +279,6 @@ where
                             &se,
                             notification,
                             &notifier,
-                            ch_idx,
                         )
                         .await?;
                         // skip checking for incoming FUSE requests,
@@ -333,16 +300,16 @@ where
             #[cfg(not(feature = "tokio"))]
             let mut updated_buffer = buffer;
             #[cfg(not(feature = "tokio"))]
-            let result = se.chs[ch_idx].try_receive(&mut updated_buffer);
+            let result = se.ch_main.try_receive(&mut updated_buffer);
             #[cfg(feature = "tokio")]
             let updated_buffer = buffer;
             #[cfg(feature = "tokio")]
-            let (result, updated_buffer) = se.chs[ch_idx].try_receive_async(updated_buffer).await;
+            let (result, updated_buffer) = se.ch_main.try_receive_async(updated_buffer).await;
             if !updated_buffer.is_empty() {
                 // Re-use the buffer for the next loop iteration
                 buffer = updated_buffer;
             } else {
-                error!("Buffer corrupted on channel {ch_idx}");
+                error!("Buffer corrupted");
                 break;
             }
             // Decide what to do about the FUSE request
@@ -358,7 +325,7 @@ where
                 }
                 Ok(Some(data)) => {
                     // Parse data
-                    if Session::handle_one_request_async(&se, ch_idx, data).await {
+                    if Session::handle_one_request_async(&se, data).await {
                         // Skip the heartbeat to prioritize processing other pending requests
                         continue;
                     } else {

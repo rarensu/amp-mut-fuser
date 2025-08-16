@@ -5,6 +5,7 @@
 //!
 //! The handler ensures the private data remains owned while the request is being processed.
 
+use futures::future::Fuse;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use std::convert::Into;
@@ -27,14 +28,12 @@ pub(crate) struct RequestHandler {
     pub meta: RequestMeta,
     /// Closure-like object to guarantee a response is sent
     pub replyhandler: ReplyHandler,
-    #[cfg(feature = "abi-7-40")]
-    /// Closure-like object to enable opening and closing of Backing Id.
-    pub backinghandler: BackingHandler,
-    #[cfg(feature = "abi-7-11")]
-    /// Closure-like object to enable sending of notifications.
-    pub notificationhandler: NotificationHandler,
-    /// Closure-like object to enable interaction with the session. 
-    pub sessionhandler: SessionHandler,
+    /// A copy of the main channel
+    pub ch_main: FuseChannel,
+    /// A copy of the side channel
+    pub ch_side: FuseChannel,
+    /// A copy of the internal channel
+    pub ch_internal: InternalChannel,
 }
 
 /// Request metadata structure
@@ -63,7 +62,12 @@ pub struct Forget {
 
 impl RequestHandler {
     /// Create a new request from the given data, and a FuseChannel to receive the reply
-    pub(crate) fn new(sender: FuseChannel, queuer: InternalChannel, data: Vec<u8>) -> Option<RequestHandler> {
+    pub(crate) fn new(
+        ch_main: FuseChannel,
+        ch_side: FuseChannel,
+        ch_internal: InternalChannel,
+        data: Vec<u8>
+    ) -> Option<RequestHandler> {
         let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
@@ -77,21 +81,14 @@ impl RequestHandler {
             gid: request.gid(),
             pid: request.pid(),
         };
-        let sessionhandler = SessionHandler::new(queuer.clone());
-        #[cfg(feature = "abi-7-11")]
-        let notificationhandler = NotificationHandler::new(sender.clone());
-        #[cfg(feature = "abi-7-40")]
-        let backinghandler = BackingHandler::new(sender.clone(), queuer.clone());
-        let replyhandler = ReplyHandler::new(request.unique().into(), sender);
+        let replyhandler = ReplyHandler::new(request.unique().into(), ch_main.clone());
         Some(Self {
             request,
             meta,
             replyhandler,
-            #[cfg(feature = "abi-7-40")]
-            backinghandler,
-            #[cfg(feature = "abi-7-11")]
-            notificationhandler,
-            sessionhandler,
+            ch_main,
+            ch_side,
+            ch_internal,
         })
     }
 }

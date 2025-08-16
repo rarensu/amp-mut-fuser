@@ -104,15 +104,16 @@ where
     // TODO: if threaded, filesystem: Mutex<AnyFS<...>>
     /// Filesystem operation implementations
     pub(crate) filesystem: AnyFS<L, S, A>,
-    /// Communication channels to the kernel fuse driver
-    pub(crate) chs: Vec<FuseChannel>,
+    /// Main communication channel to the kernel fuse driver
+    pub(crate) ch_main: FuseChannel,
+    /// Side communication channel to the kernel fuse driver
+    pub(crate) ch_side: FuseChannel,
+    /// Communication with  the filesystem.
+    pub(crate) ch_internal: InternalChannel,
     /// Handle to the mount.  Dropping this unmounts.
     pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
-    /// Whether to restrict access to owner, root + owner, or unrestricted
-    /// Used to implement `allow_root` and `auto_unmount`
+    /// Describes the configurable state of the Session
     pub(crate) meta: SessionMeta,
-    /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
-    pub(crate) queuer: InternalChannel,
 }
 
 impl<L, S, A> Session<L, S, A>
@@ -154,12 +155,12 @@ where
             SessionACL::Owner
         };
         let mount = Some((mountpoint.to_owned(), mount));
-        Ok(Session::from_mount(filesystem, ch, allowed, mount))
+        Session::from_mount(filesystem, ch, allowed, mount)
     }
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
-    pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, acl: SessionACL) -> Self {
+    pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, acl: SessionACL) -> io::Result<Self> {
         // Create the channel for fuse messages
         let ch = FuseChannel::new(fd.into());
         Session::from_mount(filesystem, ch, acl, None)
@@ -172,7 +173,7 @@ where
         ch: FuseChannel,
         allowed: SessionACL,
         mount: Option<(PathBuf, Mount)>,
-    ) -> Self {
+    ) -> io::Result<Self> {
         // Create the internal channel for queued notification events.
         let queuer = InternalChannel::new();
         #[cfg(feature = "abi-7-11")]
@@ -192,13 +193,15 @@ where
             #[cfg(feature = "abi-7-11")]
             notify: AtomicBool::new(notify),
         };
-        Session {
+        let worker = ch.fork()?;
+        Ok(Session {
             filesystem,
-            chs: vec![ch],
+            ch_main: ch,
+            ch_side: worker,
+            ch_internal: queuer,
             mount: Arc::new(Mutex::new(mount)),
             meta,
-            queuer,
-        }
+        })
     }
 
     /// Returns an object that can be used to send notifications to the kernel
@@ -213,35 +216,6 @@ where
     pub fn get_notification_sender(&self) -> Sender<Notification> {
         // Sync/Async notification method
         self.ns.clone()
-    }
-
-    /// Creates additional worker fuse file descriptors until the
-    /// Session has at least `channel_count` communication channels.
-    /// Reports the number of channels that were created.
-    /// # Errors
-    /// Propagates underlying errors.
-    pub fn set_channels(&mut self, channel_count: u32) -> Result<u32, io::Error> {
-        let main_fuse_fd = self.chs[0].raw_fd as u32;
-        let mut new_channels = 0;
-        while self.chs.len() < channel_count as usize {
-            let fuse_device_name = "/dev/fuse";
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(fuse_device_name)?;
-            let ch = FuseChannel::new(file);
-            ch.new_fuse_worker(main_fuse_fd)?;
-            self.chs.push(ch);
-            new_channels += 1;
-        }
-        Ok(new_channels)
-    }
-
-    #[cfg(feature = "abi-7-11")]
-    /// returns a copy of the channel associated with a specific channel index.
-    /// used to assist with constructing notifiers and the like.
-    pub(crate) fn get_ch(&self, ch_idx: usize) -> FuseChannel {
-        self.chs[ch_idx].clone()
     }
 
     /// Unmount the filesystem

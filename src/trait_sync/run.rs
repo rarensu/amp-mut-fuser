@@ -60,30 +60,30 @@ where
         let notify = self.meta.notify.load(Relaxed);
         // ch_idx=0 for the single-threaded case
         if init_fs_status != FsStatus::Default || notify {
-            self.do_all_events_sync(0)
+            self.do_all_events_sync()
         } else {
-            self.do_requests_sync(0)
+            self.do_requests_sync()
         }
     }
 
     /// Process requests, blocking a single thread.
-    pub fn do_requests_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
+    pub fn do_requests_sync(self: &mut Session<L, S, A>) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
 
         info!(
-            "Starting request loop on channel {ch_idx} with fd {}",
-            &self.chs[ch_idx].raw_fd
+            "Starting request loop on with main channel fd {}",
+            &self.ch_main.raw_fd
         );
         loop {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
             // Read a FUSE request (blocks until read succeeds)
-            match self.chs[ch_idx].receive(&mut buffer) {
+            match self.ch_main.receive(&mut buffer) {
                 Ok(data) => {
                     // Kernel sent data
-                    if !self.handle_one_request_sync(ch_idx, data) {
+                    if !self.handle_one_request_sync(data) {
                         // false means invalid data; stop the loop
                         break;
                     }
@@ -106,12 +106,12 @@ where
         Ok(())
     }
 
-    fn handle_one_request_sync(self: &mut Session<L, S, A>, ch_idx: usize, data: Vec<u8>) -> bool {
+    fn handle_one_request_sync(self: &mut Session<L, S, A>, data: Vec<u8>) -> bool {
         // Parse data
-        match RequestHandler::new(self.chs[ch_idx].clone(), self.queuer.clone(), data) {
+        match RequestHandler::new(self.ch_main.clone(), self.ch_side.clone(), self.ch_internal.clone(), data) {
             // Request is valid
             Some(req) => {
-                debug!("Request {} on channel {ch_idx}.", req.meta.unique);
+                debug!("Request {}", req.meta.unique);
                 match &mut self.filesystem {
                     AnyFS::Sync(fs) => {
                         // Dispatch request
@@ -216,7 +216,7 @@ where
     /// Run the session loop in a single thread.
     /// Alternates between processing requests, notifications, and heartbeats, without blocking.
     /// This variant executes sleep() to prevent busy loops.
-    pub fn do_all_events_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
+    pub fn do_all_events_sync(self: &mut Session<L, S, A>) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
@@ -224,7 +224,7 @@ where
         #[cfg(feature = "abi-7-11")]
         let notifier = NotificationHandler::new(self.get_ch(ch_idx));
 
-        info!("Starting full task loop on channel {ch_idx}");
+        info!("Starting full task loop");
         loop {
             #[cfg(feature = "abi-7-11")]
             if self.meta.notify.load(Relaxed) {
@@ -233,7 +233,7 @@ where
                 match self.nr.try_recv() {
                     Ok(notification) => {
                         debug!(
-                            "Notification {:?} on channel {ch_idx}",
+                            "Notification {:?}",
                             &notification.label()
                         );
                         self.handle_one_notification_sync(notification, &notifier, ch_idx)?;
@@ -253,7 +253,7 @@ where
                 }
             }
             // Check for incoming FUSE requests; (non-blocking)
-            match self.chs[ch_idx].try_receive(&mut buffer) {
+            match self.ch_main.try_receive(&mut buffer) {
                 Err(err) => {
                     if err.raw_os_error() == Some(EINTR) {
                         debug!("FUSE fd connection interrupted, will retry.");
@@ -266,7 +266,7 @@ where
                     }
                 }
                 Ok(Some(data)) => {
-                    if self.handle_one_request_sync(ch_idx, data) {
+                    if self.handle_one_request_sync(data) {
                         // Skip the heartbeat to prioritize processing other pending requests
                         continue;
                     } else {

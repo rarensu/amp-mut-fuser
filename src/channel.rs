@@ -8,7 +8,7 @@ use std::{
 use crate::ll::fuse_abi;
 use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
 
-use libc::{c_int, c_void, size_t};
+use libc::{c_int, c_void, size_t, EPERM};
 
 pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<fuse_abi::fuse_in_header>();
 
@@ -27,6 +27,7 @@ pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
 pub(crate) struct FuseChannel {
     owned_fd: Arc<File>,
     pub raw_fd: i32,
+    is_main: bool,
 }
 
 use std::os::fd::{AsFd, BorrowedFd};
@@ -42,7 +43,7 @@ impl FuseChannel {
     pub fn new(device: File) -> Self {
         let owned_fd = Arc::new(device);
         let raw_fd = owned_fd.as_raw_fd();
-        Self { owned_fd, raw_fd }
+        Self { owned_fd, raw_fd, is_main: true }
     }
     // Create a new communication channel to the kernel driver.
     // The argument is a `Arc<File>` opened on a fuse device.
@@ -50,7 +51,7 @@ impl FuseChannel {
     pub fn from_shared(device: &Arc<File>) -> Self {
         let raw_fd = device.as_raw_fd().as_raw_fd();
         let owned_fd = device.clone();
-        Self { raw_fd, owned_fd }
+        Self { raw_fd, owned_fd, is_main: true }
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
@@ -297,8 +298,24 @@ impl FuseChannel {
         Ok(())
     }
 
-    /// ?
-    pub fn new_fuse_worker(&self, main_fuse_fd: u32) -> std::io::Result<()> {
-        ioctl_clone_fuse_fd(self.raw_fd, main_fuse_fd)
+    /// Creates a new fuse worker channel. Self should be the main channel.
+    /// # Errors
+    /// Propagates underlying errors.
+    pub fn fork(&self) -> std::io::Result<Self> {
+        if !self.is_main {
+            log::error!("Attempted to create a new fuse worker from a fuse channel that is not main");
+        }
+        let fuse_device_name = "/dev/fuse";
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(fuse_device_name)?;
+        let raw_fd = file.as_raw_fd();
+        ioctl_clone_fuse_fd(raw_fd, self.raw_fd as u32)?;
+        Ok(FuseChannel {
+            owned_fd: Arc::new(file),
+            raw_fd,
+            is_main: false,
+        })
     }
 }
