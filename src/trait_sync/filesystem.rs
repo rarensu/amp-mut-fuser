@@ -14,8 +14,10 @@ use serde::de::value::F64Deserializer;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 */
+/*
 #[cfg(feature = "abi-7-11")]
 use crate::notify::Notification;
+*/
 #[cfg(feature = "abi-7-21")]
 use crate::reply::DirentPlusList;
 #[cfg(feature = "abi-7-11")]

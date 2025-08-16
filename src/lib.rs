@@ -15,6 +15,8 @@ mod notify;
 mod reply;
 mod request;
 mod session;
+#[cfg(feature = "abi-7-40")]
+mod passthrough;
 
 /// Asynchronous Filesystem trait
 pub mod trait_async;
@@ -35,8 +37,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
-#[cfg(feature = "abi-7-23")]
-use std::time::Duration;
+
 use std::{convert::AsRef, io::ErrorKind};
 
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
@@ -52,12 +53,14 @@ pub use any::AnyFS;
 pub use bytes::Bytes;
 pub use container::{Container, SafeBorrow};
 pub use mnt::mount_options::MountOption;
+/*
 #[cfg(feature = "abi-7-18")]
 pub use notify::Delete;
 #[cfg(feature = "abi-7-15")]
 pub use notify::Store;
 #[cfg(feature = "abi-7-12")]
 pub use notify::{InvalEntry, InvalInode};
+*/
 #[cfg(feature = "abi-7-11")]
 pub use notify::{NotificationHandler, PollHandler};
 #[cfg(feature = "abi-7-11")]
@@ -89,17 +92,10 @@ pub use session::{Session, SessionACL, SessionUnmounter};
 use std::cmp::max;
 #[cfg(feature = "abi-7-13")]
 use std::cmp::min;
-use std::convert::AsRef;
-use std::ffi::OsStr;
-use std::io;
-#[cfg(feature = "threaded")]
-use std::io::ErrorKind;
-use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
 
 /// Legacy Filesystem trait with callbacks
-pub mod trait_legacy;
 pub use trait_legacy::{Filesystem, Request};
 
 /// We generally support async reads
@@ -427,7 +423,7 @@ where
         .map(|x| Some(MountOption::from_str(x.to_str()?)))
         .collect();
     let options = options.ok_or(ErrorKind::InvalidData)?;
-    let se = Session::new_mounted(filesystem, mountpoint.as_ref(), options.as_ref())?;
+    let se = Session::new(filesystem, mountpoint.as_ref(), options.as_ref())?;
     se.spawn()
 }
 
@@ -457,5 +453,5 @@ where
     P: AsRef<Path>,
 {
     check_option_conflicts(options)?;
-    Session::new_mounted(filesystem, mountpoint.as_ref(), options).and_then(session::Session::spawn)
+    Session::new(filesystem, mountpoint.as_ref(), options).and_then(session::Session::spawn)
 }

@@ -43,7 +43,7 @@ impl Drop for BackingId {
 
 pub trait BackingSender: Send + Sync + Unpin + 'static  {
     fn open_backing(&self, file: File) -> io::Result<BackingId>;
-    fn close_backing(&self, backing: BackingId) -> io::Result<(u32)>;
+    fn close_backing(&self, backing: BackingId) -> io::Result<u32>;
 }
 
 impl fmt::Debug for Box<dyn BackingSender> {
@@ -61,7 +61,7 @@ impl BackingSender for crate::channel::Channel {
             id,
         })
     }
-    fn close_backing(&self, mut backing: BackingId) -> std::io::Result<(u32)> {
+    fn close_backing(&self, mut backing: BackingId) -> std::io::Result<u32> {
         let id = backing.id;
         backing.id = 0; // this backing has been closed.
         ioctl_close_backing(self.raw_fd, id)
@@ -89,7 +89,7 @@ impl BackingHandler {
     pub fn open_backing(&self, file: File) -> std::io::Result<BackingId> {
         self.sender.open_backing(file)
     }
-    pub fn close_backing(&self, mut backing: BackingId) -> std::io::Result<(u32)> {
+    pub fn close_backing(&self, mut backing: BackingId) -> std::io::Result<u32> {
         self.sender.close_backing(backing)
     }
 }

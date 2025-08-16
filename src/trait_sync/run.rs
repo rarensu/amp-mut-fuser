@@ -7,15 +7,20 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use crate::FsStatus;
 use crate::any::AnyFS;
+/*
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
+*/
+#[cfg(feature = "abi-7-11")]
+use crossbeam_channel::{RecvError, TryRecvError};
+#[cfg(feature = "abi-7-11")]
+use crate::notify::NotificationHandler;
 use crate::request::RequestHandler;
 use crate::session::{BUFFER_SIZE, SYNC_SLEEP_INTERVAL, Session};
 use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::{RecvError, TryRecvError};
+
 
 impl<L, S, A> Session<L, S, A>
 where
@@ -132,7 +137,7 @@ where
             "Starting notification loop on channel {ch_idx} with fd {}",
             &sender.raw_fd
         );
-        let notifier = Notifier::new(sender);
+        let notifier = NotificationHandler::new(sender);
         loop {
             if self.meta.destroyed.load(Relaxed) {
                 break;
@@ -163,7 +168,7 @@ where
     fn handle_one_notification_sync(
         self: &mut Session<L, S, A>,
         notification: Notification,
-        notifier: &Notifier,
+        notifier: &NotificationHandler,
         ch_idx: usize,
     ) -> io::Result<()> {
         debug!(
@@ -217,7 +222,7 @@ where
         let mut buffer = vec![0; BUFFER_SIZE];
 
         #[cfg(feature = "abi-7-11")]
-        let notifier = Notifier::new(self.get_ch(ch_idx));
+        let notifier = NotificationHandler::new(self.get_ch(ch_idx));
 
         info!("Starting full task loop on channel {ch_idx}");
         loop {

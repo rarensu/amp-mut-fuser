@@ -373,7 +373,7 @@ impl ReplyHandler {
         let attr_ttl_override = self.attr_ttl_override;
         self.send_ll(&ll::Response::new_attr(
             ttl,
-            &attr.into(),
+            &attr,
             attr_ttl_override,
         ));
     }
@@ -623,7 +623,7 @@ impl ReplyHandler {
                 "ReplyHandler::dirplus: processing item with offset #{}",
                 dirent.offset
             );
-            if buf.push(dirent, entry) {
+            if buf.push(dirent, entry, self.attr_ttl_override) {
                 log::debug!("ReplyHandler::dirplus: buffer full!");
                 break;
             }

@@ -20,14 +20,15 @@ use std::sync::atomic::{
 use std::sync::{Arc, Mutex};
 #[cfg(feature = "threaded")]
 use std::thread::{self, JoinHandle};
-
+/*
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
+*/
 use crate::{AnyFS, MountOption};
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::notify::NotificationHandler;
-use crossbeam_channel::{Receiver, Sender};
+//use crossbeam_channel::{Receiver, Sender};
 
 use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
@@ -124,7 +125,7 @@ where
     A: AsyncFS,
 {
     /// Create a new session by mounting the given filesystem to the given mountpoint
-    pub fn new_mounted<P: AsRef<Path>>(
+    pub fn new<P: AsRef<Path>>(
         filesystem: AnyFS<L, S, A>,
         mountpoint: P,
         options: &[MountOption],
@@ -211,7 +212,7 @@ where
     #[cfg(feature = "abi-7-11")]
     pub fn notifier(&self) -> NotificationHandler {
         // Legacy notification method
-        NotificationHandler::new(self.ch.clone())
+        NotificationHandler::new(self.chs[0].clone())
     }
 
     /// Returns an object that can be used to queue notifications for the Session to process
@@ -374,7 +375,7 @@ impl BackgroundSession {
         A: AsyncFS + Send + Sync + 'static,
     {
         #[cfg(feature = "abi-7-11")]
-        let sender = se.ch.clone();
+        let sender = se.chs[0].clone();
         // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         // The main session (se) is moved into this thread.
@@ -394,7 +395,7 @@ impl BackgroundSession {
         let Self {
             guard,
             #[cfg(feature = "abi-7-11")]
-                extra_notification_sender: _,
+            sender: _,
             _mount,
         } = self;
         // Unmount the filesystem
@@ -423,7 +424,7 @@ impl fmt::Debug for BackgroundSession {
         builder.field("main_loop_guard", &self.guard);
         #[cfg(feature = "abi-7-11")]
         {
-            builder.field("sender", &self.extra_notification_sender);
+            builder.field("sender", &self.sender);
         }
         builder.field("_mount", &self._mount);
         builder.finish()

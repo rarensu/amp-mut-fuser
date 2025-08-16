@@ -7,8 +7,7 @@ use std::{
 
 use crate::ll::fuse_abi;
 use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
-#[cfg(feature = "abi-7-40")]
-use crate::ll::ioctl::{ioctl_close_backing, ioctl_open_backing};
+
 use libc::{c_int, c_void, size_t};
 
 pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<fuse_abi::fuse_in_header>();

@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use crate::Ioctl;
 #[cfg(target_os = "macos")]
 use crate::XTimes;
+/*
 #[cfg(feature = "abi-7-11")]
 use crate::notify::Notification;
+*/
 #[cfg(feature = "abi-7-21")]
 use crate::reply::DirentPlusList;
 use crate::reply::{DirentList, Entry, FileAttr, Lock, Open, Statfs, Xattr};

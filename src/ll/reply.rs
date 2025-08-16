@@ -245,7 +245,7 @@ impl<'a> Response<'a> {
     // TODO: Are you allowed to send data while result != 0?
     // TODO: This used to be IoSlice -- does that have any additional utility here?
     #[cfg(feature = "abi-7-11")]
-    pub(crate) fn new_ioctl(result: i32, data: &[u8]) -> Self {
+    pub(crate) fn new_ioctl(result: i32, data: &[IoSlice<'_>]) -> Self {
         let r = abi::fuse_ioctl_out {
             result,
             // these fields are only needed for unrestricted ioctls
@@ -255,7 +255,9 @@ impl<'a> Response<'a> {
         };
         // TODO: Don't copy this data
         let mut v: ResponseBuf = ResponseBuf::from_slice(r.as_bytes());
-        v.extend_from_slice(data);
+        for x in data {
+            v.extend_from_slice(x)
+        }
         Self::Data(v)
     }
 
@@ -470,7 +472,7 @@ impl DirentPlusBuf {
         x: &crate::Dirent,
         y: &crate::Entry,
         attr_ttl_override: bool,
-    ) -> Result<bool, Errno> {
+    ) -> bool {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {
                 nodeid: y.ino,
