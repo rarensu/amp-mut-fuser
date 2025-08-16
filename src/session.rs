@@ -25,7 +25,8 @@ use std::thread::{self, JoinHandle};
 use crate::notify::{Notification, Notifier};
 */
 use crate::{AnyFS, MountOption};
-use crate::{channel::Channel, mnt::Mount};
+use crate::{channel::FuseChannel, mnt::Mount};
+use crate::queue::InternalChannel;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::NotificationHandler;
 //use crossbeam_channel::{Receiver, Sender};
@@ -63,7 +64,7 @@ pub struct Session<FS: Filesystem> {
     /// Filesystem operation implementations
     pub(crate) filesystem: FS,
     /// Communication channel to the kernel driver
-    pub(crate) ch: Channel,
+    pub(crate) ch: FuseChannel,
     /// Handle to the mount.  Dropping this unmounts.
     pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Session metadata
@@ -104,18 +105,14 @@ where
     /// Filesystem operation implementations
     pub(crate) filesystem: AnyFS<L, S, A>,
     /// Communication channels to the kernel fuse driver
-    pub(crate) chs: Vec<Channel>,
+    pub(crate) chs: Vec<FuseChannel>,
     /// Handle to the mount.  Dropping this unmounts.
     pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Whether to restrict access to owner, root + owner, or unrestricted
     /// Used to implement `allow_root` and `auto_unmount`
     pub(crate) meta: SessionMeta,
-    #[cfg(feature = "abi-7-11")]
     /// Sender for poll events to the filesystem. It will be cloned and passed to Filesystem.
-    pub(crate) ns: Sender<Notification>,
-    #[cfg(feature = "abi-7-11")]
-    /// Receiver for poll events from the filesystem.
-    pub(crate) nr: Receiver<Notification>,
+    pub(crate) queuer: InternalChannel,
 }
 
 impl<L, S, A> Session<L, S, A>
@@ -164,7 +161,7 @@ where
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, acl: SessionACL) -> Self {
         // Create the channel for fuse messages
-        let ch = Channel::new(fd.into());
+        let ch = FuseChannel::new(fd.into());
         Session::from_mount(filesystem, ch, acl, None)
     }
 
@@ -172,13 +169,12 @@ where
     #[allow(unused_mut)] // The filesystem mutates, but only under some combinations of features
     pub(crate) fn from_mount(
         mut filesystem: AnyFS<L, S, A>,
-        ch: Channel,
+        ch: FuseChannel,
         allowed: SessionACL,
         mount: Option<(PathBuf, Mount)>,
     ) -> Self {
-        #[cfg(feature = "abi-7-11")]
-        // Create the channel for poll events.
-        let (ns, nr) = crossbeam_channel::unbounded();
+        // Create the internal channel for queued notification events.
+        let queuer = InternalChannel::new();
         #[cfg(feature = "abi-7-11")]
         // Pass the sender to the filesystem.
         let notify = match &mut filesystem {
@@ -201,10 +197,7 @@ where
             chs: vec![ch],
             mount: Arc::new(Mutex::new(mount)),
             meta,
-            #[cfg(feature = "abi-7-11")]
-            ns,
-            #[cfg(feature = "abi-7-11")]
-            nr,
+            queuer,
         }
     }
 
@@ -236,7 +229,7 @@ where
                 .read(true)
                 .write(true)
                 .open(fuse_device_name)?;
-            let ch = Channel::new(file);
+            let ch = FuseChannel::new(file);
             ch.new_fuse_worker(main_fuse_fd)?;
             self.chs.push(ch);
             new_channels += 1;
@@ -247,7 +240,7 @@ where
     #[cfg(feature = "abi-7-11")]
     /// returns a copy of the channel associated with a specific channel index.
     /// used to assist with constructing notifiers and the like.
-    pub(crate) fn get_ch(&self, ch_idx: usize) -> Channel {
+    pub(crate) fn get_ch(&self, ch_idx: usize) -> FuseChannel {
         self.chs[ch_idx].clone()
     }
 
@@ -358,7 +351,7 @@ pub struct BackgroundSession {
     pub guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
     #[cfg(feature = "abi-7-11")]
-    sender: Channel,
+    sender: FuseChannel,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }

@@ -24,19 +24,19 @@ pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
 /// A raw communication channel to the FUSE kernel driver.
 /// May be cloned and sent to other threads.
 #[derive(Clone, Debug)]
-pub(crate) struct Channel {
+pub(crate) struct FuseChannel {
     owned_fd: Arc<File>,
     pub raw_fd: i32,
 }
 
 use std::os::fd::{AsFd, BorrowedFd};
-impl AsFd for Channel {
+impl AsFd for FuseChannel {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.owned_fd.as_fd()
     }
 }
 
-impl Channel {
+impl FuseChannel {
     // Create a new communication channel to the kernel driver.
     // The argument is a `File` opened on a fuse device.
     pub fn new(device: File) -> Self {

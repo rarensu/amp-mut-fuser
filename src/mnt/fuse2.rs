@@ -1,5 +1,5 @@
 use super::{MountOption, fuse2_sys::*, with_fuse_args};
-use crate::channel::Channel;
+use crate::channel::FuseChannel;
 use log::warn;
 use std::{
     ffi::CString,
@@ -23,7 +23,7 @@ pub struct Mount {
     mountpoint: CString,
 }
 impl Mount {
-    pub fn new(mountpoint: &Path, options: &[MountOption]) -> io::Result<(Channel, Mount)> {
+    pub fn new(mountpoint: &Path, options: &[MountOption]) -> io::Result<(FuseChannel, Mount)> {
         let mountpoint = CString::new(mountpoint.as_os_str().as_bytes()).unwrap();
         with_fuse_args(options, |args| {
             let fd = unsafe { fuse_mount_compat25(mountpoint.as_ptr(), args) };
@@ -31,7 +31,7 @@ impl Mount {
                 Err(ensure_last_os_error())
             } else {
                 let file = unsafe { File::from_raw_fd(fd) };
-                Ok((Channel::new(file), Mount { mountpoint }))
+                Ok((FuseChannel::new(file), Mount { mountpoint }))
             }
         })
     }

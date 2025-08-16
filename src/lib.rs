@@ -17,6 +17,7 @@ mod request;
 mod session;
 #[cfg(feature = "abi-7-40")]
 mod passthrough;
+mod queue;
 
 /// Asynchronous Filesystem trait
 pub mod trait_async;

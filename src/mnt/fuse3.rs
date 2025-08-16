@@ -1,11 +1,9 @@
-use crate::channel::Channel;
-
 use super::fuse3_sys::{
     fuse_session_destroy, fuse_session_fd, fuse_session_mount, fuse_session_new,
     fuse_session_unmount,
 };
 use super::{MountOption, with_fuse_args};
-use crate::channel::Channel;
+use crate::channel::FuseChannel;
 use std::{
     ffi::{CString, c_void},
     fs::File,
@@ -29,7 +27,7 @@ pub struct Mount {
     fuse_session: *mut c_void,
 }
 impl Mount {
-    pub fn new(mnt: &Path, options: &[MountOption]) -> io::Result<(Channel, Mount)> {
+    pub fn new(mnt: &Path, options: &[MountOption]) -> io::Result<(FuseChannel, Mount)> {
         let mnt = CString::new(mnt.as_os_str().as_bytes()).unwrap();
         with_fuse_args(options, |args| {
             let fuse_session = unsafe { fuse_session_new(args, ptr::null(), 0, ptr::null_mut()) };
@@ -49,7 +47,7 @@ impl Mount {
             // don't want it being closed out from under us:
             let fd = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_DUPFD_CLOEXEC(0))?;
             let file = unsafe { File::from_raw_fd(fd) };
-            Ok((Channel::new(file), mount))
+            Ok((FuseChannel::new(file), mount))
         })
     }
 }

@@ -2,6 +2,7 @@ use std::io;
 use std::fmt;
 use std::os::fd::{AsFd, AsRawFd};
 use std::sync::{Arc, Weak};
+use crossbeam_channel::{Sender, Receiver, bounded};
 
 use crate::ll::fuse_ioctl::{ioctl_open_backing, ioctl_close_backing};
 
@@ -23,7 +24,7 @@ use crate::ll::fuse_ioctl::{ioctl_open_backing, ioctl_close_backing};
 /// make that call.
 pub struct BackingId {
     fd: u32,
-    sender: Box<dyn BackingSender>,
+    queuer: Box<dyn BackingQueuer>,
     /// The backing_id field passed to and from the kernel
     pub id: u32,
 }
@@ -35,7 +36,7 @@ impl fmt::Debug for BackingId {
 impl Drop for BackingId {
     fn drop(&mut self) {
         if self.id > 0 {
-            let _ = self.sender.close_backing(self.id);
+            let _ = self.queuer.close_backing(id);
             self.id = 0;
         }
     }
@@ -53,7 +54,7 @@ impl BackingId {
 }
 
 pub trait BackingSender: Send + Sync + Unpin + 'static  {
-    fn open_backing(&self, fd: u32) -> io::Result<BackingId>;
+    fn open_backing(&self, fd: u32) -> io::Result<u32>;
     fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 
@@ -64,16 +65,35 @@ impl fmt::Debug for Box<dyn BackingSender> {
 }
 
 impl BackingSender for crate::channel::Channel {
-    fn open_backing(&self, fd: u32) -> std::io::Result<BackingId> {
-        let id = ioctl_open_backing(self.raw_fd, fd)?;
-        Ok( BackingId {
-            fd,
-            sender: Box::new(self.clone()) as Box<dyn BackingSender>,
-            id,
-        })
+    fn open_backing(&self, fd: u32) -> std::io::Result<u32> {
+        ioctl_open_backing(self.raw_fd, fd)
     }
     fn close_backing(&self, id: u32) -> std::io::Result<u32> {
         ioctl_close_backing(self.raw_fd, id)
+    }
+}
+
+pub trait BackingQueuer: Send + Sync + Unpin + 'static  {
+    fn open_backing(&self, fd: u32) -> Receiver<io::Result<BackingId>>;
+    fn close_backing(&self, id: u32) -> Receiver<io::Result<u32>>;
+}
+
+impl fmt::Debug for Box<dyn BackingQueuer> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "Box<BackingQueuer>")
+    }
+}
+
+impl BackingQueuer for crate::queue::InternalChannel {
+    fn open_backing(&self, fd: u32) -> Receiver<std::io::Result<BackingId>> {
+        let (oss, osr) = bounded(1);
+        self.open_backing_out.send((fd, oss));
+        osr
+    }
+    fn close_backing(&self, id: u32) -> Receiver<std::io::Result<u32>> {
+        let (oss, osr) = bounded(1);
+        self.open_backing_out.send((id, oss));
+        osr
     }
 }
 
@@ -82,14 +102,19 @@ impl BackingSender for crate::channel::Channel {
 pub struct BackingHandler {
     /// Closure to call for requesting a backing id
     pub sender: Box<dyn BackingSender>,
+    /// Closure to call for queuing a request for a backing id
+    pub queuer: Box<dyn BackingQueuer>,
+
 }
 
 impl BackingHandler {
     /// Create a reply handler for a specific request identifier
-    pub fn new<S: BackingSender>(sender: S) -> BackingHandler {
+    pub fn new<S: BackingSender, Q: BackingQueuer>(sender: S, queuer: Q) -> BackingHandler {
         let sender = Box::new(sender);
+        let queuer = Box::new(queuer);
         BackingHandler {
             sender,
+            queuer
         }
     }
 }
@@ -97,7 +122,12 @@ impl BackingHandler {
 impl BackingHandler {
     pub fn open_backing<F: AsRawFd>(&self, file: F) -> std::io::Result<BackingId> {
         let fd = file.as_raw_fd() as u32;
-        self.sender.open_backing(fd)
+        self.sender.open_backing(fd)?;
+        Ok( BackingId {
+            fd,
+            queuer: Box::new(self.queuer.clone()) as Box<dyn BackingQueuer>,
+            id,
+        })
     }
     pub fn close_backing(&self, mut backing: BackingId) -> std::io::Result<u32> {
         match self.sender.close_backing(backing.id){
@@ -107,5 +137,14 @@ impl BackingHandler {
             }
             Err(e) => Err(e)
         }    
+    }
+    pub fn queue_open_backing<F: AsRawFd>(&self, file: F) -> Receiver<io::Result<BackingId>> {
+        let fd = file.as_raw_fd() as u32;
+        self.queuer.open_backing(fd)
+    }
+    pub fn queue_close_backing(&self, mut backing: BackingId) -> Receiver<std::io::Result<u32>> {
+        let id = backing.id;
+        backing.id = 0;
+        self.queuer.close_backing(id)   
     }
 }

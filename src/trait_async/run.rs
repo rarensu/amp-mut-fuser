@@ -163,7 +163,7 @@ where
         data: Vec<u8>,
     ) -> bool {
         // Parse data
-        match RequestHandler::new(se.chs[ch_idx].clone(), data) {
+        match RequestHandler::new(se.chs[ch_idx].clone(), se.queuer.clone(), data) {
             // Request is valid
             Some(req) => {
                 debug!("Request {} on channel {ch_idx}.", req.meta.unique);

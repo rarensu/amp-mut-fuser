@@ -24,7 +24,7 @@ impl fmt::Debug for Box<dyn NotificationSender> {
 }
 
 // Legacy callback for sending notifications to the fuse device
-impl NotificationSender for crate::channel::Channel {
+impl NotificationSender for crate::channel::FuseChannel {
     fn notify(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
         notification
             .with_iovec(code, |iov| self.send(iov))
