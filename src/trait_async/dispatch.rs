@@ -17,8 +17,9 @@ impl RequestHandler {
     /// request and sends back the returned reply to the kernel
     pub(crate) async fn dispatch_async<FS: Filesystem>(self, fs: &FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
+        // must not include items borrowed from Request<'_> in reply!() arguments!
         macro_rules! reply {
-            // must not include items borrowed from Request<'_> in these arguments!
+            // the attr-returning methods also get with_ttl_override
             (attr_or_err $(, $args:expr )* ) => {
                 reply!(with_ttl_override @ attr_or_err $(, $args )* )
             };
@@ -47,6 +48,7 @@ impl RequestHandler {
                     replyhandler.$method( $( $args ),* );
                 });
             };
+            // all other methods are regular
             ($method:ident $(, $args:expr )* ) => {
                 reply!(regular @ $method $(, $args )* )
             };
@@ -58,8 +60,6 @@ impl RequestHandler {
                 std::thread::spawn( move || {
                     replyhandler.$method( $( $args ),* );
                 });
-                #[cfg(all(feature = "threaded", feature = "tokio"))]
-                info!("Spawning a tokio thread for reply");
                 #[cfg(all(feature = "threaded", feature = "tokio"))]
                 tokio::task::spawn_blocking( move || {
                     replyhandler.$method( $( $args ),* );

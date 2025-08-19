@@ -69,12 +69,6 @@ impl Channel {
     /// Receives data up to the capacity of the given buffer (can block).
     /// Populates data into the buffer starting from the point of alignment
     pub fn receive(&self, buffer: &mut [u8]) -> io::Result<Vec<u8>> {
-        log::debug!("about to try a blocking read on fd {:?}", self.raw_fd);
-        log::debug!(
-            "about to try a blocking read on with buffer {:?}, {:?}",
-            buffer.len(),
-            buffer.get(0..20)
-        );
         let buf_aligned = aligned_sub_buf(buffer, FUSE_HEADER_ALIGNMENT);
         let rc = unsafe {
             libc::read(
@@ -96,7 +90,7 @@ impl Channel {
     /// Receives data up to the capacity of the given buffer.
     /// Can be awaited: blocks on a dedicated thread.
     /// Populates data into the buffer starting from the point of alignment
-    #[allow(unused)] // this stub is a placeholder for future non-tokio async i/o
+    #[allow(unused)] // this stub is a placeholder for future low-level non-tokio async i/o
     pub async fn receive_async(&self, mut _buffer: Vec<u8>) -> (io::Result<Vec<u8>>, Vec<u8>) {
         let _thread_ch = self.clone();
         /*
@@ -194,7 +188,7 @@ impl Channel {
             #[cfg(not(feature = "tokio"))]
             let (res, new_buffer) = (Ok(vec![]), buffer);
             #[cfg(not(feature = "tokio"))]
-            unimplemented!("non-tokio async i/o not implemented");
+            unimplemented!("low-level non-tokio async i/o not implemented");
             // Tokio implementation
             #[cfg(feature = "tokio")]
             let (res, new_buffer) = self.receive_async(buffer).await;
@@ -250,10 +244,6 @@ impl Channel {
     /// Writes data from the owned buffer.
     /// Blocks the current thread.
     pub fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
-        log::debug!("about to try a blocking write on fd {}", self.raw_fd);
-        for x in bufs {
-            log::debug!("the buf has length {}", x.len());
-        }
         let rc = unsafe {
             libc::writev(
                 self.raw_fd,
@@ -261,7 +251,6 @@ impl Channel {
                 bufs.len() as c_int,
             )
         };
-        log::debug!("just done a blocking write on {}: {rc}", self.raw_fd);
         if rc < 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -273,7 +262,7 @@ impl Channel {
     #[cfg(not(feature = "tokio"))]
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
-    #[allow(unused)] // this stub is a placeholder for future non-tokio async i/o
+    #[allow(unused)] // this stub is a placeholder for future low-level non-tokio async i/o
     pub async fn send_async(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let bufs = bufs
             .iter()
@@ -293,7 +282,7 @@ impl Channel {
     #[cfg(feature = "tokio")]
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
-    #[allow(unused)] // this stub is a placeholder for future tokio async i/o
+    #[allow(unused)] // this stub is a placeholder for future low-level tokio async i/o
     pub async fn send_async(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let bufs = bufs
             .iter()

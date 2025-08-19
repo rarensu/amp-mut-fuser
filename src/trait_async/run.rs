@@ -60,9 +60,9 @@ where
         Ok(())
     }
 
-    /// Starts one tokio task for request/reply,one for notifications, and one for heartbeats.
-    /// Requires number of tokio workers is at least 2. 
-    /// NOTE. Concurrent tasks deadlock when run under a single thread.
+    /// Starts one tokio task for requests/replies, one for notifications, and one for heartbeats.
+    /// FUSE i/o blocks on threads in the tokio threadpool.
+    /// Requires number of tokio workers is at least 2, because concurrent i/o tasks deadlock when run under a single thread.
     #[cfg(feature = "tokio")]
     pub async fn run_notifications_concurrently(self) -> io::Result<()> {
         let se = Arc::new(self);
@@ -222,7 +222,6 @@ where
             let res = notifier.dispatch();
             #[cfg(feature = "tokio")]
             let res = {
-                info!("Spawning a tokio thread for notification");
                 tokio::task::spawn_blocking(async move || notifier.dispatch())
                     .await
                     .expect("unable to recover a background i/o thread")
