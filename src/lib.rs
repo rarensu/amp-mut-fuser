@@ -36,9 +36,10 @@ use serde::{Deserialize, Serialize};
 */
 use std::ffi::OsStr;
 use std::io;
+#[cfg(feature = "threaded")]
+use std::io::ErrorKind;
 use std::path::Path;
-
-use std::{convert::AsRef, io::ErrorKind};
+use std::convert::AsRef;
 
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
 #[allow(clippy::wildcard_imports)] // avoid duplicating feature gates
@@ -64,8 +65,8 @@ pub use notify::{InvalEntry, InvalInode};
 #[cfg(feature = "abi-7-11")]
 pub use notify::{Notifier, PollHandler};
 #[cfg(feature = "abi-7-11")]
-pub use trait_legacy::ReplyIoctl;
-#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::{ReplyIoctl, LegacyNotifier};
+#[cfg(feature = "abi-7-21")]
 pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
 pub use trait_legacy::ReplyLseek;

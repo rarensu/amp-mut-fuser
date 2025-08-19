@@ -22,8 +22,6 @@ use crate::reply::{DirentList, Entry, FileAttr, Lock, Open, Statfs, Xattr};
 use crate::request::{Forget, RequestMeta};
 use crate::{Errno, FsStatus, KernelConfig, TimeOrNow};
 use bytes::Bytes;
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::Sender;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, SystemTime};

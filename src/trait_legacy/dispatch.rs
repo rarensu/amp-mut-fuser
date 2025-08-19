@@ -7,8 +7,6 @@ use crate::session::{SessionACL, SessionMeta};
 use crate::request::{RequestHandler, RequestMeta};
 use crate::{ll::Errno, KernelConfig,};
 #[cfg(feature = "abi-7-40")]
-use crate::passthrough::BackingHandler;
-#[cfg(feature = "abi-7-40")]
 use crate::request::get_backing_handler;
 
 #[cfg(feature = "abi-7-24")]

@@ -29,14 +29,14 @@ use crate::notify::{Notification, Notifier};
 use crate::{AnyFS, MountOption};
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::notify::Queues;
-#[cfg(feature = "abi-7-11")]
-use crate::notify::{Notifier, NotificationSender};
+use crate::notify::{Queues, Notifier};
 #[cfg(feature = "abi-7-40")]
 use crate::passthrough::BackingHandler;
 use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
+#[cfg(feature = "abi-7-11")]
+use crate::LegacyNotifier;
 
 pub const SYNC_SLEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
@@ -111,7 +111,7 @@ where
     pub(crate) filesystem: AnyFS<L, S, A>,
     /// Main communication channel to the kernel fuse driver
     pub(crate) ch_main: Channel,
-    #[cfg(feature = "abi-7-11")]
+    #[cfg(feature = "side_channel")]
     /// Side communication channel to the kernel fuse driver
     pub(crate) ch_side: Channel,
     #[cfg(feature = "abi-7-11")]
@@ -152,10 +152,10 @@ where
     }
 
     /// Returns an object that can be used to send notifications to the kernel
-    #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Box<dyn NotificationSender> {
+    #[cfg(all(feature = "abi-7-11", feature = "side_channel"))]
+    pub fn notifier(&self) -> LegacyNotifier {
         // Legacy notification method
-        Box::new(self.ch_side.clone()) as  Box<dyn NotificationSender>
+        LegacyNotifier::new(self.ch_side.clone())
     }
 
     /// Returns an object that can be used to queue notifications for the Session to process
@@ -361,7 +361,7 @@ where
     pub(crate) filesystem: Option<AnyFS<L, S, A>>,
     /// Main communication channel to the kernel fuse driver
     pub(crate) ch_main: Option<Channel>,
-    #[cfg(feature = "abi-7-11")]
+    #[cfg(feature = "side_channel")]
     /// Side communication channel to the kernel fuse driver
     pub(crate) ch_side: Option<Channel>,
     #[cfg(feature = "abi-7-11")]
@@ -384,7 +384,7 @@ where
         SessionBuilder {
             filesystem: None,
             ch_main: None,
-            #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "side_channel")]
             ch_side: None,
             #[cfg(feature = "abi-7-11")]
             queues: Queues::new(),
@@ -502,7 +502,7 @@ where
     /// Sets the main and side fuse channels. Internal use only.
     fn set_ch(&mut self, ch: Channel) -> io::Result<()> {
         // Create the channel for fuse messages
-        #[cfg(feature = "abi-7-11")]
+        #[cfg(feature = "side_channel")]
         {
             self.ch_side = Some(ch.fork()?);
         }
@@ -516,7 +516,7 @@ where
                 .expect("No filesystem! Did you forget to set one?"),
             ch_main: self.ch_main
                 .expect("No fuse channel! Did you forget to mount?"),
-            #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "side_channel")]
             ch_side: self.ch_side
                 .expect("No fuse channel! Did you forget to mount?"),
             mount: self.mount,

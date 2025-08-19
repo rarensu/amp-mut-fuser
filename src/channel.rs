@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::ll::fuse_abi;
-#[cfg(feature = "abi-7-11")]
+#[cfg(feature = "side_channel")]
 use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
 
 use libc::{c_int, c_void, size_t};
@@ -28,7 +28,7 @@ pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
 pub(crate) struct Channel {
     owned_fd: Arc<File>,
     pub raw_fd: i32,
-    #[cfg(feature = "abi-7-11")]
+    #[cfg(feature = "side_channel")]
     is_main: bool,
 }
 
@@ -48,7 +48,7 @@ impl Channel {
         Self {
             owned_fd,
             raw_fd, 
-            #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "side_channel")]
             is_main: true 
         }
     }
@@ -61,7 +61,7 @@ impl Channel {
         Self {
             owned_fd,
             raw_fd, 
-            #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "side_channel")]
             is_main: true 
         }    
     }
@@ -310,7 +310,7 @@ impl Channel {
         Ok(())
     }
 
-    #[cfg(feature = "abi-7-11")]
+    #[cfg(feature = "side_channel")]
     /// Creates a new fuse worker channel. Self should be the main channel.
     /// # Errors
     /// Propagates underlying errors.

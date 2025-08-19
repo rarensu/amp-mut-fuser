@@ -12,8 +12,6 @@ use std::convert::Into;
 use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
 use crate::reply::ReplyHandler;
-#[cfg(feature = "abi-7-40")]
-use crate::passthrough::BackingHandler;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{NotificationKind};
 #[cfg(feature = "abi-7-11")]
@@ -33,7 +31,8 @@ pub(crate) struct RequestHandler {
     pub ch_main: Channel,
     /*
     /// A copy of the side channel
-    pub ch_side: Channel,
+    #[cfg(feature = "side_channel")]
+    pub ch_side: Channel, //currently, not needed
      */
     #[cfg(feature = "abi-7-11")]
     /// A copy of the internal channel
@@ -69,6 +68,7 @@ impl RequestHandler {
     pub(crate) fn new(
         ch_main: Channel,
         /*
+        #[cfg(feature = "side_channel")]
         ch_side: Channel,
         */
         #[cfg(feature = "abi-7-11")]
@@ -98,6 +98,7 @@ impl RequestHandler {
             #[cfg(feature = "abi-7-40")]
             ch_main: another_ch_main,
             /*
+            #[cfg(feature = "side_channel")]
             ch_side,
             */
             #[cfg(feature = "abi-7-11")]
@@ -107,7 +108,9 @@ impl RequestHandler {
 }
 #[cfg(feature = "abi-7-40")]
 macro_rules! get_backing_handler {
-    ($me:ident) => {BackingHandler::new($me.ch_main, $me.queue)}
+    ($me:ident) => {
+        crate::passthrough::BackingHandler::new($me.ch_main, $me.queue)
+    }
 }
 #[cfg(feature = "abi-7-40")]
 pub(crate) use get_backing_handler;

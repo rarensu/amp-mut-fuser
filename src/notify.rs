@@ -7,9 +7,10 @@ use crossbeam_channel::{Sender, Receiver, unbounded};
 use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
 
 use crate::{
-    ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification,
-        fuse_ioctl::ioctl_close_backing}
+    ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification}
 };
+#[cfg(feature = "abi-7-40")]
+use crate::ll::fuse_ioctl::ioctl_close_backing;
 use crate::channel::Channel;
 
 /// The list of supported notification types
@@ -63,6 +64,7 @@ impl NotificationKind {
 /// Callback for sending notifications to the fuse device
 pub(crate) trait NotificationSender: Send + Sync + Unpin + 'static {
     fn notify(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()>;
+    #[cfg(feature = "abi-7-40")]
     fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 
@@ -79,6 +81,7 @@ impl NotificationSender for crate::channel::Channel {
             .with_iovec(code, |iov| self.send(iov))
             .map_err(too_big_err)?
     }
+    #[cfg(feature = "abi-7-40")]
     fn close_backing(&self, id: u32) -> io::Result<u32> {
         ioctl_close_backing(self.raw_fd, id)
     }
@@ -87,10 +90,11 @@ impl NotificationSender for crate::channel::Channel {
 /// Create an error for indicating when a notification message
 /// would exceed the capacity that its length descriptor field is
 /// capable of encoding.
-fn too_big_err(tfie: std::num::TryFromIntError) -> io::Error {
+pub(crate) fn too_big_err(tfie: std::num::TryFromIntError) -> io::Error {
     io::Error::new(io::ErrorKind::Other, format!("Data too large: {}", tfie))
 }
 
+/// Tool for translating NotificationKind into lower-level Notification
 pub(crate) struct NotificationHandler {
     notification: NotificationKind,
     channel: Channel,
@@ -142,6 +146,7 @@ impl NotificationHandler {
             NotificationKind::Disable => {unreachable!();}
         }
     }
+    #[cfg(feature = "abi-7-12")]
     fn send_inval(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
         match self.channel.notify(code, notification) {
             // ENOENT is harmless for an invalidation (the
@@ -188,6 +193,7 @@ impl Queues {
 }
 
 #[derive(Debug)]
+/// Helper for queueing notifications to be delivered to the kernel at a later time
 pub struct Notifier {
     /// Mechanism to queue a notification
     queue: Sender<NotificationKind>,
@@ -235,16 +241,13 @@ impl Notifier {
         self.queue.send(NotificationKind::Delete(parent, child, name)).unwrap();
     }
 
-    /// Invalidate the kernel cache for a given directory entry and inform
-    /// inotify watchers of a file deletion.
-    #[cfg(feature = "abi-7-18")]
+    /// needs doc
+    #[cfg(feature = "abi-7-40")]
     pub fn close_backing(&self, id: u32) {
         self.queue.send(NotificationKind::CloseBacking(id)).unwrap();
     }
 
-    /// Invalidate the kernel cache for a given directory entry and inform
-    /// inotify watchers of a file deletion.
-    #[cfg(feature = "abi-7-18")]
+    /// Needs doc
     pub fn disable(&self,) {
         self.queue.send(NotificationKind::Disable).unwrap();
     }
@@ -255,6 +258,7 @@ impl Notifier {
 /// A handle to a pending poll() request. Can be saved and used to notify the
 /// kernel when a poll is ready.
 pub struct PollHandler {
+    /// The unique kernel-assigned identifier of this poll operation
     pub handle: u64,
     queue: Sender<NotificationKind>,
 }

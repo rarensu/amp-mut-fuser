@@ -10,6 +10,11 @@ mod run;
 
 mod callback;
 
+#[cfg(feature = "abi-7-11")]
+mod notify;
+#[cfg(feature = "abi-7-11")]
+pub use notify::LegacyNotifier;
+
 /* ------ Structs ------ */
 #[cfg(feature = "abi-7-21")]
 pub use callback::ReplyDirectoryPlus;
@@ -42,25 +47,8 @@ pub use callback::{
     CallbackXattr,
 };
 
-/*
-#[cfg(feature = "abi-7-11")]
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-/// Contains a u64 value.
-pub struct PollHandle(pub u64);
-*/
-#[cfg(feature = "abi-7-11")]
-use crate::notify::PollHandler;
-
-/*
-#[cfg(feature = "abi-7-40")]
-#[derive(Debug)]
-/// Contains a new backing id and the original file descriptor
-pub struct BackingId {
-    /// The owned file, which must be held until the application receives its filehandle.
-    pub fd: std::fs::File,
-    /// A backing id the kernel uses to address this file.
-    pub backing_id: u32,
-}
-*/
 #[cfg(feature = "abi-7-40")]
 use crate::passthrough::{BackingId, BackingHandler};
+
+#[cfg(feature = "abi-7-11")]
+use crate::notify::PollHandler;

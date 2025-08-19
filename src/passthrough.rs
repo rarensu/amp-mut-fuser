@@ -1,10 +1,9 @@
 use std::io;
 use std::fmt;
-use std::os::fd::{AsFd, AsRawFd};
-use std::sync::{Arc, Weak};
-use crossbeam_channel::{Sender, Receiver, bounded};
+use std::os::fd::{AsRawFd};
+use crossbeam_channel::{Sender};
 
-use crate::ll::fuse_ioctl::{ioctl_open_backing, ioctl_close_backing};
+use crate::ll::fuse_ioctl::{ioctl_open_backing};
 use crate::notify::NotificationKind;
 use crate::channel::Channel;
 
@@ -25,8 +24,8 @@ use crate::channel::Channel;
 /// FUSE_DEV_IOC_BACKING_CLOSE call.  It holds a reference to a backing sender to allow it to
 /// make that call.
 pub struct BackingId {
-    /// The original file descriptor of the Backing File
-    fd: u32,
+    /// The original file descriptor of the Backing File. Unused.
+    _fd: u32,
     /// The notification queue used to alert the kernel after the Backing is no longer needed.
     queue: Sender<NotificationKind>,
     /// The backing_id field passed to and from the kernel
@@ -46,12 +45,14 @@ impl Drop for BackingId {
     }
 }
 impl BackingId {
+    /// Send a message to the kernel that this Backing id is no longer needed.
     pub fn close(&mut self) {
         if self.id > 0 {
             let _ = self.queue.send(NotificationKind::CloseBacking(self.id)).unwrap();
             self.id = 0;
         }
     }
+    /// Whether the `close()` message has been sent for this Backing id.
     pub fn is_open(&self) -> bool {
         self.id > 0
     }
@@ -67,7 +68,7 @@ impl fmt::Debug for Box<dyn BackingOpener> {
     }
 }
 
-impl BackingOpener for crate::channel::Channel {
+impl BackingOpener for Channel {
     fn open_backing(&self, fd: u32) -> std::io::Result<u32> {
         ioctl_open_backing(self.raw_fd, fd)
     }
@@ -103,7 +104,7 @@ impl BackingHandler {
         let fd = file.as_raw_fd() as u32;
         let id = self.opener.open_backing(fd)?;
         Ok( BackingId {
-            fd,
+            _fd: fd,
             queue: self.queue.clone(),
             id,
         })
