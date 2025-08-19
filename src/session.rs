@@ -8,6 +8,7 @@
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use nix::unistd::geteuid;
+use core::panic;
 #[cfg(feature = "threaded")]
 use std::fmt;
 use std::io;
@@ -20,6 +21,7 @@ use std::sync::atomic::{
 use std::sync::{Arc, Mutex};
 #[cfg(feature = "threaded")]
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 /*
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
@@ -93,6 +95,7 @@ pub(crate) struct SessionMeta {
     #[cfg(feature = "abi-7-11")]
     /// Whether this session currently has notification support
     pub(crate) notify: AtomicBool,
+    pub(crate) heartbeat_interval: Duration,
 }
 
 /// The session data structure
@@ -130,91 +133,35 @@ where
         filesystem: AnyFS<L, S, A>,
         mountpoint: P,
         options: &[MountOption],
-    ) -> io::Result<Session<L, S, A>> {
-        let mountpoint = mountpoint.as_ref();
-        info!("Mounting {}", mountpoint.display());
-        // Create the channel for fuse messages
-        let (ch, mount) = if options.contains(&MountOption::AutoUnmount)
-            && !(options.contains(&MountOption::AllowRoot)
-                || options.contains(&MountOption::AllowOther))
-        {
-            // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
-            // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
-            // to handle the auto_unmount option
-            warn!(
-                "Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling"
-            );
-            let mut modified_options = options.to_vec();
-            modified_options.push(MountOption::AllowOther);
-            Mount::new(mountpoint, &modified_options)?
-        } else {
-            Mount::new(mountpoint, options)?
-        };
-        let allowed = if options.contains(&MountOption::AllowRoot) {
-            SessionACL::RootAndOwner
-        } else if options.contains(&MountOption::AllowOther) {
-            SessionACL::All
-        } else {
-            SessionACL::Owner
-        };
-        let mount = Some((mountpoint.to_owned(), mount));
-        Session::from_mount(filesystem, ch, allowed, mount)
+    ) -> io::Result<Self> {
+        let mut se = SessionBuilder::new();
+        se.set_filesystem(filesystem);
+        se.mount_path(mountpoint, options)?;
+        Ok(se.build())
     }
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, acl: SessionACL) -> io::Result<Self> {
         // Create the channel for fuse messages
-        let ch = Channel::new(fd.into());
-        Session::from_mount(filesystem, ch, acl, None)
-    }
-
-    /// Assemble a Session that has been mounted. Not recommended for regular users.
-    pub(crate) fn from_mount(
-        filesystem: AnyFS<L, S, A>,
-        ch: Channel,
-        allowed: SessionACL,
-        mount: Option<(PathBuf, Mount)>,
-    ) -> io::Result<Self> {
-        // Create the internal channel for queued notification events.
-        #[cfg(feature = "abi-7-11")]
-        let queues = Queues::new();
-        #[cfg(feature = "abi-7-11")]
-        // Pass the sender to the filesystem.
-        let notify = false; // to-do
-        let meta = SessionMeta {
-            allowed,
-            session_owner: geteuid().as_raw(),
-            proto_major: AtomicU32::new(0),
-            proto_minor: AtomicU32::new(0),
-            initialized: AtomicBool::new(false),
-            destroyed: AtomicBool::new(false),
-            #[cfg(feature = "abi-7-11")]
-            notify: AtomicBool::new(notify),
-        };
-        let worker = ch.fork()?;
-        Ok(Session {
-            filesystem,
-            ch_main: ch,
-            ch_side: worker,
-            #[cfg(feature = "abi-7-11")]
-            queues,
-            mount: Arc::new(Mutex::new(mount)),
-            meta,
-        })
+        let mut se = SessionBuilder::new();
+        se.set_filesystem(filesystem);
+        se.set_mount_from_fd(fd, acl)?;
+        Ok(se.build())
     }
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
     pub fn notifier(&self) -> Box<dyn NotificationSender> {
         // Legacy notification method
-        Box::new(self.ch_side.clone()) as  Box< dyn NotificationSender>
+        Box::new(self.ch_side.clone()) as  Box<dyn NotificationSender>
     }
 
     /// Returns an object that can be used to queue notifications for the Session to process
     #[cfg(feature = "abi-7-11")]
     pub fn get_notification_sender(&self) -> Sender<NotificationKind> {
         // Sync/Async notification method
+        self.meta.notify.store(true, Relaxed);
         self.queues.sender.clone()
     }
 
@@ -397,5 +344,144 @@ impl fmt::Debug for BackgroundSession {
         }*/
         builder.field("_mount", &self._mount);
         builder.finish()
+    }
+}
+
+pub struct SessionBuilder<L, S, A>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS,
+{
+    // TODO: if threaded, filesystem: Mutex<AnyFS<...>>
+    /// Filesystem operation implementations
+    pub(crate) filesystem: Option<AnyFS<L, S, A>>,
+    /// Main communication channel to the kernel fuse driver
+    pub(crate) ch_main: Option<Channel>,
+    /// Side communication channel to the kernel fuse driver
+    pub(crate) ch_side: Option<Channel>,
+    #[cfg(feature = "abi-7-11")]
+    /// Side communication with the filesystem.
+    pub(crate) queues: Queues,
+    /// Handle to the mount.  Dropping this unmounts.
+    pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
+    /// Describes the configurable state of the Session
+    pub(crate) meta: SessionMeta,
+}
+
+impl<L, S, A> SessionBuilder<L, S, A>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS,
+{
+    pub fn new() -> Self {
+        SessionBuilder {
+            filesystem: None,
+            ch_main: None,
+            ch_side: None,
+            #[cfg(feature = "abi-7-11")]
+            queues: Queues::new(),
+            mount: Arc::new(Mutex::new(None)),
+            meta: SessionMeta {
+                allowed: SessionACL::Owner,
+                session_owner: geteuid().as_raw(),
+                proto_major: AtomicU32::new(0),
+                proto_minor: AtomicU32::new(0),
+                initialized: AtomicBool::new(false),
+                destroyed: AtomicBool::new(false),
+                #[cfg(feature = "abi-7-11")]
+                notify: AtomicBool::new(false),
+                heartbeat_interval: Duration::from_secs(0),
+            }
+        }
+    }
+
+    pub fn mount_path<P: AsRef<Path>>(
+        &mut self,
+        mountpoint: P,
+        options: &[MountOption],
+    ) -> io::Result<()> {
+        let mountpoint = mountpoint.as_ref();
+        info!("Mounting {}", mountpoint.display());
+        // Create the channel for fuse messages
+        let (ch, mount) = if options.contains(&MountOption::AutoUnmount)
+            && !(options.contains(&MountOption::AllowRoot)
+                || options.contains(&MountOption::AllowOther))
+        {
+            // If AutoUnmount is requested, but not AllowRoot or AllowOther we enforce the ACL
+            // ourself and implicitly set AllowOther because fusermount needs allow_root or allow_other
+            // to handle the auto_unmount option
+            warn!(
+                "Given auto_unmount without allow_root or allow_other; adding allow_other, with userspace permission handling"
+            );
+            let mut modified_options = options.to_vec();
+            modified_options.push(MountOption::AllowOther);
+            Mount::new(mountpoint, &modified_options)?
+        } else {
+            Mount::new(mountpoint, options)?
+        };
+        let allowed = if options.contains(&MountOption::AllowRoot) {
+            SessionACL::RootAndOwner
+        } else if options.contains(&MountOption::AllowOther) {
+            SessionACL::All
+        } else {
+            SessionACL::Owner
+        };
+        self.set_ch(ch)?;
+        let mount = Some((mountpoint.to_owned(), mount));
+        let mut guard = self.mount.lock().unwrap();
+        *guard = mount;
+        self.meta.allowed = allowed;
+        Ok(())
+    }
+
+    pub fn set_filesystem(&mut self, fs: AnyFS<L, S, A>) {
+        self.filesystem = Some(fs);
+    }
+
+    pub fn set_heartbeat_interval(&mut self, interval: Duration) {
+        self.meta.heartbeat_interval = interval;
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    pub fn get_notification_sender(&mut self) -> Sender<NotificationKind> {
+        self.meta.notify.store(true, Relaxed);
+        // Sync/Async notification method
+        self.queues.sender.clone()
+    }
+
+    pub fn set_mount_from_fd(&mut self, fd: OwnedFd, acl: SessionACL) -> io::Result<()> {
+        let ch = Channel::new(fd.into());
+        self.set_ch(ch)?;
+        let mut guard = self.mount.lock().unwrap();
+        *guard = None;
+        self.meta.allowed = acl;
+        Ok(())
+    }
+
+    fn set_ch(&mut self, ch: Channel) -> io::Result<()> {
+        // Create the channel for fuse messages
+        self.ch_side = Some(ch.fork()?);
+        self.ch_main = Some(ch);
+        Ok(())
+    }
+
+    pub fn build(self) -> Session<L, S, A> {
+        if self.ch_main.is_none() || self.ch_side.is_none() {
+            panic!("No fuse channel! Did you forget to mount?");
+        }
+        if self.filesystem.is_none() {
+            panic!("No filesystem! Did you forget to set one?")
+        }
+        Session {
+            filesystem: self.filesystem.unwrap(),
+            ch_main: self.ch_main.unwrap(),
+            ch_side: self.ch_side.unwrap(),
+            mount: self.mount,
+            #[cfg(feature = "abi-7-11")]
+            queues: self.queues,
+            meta: self.meta,
+        }
     }
 }

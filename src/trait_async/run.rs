@@ -3,6 +3,7 @@ use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 use log::{debug, error, info, warn};
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 #[cfg(feature = "abi-7-11")]
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -238,23 +239,27 @@ where
     /// This variant executes sleep() to prevent busy loops.
     #[allow(unused)] // this function is reserved for future multithreaded implementations
     pub async fn do_heartbeats_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
-        info!("Starting heartbeat loop");
-        loop {
-            #[cfg(not(feature = "tokio"))]
-            std::thread::sleep(SYNC_SLEEP_INTERVAL);
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
-            // Do a heartbeat to let the Filesystem know that some time has passed.
-            let fs_status = match &se.filesystem {
-                AnyFS::Async(fs) => fs.heartbeat().await,
-                _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem"),
-            };
-            match fs_status {
-                FsStatus::Stopped => {
-                    break;
-                }
-                _ => {
-                    // TODO: handle other cases
+        if se.meta.heartbeat_interval.is_zero() {
+            error!("Cannot heartbeat with duration 0.")
+        } else {
+            info!("Starting heartbeat loop");
+            loop {
+                #[cfg(not(feature = "tokio"))]
+                std::thread::sleep(se.meta.heartbeat_interval);
+                #[cfg(feature = "tokio")]
+                tokio::time::sleep(se.meta.heartbeat_interval).await;
+                // Do a heartbeat to let the Filesystem know that some time has passed.
+                let fs_status = match &se.filesystem {
+                    AnyFS::Async(fs) => fs.heartbeat().await,
+                    _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem"),
+                };
+                match fs_status {
+                    FsStatus::Stopped => {
+                        break;
+                    }
+                    _ => {
+                        // TODO: handle other cases
+                    }
                 }
             }
         }
@@ -267,6 +272,7 @@ where
     pub async fn do_all_events_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
+        let mut t_since_last_heartbeat = Duration::ZERO;
         info!("Starting full task loop");
         loop {
             // Check for outgoing Notifications (non-blocking)
@@ -342,16 +348,23 @@ where
             #[cfg(feature = "tokio")]
             tokio::time::sleep(SYNC_SLEEP_INTERVAL).await;
             // Do a heartbeat to let the Filesystem know that some time has passed.
-            let fs_status = match &se.filesystem {
-                AnyFS::Async(fs) => fs.heartbeat().await,
-                _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem"),
-            };
-            match fs_status {
-                FsStatus::Stopped => {
-                    break;
-                }
-                _ => {
-                    // TODO: handle other cases
+            t_since_last_heartbeat += SYNC_SLEEP_INTERVAL;
+            if !se.meta.heartbeat_interval.is_zero() &&
+                t_since_last_heartbeat.gt(&se.meta.heartbeat_interval)
+            {
+                t_since_last_heartbeat = Duration::ZERO;
+                // Do a heartbeat to let the Filesystem know th
+                let fs_status = match &se.filesystem {
+                    AnyFS::Async(fs) => fs.heartbeat().await,
+                    _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem"),
+                };
+                match fs_status {
+                    FsStatus::Stopped => {
+                        break;
+                    }
+                    _ => {
+                        // TODO: handle other cases
+                    }
                 }
             }
         }

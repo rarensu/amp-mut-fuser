@@ -4,6 +4,7 @@ use log::{debug, error, info, warn};
 use std::io;
 #[cfg(feature = "abi-7-11")]
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
 
 use crate::FsStatus;
 use crate::any::AnyFS;
@@ -196,20 +197,24 @@ where
     /// This variant executes sleep() to prevent busy loops.
     #[allow(unused)] // this function is reserved for future multithreaded implementations
     pub fn do_heartbeats_sync(self: &mut Session<L, S, A>) -> io::Result<()> {
-        info!("Starting heartbeat loop");
-        loop {
-            std::thread::sleep(SYNC_SLEEP_INTERVAL);
-            // Do a heartbeat to let the Filesystem know that some time has passed.
-            let fs_status = match &mut self.filesystem {
-                AnyFS::Sync(fs) => fs.heartbeat(),
-                _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem"),
-            };
-            match fs_status {
-                FsStatus::Stopped => {
-                    break;
-                }
-                _ => {
-                    // TODO: handle other cases
+        if self.meta.heartbeat_interval.is_zero() {
+            error!("Cannot heartbeat with duration 0.")
+        } else {
+            info!("Starting heartbeat loop");
+            loop {
+                std::thread::sleep(self.meta.heartbeat_interval);
+                // Do a heartbeat to let the Filesystem know that some time has passed.
+                let fs_status = match &mut self.filesystem {
+                    AnyFS::Sync(fs) => fs.heartbeat(),
+                    _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem"),
+                };
+                match fs_status {
+                    FsStatus::Stopped => {
+                        break;
+                    }
+                    _ => {
+                        // TODO: handle other cases
+                    }
                 }
             }
         }
@@ -223,6 +228,7 @@ where
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
+        let mut t_since_last_heartbeat = Duration::ZERO;
         info!("Starting full task loop");
         loop {
             #[cfg(feature = "abi-7-11")]
@@ -279,18 +285,25 @@ where
             }
             // No events were found during this loop iteration.
             // Sleep to prevent a busy loop
+            
             std::thread::sleep(SYNC_SLEEP_INTERVAL);
-            // Do a heartbeat to let the Filesystem know that some time has passed.
-            let fs_status = match &mut self.filesystem {
-                AnyFS::Sync(fs) => fs.heartbeat(),
-                _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem"),
-            };
-            match fs_status {
-                FsStatus::Stopped => {
-                    break;
-                }
-                _ => {
-                    // TODO: handle other cases
+            t_since_last_heartbeat += SYNC_SLEEP_INTERVAL;
+            if !self.meta.heartbeat_interval.is_zero() &&
+                t_since_last_heartbeat.gt(&self.meta.heartbeat_interval)
+            {
+                    t_since_last_heartbeat = Duration::ZERO;
+                // Do a heartbeat to let the Filesystem know that some time has passed.
+                let fs_status = match &mut self.filesystem {
+                    AnyFS::Sync(fs) => fs.heartbeat(),
+                    _ => panic!("Attempted to run SyncFS method on non-SyncFS filesystem"),
+                };
+                match fs_status {
+                    FsStatus::Stopped => {
+                        break;
+                    }
+                    _ => {
+                        // TODO: handle other cases
+                    }
                 }
             }
         }

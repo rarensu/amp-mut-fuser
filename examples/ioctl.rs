@@ -245,7 +245,7 @@ fn main() {
 
     let fs = FiocFS::new();
     // fuser::mount2(fs, mountpoint, &options).unwrap();
-    let se = fuser::Session::new_mounted(fs.into(), mountpoint, &options)
+    let se = fuser::Session::new(fs.into(), mountpoint, &options)
         .expect("Failed to create Session");
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

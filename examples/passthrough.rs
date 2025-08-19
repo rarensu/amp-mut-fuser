@@ -12,7 +12,7 @@ use clap::{Arg, ArgAction, Command, crate_version};
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FileAttr, FileType, FsStatus, KernelConfig, MountOption,
-    Notification, Open, RequestMeta, consts, trait_async::Filesystem,
+    NotificationKind, Open, RequestMeta, consts, trait_async::Filesystem,
 };
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -289,13 +289,6 @@ impl Filesystem for PassthroughFs {
         Ok(config)
     }
 
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
-        log::info!("init_notification_sender");
-        *self.notification_sender.lock().unwrap() = Some(sender);
-        true
-    }
-
     // It is not generally safe to contact the kernel to obtain a backing id
     // while the kernel is waiting for a response to an open operation in progress.
     // Therefore, this example requests the backing id on lookup instead of on open.
@@ -466,7 +459,7 @@ fn main() {
     }
 
     let fs = PassthroughFs::new();
-    let session = fuser::Session::new_mounted(fs.into(), Path::new(mountpoint), &options)
+    let session = fuser::Session::new(fs.into(), Path::new(mountpoint), &options)
         .expect("Failed to create Session.");
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs.

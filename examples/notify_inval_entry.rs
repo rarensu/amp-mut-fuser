@@ -23,7 +23,7 @@ use clap::Parser;
 use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FUSE_ROOT_ID, FileAttr, FileType, Forget, FsStatus,
-    InvalEntry, MountOption, Notification, RequestMeta, trait_async::Filesystem,
+    InvalEntry, MountOption, NotificationKind, RequestMeta, trait_async::Filesystem,
 };
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -75,12 +75,6 @@ impl ClockFS {
 
 #[async_trait]
 impl Filesystem for ClockFS {
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
-        *self.notification_sender.lock().unwrap() = Some(sender);
-        true
-    }
-
     async fn heartbeat(&self) -> FsStatus {
         // log the reply, if there is one.
         if let Some(r) = self.notification_reply.lock().unwrap().take() {
@@ -267,7 +261,7 @@ fn main() {
         MountOption::RO,
         MountOption::FSName("clock_entry".to_string()),
     ];
-    let session = fuser::Session::new_mounted(fs.into(), &mount_point, &mount_options)
+    let session = fuser::Session::new(fs.into(), &mount_point, &mount_options)
         .expect("Failed to create FUSE session.");
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.

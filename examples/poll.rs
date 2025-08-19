@@ -357,13 +357,6 @@ impl Filesystem for FSelFS {
             Ok(0)
         }
     }
-
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
-        log::info!("init_poll_sender() called");
-        self.poll_handler.lock().unwrap().set_sender(sender);
-        true
-    }
 }
 
 fn main() {
@@ -389,7 +382,7 @@ fn main() {
     let mntpt = std::env::args()
         .nth(1)
         .expect("Expected mountpoint argument");
-    let session = fuser::Session::new_mounted(fs.into(), &mntpt, &options)
+    let session = fuser::Session::new(fs.into(), &mntpt, &options)
         .expect("Failed to create FUSE session.");
     println!("FUSE filesystem 'fsel_chan' mounted on {mntpt}. Press Ctrl-C to unmount.");
 

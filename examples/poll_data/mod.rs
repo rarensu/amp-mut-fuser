@@ -1,5 +1,5 @@
 use crossbeam_channel::{Receiver, Sender};
-use fuser::{Notification, Poll};
+use fuser::{NotificationKind, PollHandler};
 use std::collections::{HashMap, HashSet};
 use std::io;
 
@@ -85,7 +85,7 @@ impl PollData {
                         "PollData::register_poll_handle() sending initial event: ph={ph}, initial_events_to_send={initial_events_to_send:#x}"
                     );
                     let (tx, rx) = crossbeam_channel::bounded(1);
-                    let notification = Notification::Poll((
+                    let notification = NotificationKind::Poll((
                         Poll {
                             ph,
                             events: initial_events_to_send,
@@ -161,7 +161,7 @@ impl PollData {
                                 "PollData::mark_inode_ready() sending event: ino={ino}, ph={ph}, events_to_send={events_to_send:#x}"
                             );
                             let (tx, rx) = crossbeam_channel::bounded(1);
-                            let notification = Notification::Poll((
+                            let notification = NotificationKind::Poll((
                                 Poll {
                                     ph,
                                     events: events_to_send,
