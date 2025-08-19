@@ -15,7 +15,7 @@ use crate::notify::{Notification, Notifier};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{RecvError, TryRecvError};
 #[cfg(feature = "abi-7-11")]
-use crate::notify::NotificationHandler;
+use crate::notify::{NotificationHandler, NotificationKind};
 use crate::request::RequestHandler;
 use crate::session::{BUFFER_SIZE, SYNC_SLEEP_INTERVAL, Session};
 use crate::trait_async::Filesystem as AsyncFS;
@@ -133,7 +133,13 @@ where
         data: Vec<u8>,
     ) -> bool {
         // Parse data
-        match RequestHandler::new(se.ch_main.clone(), se.ch_side.clone(), se.ch_internal.clone(), data) {
+        match RequestHandler::new(
+            se.ch_main.clone(),
+            se.ch_side.clone(),
+            #[cfg(feature = "abi-7-11")]
+            se.queues.sender.clone(),
+            data
+        ) {
             // Request is valid
             Some(req) => {
                 debug!("Request {}", req.meta.unique);
@@ -160,22 +166,20 @@ where
     pub async fn do_notifications_async(
         se: Arc<Session<L, S, A>>
     ) -> io::Result<()> {
-        let sender = se.ch_side.clone();
         info!(
             "Starting notification loop on side channel with fd {}",
-            &sender.raw_fd
+            &se.ch_side.raw_fd
         );
-        let notifier = NotificationHandler::new(sender);
         loop {
             if se.meta.destroyed.load(Relaxed) {
                 break;
             } else if se.meta.notify.load(Relaxed) {
                 // Fetch one notification; recv() blocks until one is available
                 // TODO: switch to a receiver variant that awaits
-                match se.nr.recv() {
+                match se.queues.receiver.recv() {
                     Ok(notification) => {
                         // Process the notification; blocks until sent
-                        Session::handle_one_notification_async(&se, notification, &notifier)
+                        Session::handle_one_notification_async(&se, notification)
                             .await?
                     }
                     Err(RecvError) => {
@@ -200,25 +204,23 @@ where
     #[cfg(feature = "abi-7-11")]
     async fn handle_one_notification_async(
         se: &Session<L, S, A>,
-        notification: Notification,
-        notifier: &NotificationHandler,
+        notification: NotificationKind,
     ) -> io::Result<()> {
         debug!(
             "Notification {:?}",
             &notification.label()
         );
-        if let Notification::Stop = notification {
+        if let NotificationKind::Disable = notification {
             // Filesystem says no more notifications.
             info!("Disabling notifications.");
             se.meta.notify.store(false, Relaxed);
-            Ok(())
         } else {
+            let notifier = NotificationHandler::new(notification, se.ch_side.clone());
             #[cfg(not(feature = "tokio"))]
-            let res = notifier.notify(notification);
+            let res = notifier.dispatch();
             #[cfg(feature = "tokio")]
             let res = {
-                let notifier_copy = notifier.clone();
-                tokio::task::spawn_blocking(async move || notifier_copy.notify(notification))
+                tokio::task::spawn_blocking(async move || notifier.dispatch())
                     .await
                     .expect("unable to recover a background i/o thread")
                     .await
@@ -226,11 +228,10 @@ where
             if let Err(e) = res {
                 error!("Failed to send notification.");
                 // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-                Err(e)
-            } else {
-                Ok(())
+                return Err(e);
             }
         }
+        Ok(())
     }
 
     /// Process heartbeats in a single task.
@@ -266,19 +267,16 @@ where
     pub async fn do_all_events_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
         let mut buffer = vec![0; BUFFER_SIZE];
-        #[cfg(feature = "abi-7-11")]
-        let notifier = NotificationHandler::new(se.ch_side.clone());
         info!("Starting full task loop");
         loop {
             // Check for outgoing Notifications (non-blocking)
             #[cfg(feature = "abi-7-11")]
             if se.meta.notify.load(Relaxed) {
-                match se.nr.try_recv() {
+                match se.queues.receiver.try_recv() {
                     Ok(notification) => {
                         Session::handle_one_notification_async(
                             &se,
                             notification,
-                            &notifier,
                         )
                         .await?;
                         // skip checking for incoming FUSE requests,

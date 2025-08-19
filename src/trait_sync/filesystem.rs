@@ -14,10 +14,6 @@ use serde::de::value::F64Deserializer;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 */
-/*
-#[cfg(feature = "abi-7-11")]
-use crate::notify::Notification;
-*/
 #[cfg(feature = "abi-7-21")]
 use crate::reply::DirentPlusList;
 #[cfg(feature = "abi-7-11")]
@@ -50,13 +46,6 @@ pub trait Filesystem {
     /// The method should return `Ok(KernelConfig)` to accept the connection, or `Err(Errno)` to reject it.
     fn init(&mut self, req: RequestMeta, config: KernelConfig) -> Result<KernelConfig, Errno> {
         Ok(config)
-    }
-
-    /// Initializes the notification event sender for the filesystem.
-    /// The boolean indicates whether the filesystem supports it.
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
-        false // Default: not supported
     }
 
     /// Clean up filesystem.

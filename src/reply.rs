@@ -29,11 +29,11 @@ impl fmt::Debug for Box<dyn ReplySender> {
     }
 }
 
-/// Primary ReplySender implementation for sending data to a FuseChannel
-impl ReplySender for crate::channel::FuseChannel {
+/// Primary ReplySender implementation for sending data to a Channel
+impl ReplySender for crate::channel::Channel {
     /// Send data.
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-        crate::channel::FuseChannel::send(&self, data)
+        crate::channel::Channel::send(&self, data)
     }
 }
 

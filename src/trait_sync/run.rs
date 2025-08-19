@@ -14,7 +14,7 @@ use crate::notify::{Notification, Notifier};
 #[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{RecvError, TryRecvError};
 #[cfg(feature = "abi-7-11")]
-use crate::notify::NotificationHandler;
+use crate::notify::{NotificationHandler, NotificationKind};
 use crate::request::RequestHandler;
 use crate::session::{BUFFER_SIZE, SYNC_SLEEP_INTERVAL, Session};
 use crate::trait_async::Filesystem as AsyncFS;
@@ -108,7 +108,13 @@ where
 
     fn handle_one_request_sync(self: &mut Session<L, S, A>, data: Vec<u8>) -> bool {
         // Parse data
-        match RequestHandler::new(self.ch_main.clone(), self.ch_side.clone(), self.ch_internal.clone(), data) {
+        match RequestHandler::new(
+            self.ch_main.clone(),
+            self.ch_side.clone(),
+            #[cfg(feature = "abi-7-11")]
+            self.queues.sender.clone(),
+            data
+        ) {
             // Request is valid
             Some(req) => {
                 debug!("Request {}", req.meta.unique);
@@ -131,22 +137,19 @@ where
     /// Process notifications, blocking a single thread.
     #[cfg(feature = "abi-7-11")]
     #[allow(unused)] // this function is reserved for future multithreaded implementations
-    pub fn do_notifications_sync(self: &mut Session<L, S, A>, ch_idx: usize) -> io::Result<()> {
-        let sender = self.get_ch(ch_idx);
+    pub fn do_notifications_sync(self: &mut Session<L, S, A>) -> io::Result<()> {
         info!(
-            "Starting notification loop on channel {ch_idx} with fd {}",
-            &sender.raw_fd
+            "Starting notification loop on side channel with fd {}",
+            &self.ch_side.raw_fd
         );
-        let notifier = NotificationHandler::new(sender);
         loop {
             if self.meta.destroyed.load(Relaxed) {
                 break;
             } else if self.meta.notify.load(Relaxed) {
-                // Fetch one notification; recv() blocks until one is available
-                match self.nr.recv() {
+                // recv() blocks until a notification is available
+                match self.queues.receiver.recv() {
                     Ok(notification) => {
-                        // Process the notification; blocks until sent
-                        self.handle_one_notification_sync(notification, &notifier, ch_idx)?
+                        self.handle_one_notification_sync(notification)?;
                     }
                     Err(RecvError) => {
                         // Filesystem's Notification Sender disconnected.
@@ -167,26 +170,26 @@ where
     #[cfg(feature = "abi-7-11")]
     fn handle_one_notification_sync(
         self: &mut Session<L, S, A>,
-        notification: Notification,
-        notifier: &NotificationHandler,
-        ch_idx: usize,
+        notification: NotificationKind,
     ) -> io::Result<()> {
         debug!(
-            "Notification {:?} on channel {ch_idx}",
+            "Notification {:?}",
             &notification.label()
         );
-        if let Notification::Stop = notification {
+        if let NotificationKind::Disable = notification {
             // Filesystem says no more notifications.
             info!("Disabling notifications.");
             self.meta.notify.store(false, Relaxed);
-            Ok(())
-        } else if let Err(e) = notifier.notify(notification) {
-            error!("Failed to send notification.");
-            // TODO. Decide if error is fatal. ENODEV might mean unmounted.
-            Err(e)
         } else {
-            Ok(())
+            // Process the notification; blocks until sent
+            let notifier = NotificationHandler::new(notification, self.ch_side.clone());
+            if let Err(e) = notifier.dispatch() {
+                error!("Failed to send notification: {e:?}");
+                // TODO. Decide if error is fatal. ENODEV might mean unmounted.
+                return Err(e);
+            }
         }
+        Ok(())
     }
 
     /// Process heartbeats, blocking a single thread.
@@ -220,23 +223,19 @@ where
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
-
-        #[cfg(feature = "abi-7-11")]
-        let notifier = NotificationHandler::new(self.get_ch(ch_idx));
-
         info!("Starting full task loop");
         loop {
             #[cfg(feature = "abi-7-11")]
             if self.meta.notify.load(Relaxed) {
                 // Check for outgoing notifications
                 // try_recv() returns immediately
-                match self.nr.try_recv() {
+                match self.queues.receiver.try_recv() {
                     Ok(notification) => {
                         debug!(
                             "Notification {:?}",
                             &notification.label()
                         );
-                        self.handle_one_notification_sync(notification, &notifier, ch_idx)?;
+                        self.handle_one_notification_sync(notification)?;
                         // skip checking for incoming FUSE requests,
                         // to prioritize checking for additional outgoing messages
                         continue;

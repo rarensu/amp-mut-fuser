@@ -49,14 +49,6 @@ pub trait Filesystem: Send + Sync {
         Ok(config)
     }
 
-    /// Initializes the notification event sender for the filesystem.
-    /// The boolean indicates whether the filesystem supports it.
-    /// Note: this method is not async!
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
-        false // Default: not supported
-    }
-
     /// Clean up filesystem.
     /// Called on filesystem exit.
     async fn destroy(&self) {}

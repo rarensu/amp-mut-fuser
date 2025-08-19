@@ -17,7 +17,6 @@ mod request;
 mod session;
 #[cfg(feature = "abi-7-40")]
 mod passthrough;
-mod queue;
 
 /// Asynchronous Filesystem trait
 pub mod trait_async;
@@ -63,7 +62,7 @@ pub use notify::Store;
 pub use notify::{InvalEntry, InvalInode};
 */
 #[cfg(feature = "abi-7-11")]
-pub use notify::{NotificationHandler, PollHandler};
+pub use notify::{Notifier, PollHandler};
 #[cfg(feature = "abi-7-11")]
 pub use trait_legacy::ReplyIoctl;
 #[cfg(feature = "abi-7-11")]

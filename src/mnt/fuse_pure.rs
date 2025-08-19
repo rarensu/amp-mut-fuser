@@ -6,7 +6,7 @@
 #![warn(missing_debug_implementations)]
 #![allow(missing_docs)]
 
-use crate::channel::FuseChannel;
+use crate::channel::Channel;
 
 use super::is_mounted;
 use super::mount_options::{MountOption, option_to_string};
@@ -32,13 +32,13 @@ const FUSERMOUNT_COMM_ENV: &str = "_FUSE_COMMFD";
 pub struct Mount {
     mountpoint: CString,
     auto_unmount_socket: Option<UnixStream>,
-    fuse_device: FuseChannel,
+    fuse_device: Channel,
 }
 impl Mount {
-    pub fn new(mountpoint: &Path, options: &[MountOption]) -> io::Result<(FuseChannel, Mount)> {
+    pub fn new(mountpoint: &Path, options: &[MountOption]) -> io::Result<(Channel, Mount)> {
         let mountpoint = mountpoint.canonicalize()?;
         let (file, sock) = fuse_mount_pure(mountpoint.as_os_str(), options)?;
-        let channel = FuseChannel::new(file);
+        let channel = Channel::new(file);
         Ok((
             channel.clone(),
             Mount {

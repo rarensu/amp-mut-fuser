@@ -5,19 +5,20 @@
 //!
 //! The handler ensures the private data remains owned while the request is being processed.
 
-use futures::future::Fuse;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use std::convert::Into;
 
-use crate::channel::FuseChannel;
-use crate::queue::{InternalChannel, SessionHandler};
+use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
 use crate::reply::ReplyHandler;
 #[cfg(feature = "abi-7-40")]
 use crate::passthrough::BackingHandler;
 #[cfg(feature = "abi-7-11")]
-use crate::notify::NotificationHandler;
+use crate::notify::{NotificationKind};
+#[cfg(not(feature = "abi-7-11"))]
+type NotificationKind = ();
+use crossbeam_channel::Sender;
 
 /// Request data structure
 #[derive(Debug)]
@@ -29,11 +30,12 @@ pub(crate) struct RequestHandler {
     /// Closure-like object to guarantee a response is sent
     pub replyhandler: ReplyHandler,
     /// A copy of the main channel
-    pub ch_main: FuseChannel,
+    pub ch_main: Channel,
     /// A copy of the side channel
-    pub ch_side: FuseChannel,
+    pub ch_side: Channel,
+    #[cfg(feature = "abi-7-11")]
     /// A copy of the internal channel
-    pub ch_internal: InternalChannel,
+    pub queue: Sender<NotificationKind>,
 }
 
 /// Request metadata structure
@@ -61,11 +63,12 @@ pub struct Forget {
 }
 
 impl RequestHandler {
-    /// Create a new request from the given data, and a FuseChannel to receive the reply
+    /// Create a new request from the given data, and a Channel to receive the reply
     pub(crate) fn new(
-        ch_main: FuseChannel,
-        ch_side: FuseChannel,
-        ch_internal: InternalChannel,
+        ch_main: Channel,
+        ch_side: Channel,
+        #[cfg(feature = "abi-7-11")]
+        queue: Sender<NotificationKind>,
         data: Vec<u8>
     ) -> Option<RequestHandler> {
         let request = match AnyRequest::try_from(data) {
@@ -88,7 +91,8 @@ impl RequestHandler {
             replyhandler,
             ch_main,
             ch_side,
-            ch_internal,
+            #[cfg(feature = "abi-7-11")]
+            queue,
         })
     }
 }

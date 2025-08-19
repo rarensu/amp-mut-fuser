@@ -6,6 +6,8 @@ use crate::ll::{self, Operation, Request as AnyRequest};
 use crate::session::{SessionACL, SessionMeta};
 use crate::request::{RequestHandler, RequestMeta};
 use crate::{ll::Errno, KernelConfig,};
+#[cfg(feature = "abi-7-40")]
+use crate::passthrough::BackingHandler;
 
 #[cfg(feature = "abi-7-24")]
 use super::ReplyLseek;
@@ -20,6 +22,7 @@ use super::{
 use super::{PollHandler, ReplyIoctl, ReplyPoll};
 #[cfg(feature = "abi-7-21")]
 use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
+
 
 #[derive(Debug)]
 /// Userspace metadata for a given request
@@ -324,7 +327,9 @@ impl RequestHandler {
             }
             Operation::Open(x) => {
                 #[cfg(feature = "abi-7-40")]
-                let callback = OpenHandler::new(self.replyhandler, self.backinghandler);
+                let backinghandler = BackingHandler::new(self.ch_side, self.queue);
+                #[cfg(feature = "abi-7-40")]
+                let callback = OpenHandler::new(self.replyhandler, backinghandler);
                 #[cfg(not(feature = "abi-7-40"))]
                 let callback = OpenHandler::new(self.replyhandler);
                 let reply = ReplyOpen::new(Box::new(callback));
@@ -391,7 +396,9 @@ impl RequestHandler {
             }
             Operation::OpenDir(x) => {
                 #[cfg(feature = "abi-7-40")]
-                let callback = OpenHandler::new(self.replyhandler, self.backinghandler);
+                let backinghandler = BackingHandler::new(self.ch_side, self.queue);
+                #[cfg(feature = "abi-7-40")]
+                let callback = OpenHandler::new(self.replyhandler, backinghandler);
                 #[cfg(not(feature = "abi-7-40"))]
                 let callback = OpenHandler::new(self.replyhandler);                
                 let reply = ReplyOpen::new(Box::new(callback));
@@ -582,7 +589,7 @@ impl RequestHandler {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     PollHandler::new(
-                        self.notificationhandler,
+                        self.queue,
                         x.kernel_handle(),
                     ),
                     x.events(),

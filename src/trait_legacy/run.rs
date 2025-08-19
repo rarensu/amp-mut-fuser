@@ -32,7 +32,8 @@ where
                 Ok(data) => match RequestHandler::new(
                     self.ch_main.clone(),
                     self.ch_side.clone(),
-                    self.ch_internal.clone(),
+                    #[cfg(feature = "abi-7-11")]
+                    self.queues.sender.clone(),
                     data
                 ) {
                     // Dispatch request

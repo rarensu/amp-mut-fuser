@@ -5,6 +5,8 @@ use std::sync::{Arc, Weak};
 use crossbeam_channel::{Sender, Receiver, bounded};
 
 use crate::ll::fuse_ioctl::{ioctl_open_backing, ioctl_close_backing};
+use crate::notify::NotificationKind;
+use crate::channel::Channel;
 
 /// A reference to a previously opened fd intended to be used for passthrough
 ///
@@ -23,8 +25,10 @@ use crate::ll::fuse_ioctl::{ioctl_open_backing, ioctl_close_backing};
 /// FUSE_DEV_IOC_BACKING_CLOSE call.  It holds a reference to a backing sender to allow it to
 /// make that call.
 pub struct BackingId {
+    /// The original file descriptor of the Backing File
     fd: u32,
-    queuer: Box<dyn BackingQueuer>,
+    /// The notification queue used to alert the kernel after the Backing is no longer needed.
+    queue: Sender<NotificationKind>,
     /// The backing_id field passed to and from the kernel
     pub id: u32,
 }
@@ -36,85 +40,55 @@ impl fmt::Debug for BackingId {
 impl Drop for BackingId {
     fn drop(&mut self) {
         if self.id > 0 {
-            let _ = self.queuer.close_backing(id);
+            let _ = self.queue.send(NotificationKind::CloseBacking(self.id)).unwrap();
             self.id = 0;
         }
     }
 }
 impl BackingId {
-    fn close(&mut self) -> io::Result<u32> {
-        match self.sender.close_backing(self.id){
-            Ok(code) => {
-                self.id = 0;
-                Ok(code)
-            }
-            Err(e) => Err(e)
+    pub fn close(&mut self) {
+        if self.id > 0 {
+            let _ = self.queue.send(NotificationKind::CloseBacking(self.id)).unwrap();
+            self.id = 0;
         }
+    }
+    pub fn is_open(&self) -> bool {
+        self.id > 0
     }
 }
 
-pub trait BackingSender: Send + Sync + Unpin + 'static  {
+pub trait BackingOpener: Send + Sync + Unpin + 'static  {
     fn open_backing(&self, fd: u32) -> io::Result<u32>;
-    fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 
-impl fmt::Debug for Box<dyn BackingSender> {
+impl fmt::Debug for Box<dyn BackingOpener> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         write!(f, "Box<BackingSender>")
     }
 }
 
-impl BackingSender for crate::channel::Channel {
+impl BackingOpener for crate::channel::Channel {
     fn open_backing(&self, fd: u32) -> std::io::Result<u32> {
         ioctl_open_backing(self.raw_fd, fd)
-    }
-    fn close_backing(&self, id: u32) -> std::io::Result<u32> {
-        ioctl_close_backing(self.raw_fd, id)
-    }
-}
-
-pub trait BackingQueuer: Send + Sync + Unpin + 'static  {
-    fn open_backing(&self, fd: u32) -> Receiver<io::Result<BackingId>>;
-    fn close_backing(&self, id: u32) -> Receiver<io::Result<u32>>;
-}
-
-impl fmt::Debug for Box<dyn BackingQueuer> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Box<BackingQueuer>")
-    }
-}
-
-impl BackingQueuer for crate::queue::InternalChannel {
-    fn open_backing(&self, fd: u32) -> Receiver<std::io::Result<BackingId>> {
-        let (oss, osr) = bounded(1);
-        self.open_backing_out.send((fd, oss));
-        osr
-    }
-    fn close_backing(&self, id: u32) -> Receiver<std::io::Result<u32>> {
-        let (oss, osr) = bounded(1);
-        self.open_backing_out.send((id, oss));
-        osr
     }
 }
 
 #[derive(Debug)]
 /// `BackingHandler` needs documentation
 pub struct BackingHandler {
-    /// Closure to call for requesting a backing id
-    pub sender: Box<dyn BackingSender>,
-    /// Closure to call for queuing a request for a backing id
-    pub queuer: Box<dyn BackingQueuer>,
-
+    /// Mechanism to request a backing id
+    pub opener: Box<dyn BackingOpener>,
+    /// Mechanism to queue a request to close a backing id
+    pub queue: Sender<NotificationKind>,
 }
 
 impl BackingHandler {
     /// Create a reply handler for a specific request identifier
-    pub fn new<S: BackingSender, Q: BackingQueuer>(sender: S, queuer: Q) -> BackingHandler {
-        let sender = Box::new(sender);
-        let queuer = Box::new(queuer);
+    pub fn new<S: BackingOpener>(opener: S, queue: Sender<NotificationKind>) -> BackingHandler {
+        let opener = Box::new(opener);
         BackingHandler {
-            sender,
-            queuer
+            opener,
+            queue
         }
     }
 }
@@ -122,29 +96,16 @@ impl BackingHandler {
 impl BackingHandler {
     pub fn open_backing<F: AsRawFd>(&self, file: F) -> std::io::Result<BackingId> {
         let fd = file.as_raw_fd() as u32;
-        self.sender.open_backing(fd)?;
+        let id = self.opener.open_backing(fd)?;
         Ok( BackingId {
             fd,
-            queuer: Box::new(self.queuer.clone()) as Box<dyn BackingQueuer>,
+            queue: self.queue.clone(),
             id,
         })
     }
-    pub fn close_backing(&self, mut backing: BackingId) -> std::io::Result<u32> {
-        match self.sender.close_backing(backing.id){
-            Ok(code) => {
-                backing.id = 0;
-                Ok(code)
-            }
-            Err(e) => Err(e)
-        }    
-    }
-    pub fn queue_open_backing<F: AsRawFd>(&self, file: F) -> Receiver<io::Result<BackingId>> {
-        let fd = file.as_raw_fd() as u32;
-        self.queuer.open_backing(fd)
-    }
-    pub fn queue_close_backing(&self, mut backing: BackingId) -> Receiver<std::io::Result<u32>> {
+    pub fn close_backing(&self, mut backing: BackingId) {
         let id = backing.id;
         backing.id = 0;
-        self.queuer.close_backing(id)   
+        self.queue.send(NotificationKind::CloseBacking(id)).unwrap()   
     }
 }

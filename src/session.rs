@@ -25,11 +25,13 @@ use std::thread::{self, JoinHandle};
 use crate::notify::{Notification, Notifier};
 */
 use crate::{AnyFS, MountOption};
-use crate::{channel::FuseChannel, mnt::Mount};
-use crate::queue::InternalChannel;
+use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::notify::NotificationHandler;
-//use crossbeam_channel::{Receiver, Sender};
+use crate::notify::Queues;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::{NotificationHandler, Notifier, NotificationKind, NotificationSender};
+#[cfg(feature = "abi-7-11")]
+use crossbeam_channel::{Receiver, Sender};
 
 use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
@@ -64,7 +66,7 @@ pub struct Session<FS: Filesystem> {
     /// Filesystem operation implementations
     pub(crate) filesystem: FS,
     /// Communication channel to the kernel driver
-    pub(crate) ch: FuseChannel,
+    pub(crate) ch: Channel,
     /// Handle to the mount.  Dropping this unmounts.
     pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Session metadata
@@ -105,11 +107,12 @@ where
     /// Filesystem operation implementations
     pub(crate) filesystem: AnyFS<L, S, A>,
     /// Main communication channel to the kernel fuse driver
-    pub(crate) ch_main: FuseChannel,
+    pub(crate) ch_main: Channel,
     /// Side communication channel to the kernel fuse driver
-    pub(crate) ch_side: FuseChannel,
-    /// Communication with  the filesystem.
-    pub(crate) ch_internal: InternalChannel,
+    pub(crate) ch_side: Channel,
+    #[cfg(feature = "abi-7-11")]
+    /// Side communication with the filesystem.
+    pub(crate) queues: Queues,
     /// Handle to the mount.  Dropping this unmounts.
     pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Describes the configurable state of the Session
@@ -162,27 +165,23 @@ where
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: AnyFS<L, S, A>, fd: OwnedFd, acl: SessionACL) -> io::Result<Self> {
         // Create the channel for fuse messages
-        let ch = FuseChannel::new(fd.into());
+        let ch = Channel::new(fd.into());
         Session::from_mount(filesystem, ch, acl, None)
     }
 
     /// Assemble a Session that has been mounted. Not recommended for regular users.
-    #[allow(unused_mut)] // The filesystem mutates, but only under some combinations of features
     pub(crate) fn from_mount(
-        mut filesystem: AnyFS<L, S, A>,
-        ch: FuseChannel,
+        filesystem: AnyFS<L, S, A>,
+        ch: Channel,
         allowed: SessionACL,
         mount: Option<(PathBuf, Mount)>,
     ) -> io::Result<Self> {
         // Create the internal channel for queued notification events.
-        let queuer = InternalChannel::new();
+        #[cfg(feature = "abi-7-11")]
+        let queues = Queues::new();
         #[cfg(feature = "abi-7-11")]
         // Pass the sender to the filesystem.
-        let notify = match &mut filesystem {
-            AnyFS::Legacy(lfs) => lfs.init_notification_sender(ns.clone()),
-            AnyFS::Sync(sfs) => sfs.init_notification_sender(ns.clone()),
-            AnyFS::Async(afs) => afs.init_notification_sender(ns.clone()),
-        };
+        let notify = false; // to-do
         let meta = SessionMeta {
             allowed,
             session_owner: geteuid().as_raw(),
@@ -198,7 +197,8 @@ where
             filesystem,
             ch_main: ch,
             ch_side: worker,
-            ch_internal: queuer,
+            #[cfg(feature = "abi-7-11")]
+            queues,
             mount: Arc::new(Mutex::new(mount)),
             meta,
         })
@@ -206,16 +206,16 @@ where
 
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> NotificationHandler {
+    pub fn notifier(&self) -> Box<dyn NotificationSender> {
         // Legacy notification method
-        NotificationHandler::new(self.chs[0].clone())
+        Box::new(self.ch_side.clone()) as  Box< dyn NotificationSender>
     }
 
     /// Returns an object that can be used to queue notifications for the Session to process
     #[cfg(feature = "abi-7-11")]
-    pub fn get_notification_sender(&self) -> Sender<Notification> {
+    pub fn get_notification_sender(&self) -> Sender<NotificationKind> {
         // Sync/Async notification method
-        self.ns.clone()
+        self.queues.sender.clone()
     }
 
     /// Unmount the filesystem
@@ -324,8 +324,8 @@ pub struct BackgroundSession {
     /// Thread guard of the main session loop
     pub guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
-    #[cfg(feature = "abi-7-11")]
-    sender: FuseChannel,
+    /*#[cfg(feature = "abi-7-11")]
+    sender: Channel,*/
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }
@@ -341,8 +341,8 @@ impl BackgroundSession {
         S: SyncFS + Send + Sync + 'static,
         A: AsyncFS + Send + Sync + 'static,
     {
-        #[cfg(feature = "abi-7-11")]
-        let sender = se.chs[0].clone();
+        /*#[cfg(feature = "abi-7-11")]
+        let sender = se.chs[0].clone();*/
         // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         // The main session (se) is moved into this thread.
@@ -352,8 +352,8 @@ impl BackgroundSession {
         });
         Ok(BackgroundSession {
             guard,
-            #[cfg(feature = "abi-7-11")]
-            sender,
+            /*#[cfg(feature = "abi-7-11")]
+            sender,*/
             _mount: mount,
         })
     }
@@ -361,8 +361,8 @@ impl BackgroundSession {
     pub fn join(self) {
         let Self {
             guard,
-            #[cfg(feature = "abi-7-11")]
-            sender: _,
+            /*#[cfg(feature = "abi-7-11")]
+            sender: _,*/
             _mount,
         } = self;
         // Unmount the filesystem
@@ -375,11 +375,13 @@ impl BackgroundSession {
         info!("Session loop end with result {res:?}.");
     }
 
+    /*
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> NotificationHandler {
-        NotificationHandler::new(self.sender.clone())
+    pub fn notifier(&self) -> Notifier {
+        Notifier::new(self.sender.clone())
     }
+    */
 }
 
 // replace with #[derive(Debug)] if Debug ever gets implemented for
@@ -389,10 +391,10 @@ impl fmt::Debug for BackgroundSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         let mut builder = f.debug_struct("BackgroundSession");
         builder.field("main_loop_guard", &self.guard);
-        #[cfg(feature = "abi-7-11")]
+        /*#[cfg(feature = "abi-7-11")]
         {
             builder.field("sender", &self.sender);
-        }
+        }*/
         builder.field("_mount", &self._mount);
         builder.finish()
     }
