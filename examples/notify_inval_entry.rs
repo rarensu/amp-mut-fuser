@@ -20,10 +20,9 @@ use std::{
 
 use async_trait::async_trait;
 use clap::Parser;
-use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FUSE_ROOT_ID, FileAttr, FileType, Forget, FsStatus,
-    InvalEntry, MountOption, NotificationKind, RequestMeta, trait_async::Filesystem,
+    MountOption, Notifier, RequestMeta, trait_async::Filesystem,
 };
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -34,9 +33,7 @@ struct ClockFS {
     opts: Options,
     timeout: Duration,
     update_interval: Duration,
-    notification_sender: Mutex<Option<Sender<Notification>>>,
-    // the reply is just for some extra logging
-    notification_reply: Mutex<Option<Receiver<std::io::Result<()>>>>,
+    notifier: Notifier,
 }
 
 impl ClockFS {
@@ -76,15 +73,6 @@ impl ClockFS {
 #[async_trait]
 impl Filesystem for ClockFS {
     async fn heartbeat(&self) -> FsStatus {
-        // log the reply, if there is one.
-        if let Some(r) = self.notification_reply.lock().unwrap().take() {
-            if let Ok(result) = r.try_recv() {
-                match result {
-                    Ok(()) => debug!("Received OK reply"),
-                    Err(e) => warn!("Received error reply: {e}"),
-                }
-            }
-        }
         let now = SystemTime::now();
         if now
             .duration_since(*self.last_update.lock().unwrap())
@@ -103,36 +91,14 @@ impl Filesystem for ClockFS {
             }
             // Notifications, as appropriate
             if !self.opts.no_notify && self.lookup_cnt.load(Ordering::SeqCst) != 0 {
-                if let Some(sender) = self.notification_sender.lock().unwrap().as_ref().cloned() {
-                    if self.opts.only_expire {
-                        // TODO: implement expiration method
-                    } else {
-                        // invalidate old_filename
-                        let notification = Notification::from(InvalEntry {
-                            parent: FUSE_ROOT_ID,
-                            name: old_filename.into_encoded_bytes().into(),
-                        });
-                        if let Err(e) = sender.send(notification) {
-                            warn!("Warning: failed to send InvalEntry notification: {e}");
-                        } else {
-                            info!("Sent InvalEntry notification (old filename).");
-                        }
-                        // invalidate new filename
-                        let (s, r) = crossbeam_channel::bounded(1);
-                        let notification = Notification::InvalEntry((
-                            InvalEntry {
-                                parent: FUSE_ROOT_ID,
-                                name: self.get_filename().into_encoded_bytes().into(),
-                            },
-                            Some(s),
-                        ));
-                        if let Err(e) = sender.send(notification) {
-                            warn!("Warning: failed to send InvalEntry notification: {e}");
-                        } else {
-                            info!("Sent InvalEntry notification (new filename).");
-                            *self.notification_reply.lock().unwrap() = Some(r);
-                        }
-                    }
+                if self.opts.only_expire {
+                    // TODO: implement expiration method
+                } else {
+                    // invalidate old_filename
+                    self.notifier.inval_entry(FUSE_ROOT_ID, old_filename.into_encoded_bytes().into());
+                    // invalidate new filename
+                    self.notifier.inval_entry(FUSE_ROOT_ID, self.get_filename().into_encoded_bytes().into());
+                    info!("Sent two InvalEntry notifications (old filename, new filename).");
                 }
             }
         }
@@ -247,6 +213,15 @@ fn main() {
     let mount_point = OsString::from(&opts.mount_point);
     let timeout = Duration::from_secs_f32(opts.timeout);
     let update_interval = Duration::from_secs_f32(opts.update_interval);
+    let mount_options = vec![
+        MountOption::RO,
+        MountOption::FSName("clock_entry".to_string()),
+    ];
+    let mut sessionbuilder = fuser::SessionBuilder::new();
+    sessionbuilder.mount_path(mount_point, &mount_options)
+            .expect("Failed to mount FUSE session.");
+    sessionbuilder.set_heartbeat_interval(update_interval);
+    let notifier = sessionbuilder.get_notification_sender();
     let fs = ClockFS {
         file_name: Mutex::new(now_filename()),
         lookup_cnt: AtomicU64::new(0),
@@ -254,16 +229,10 @@ fn main() {
         opts,
         timeout,
         update_interval,
-        notification_sender: Mutex::new(None),
-        notification_reply: Mutex::new(None),
+        notifier,
     };
-    let mount_options = vec![
-        MountOption::RO,
-        MountOption::FSName("clock_entry".to_string()),
-    ];
-    let session = fuser::Session::new(fs.into(), &mount_point, &mount_options)
-        .expect("Failed to create FUSE session.");
-
+    sessionbuilder.set_filesystem(fs.into());
+    let session = sessionbuilder.build();
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
