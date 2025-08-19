@@ -363,11 +363,15 @@ fn main() {
     let options = vec![MountOption::RO, MountOption::FSName("fsel".to_string())];
     env_logger::init();
     log::info!("Starting fsel example with poll support.");
-
+    // Get notifier from SessionBuilder
+    let sessionbuilder = fuser::SessionBuilder::new();
+    sessionbuilder.set_heartbeat_interval(Duration::from_millis(100));
+    let notifier = sessionbuilder.get_notification_sender();
+    // Assemble Filesystem
     let data = FSelData {
         bytecnt: [0; NUMFILES as usize],
     };
-    let poll_handler = PollData::new(None);
+    let poll_handler = PollData::new(Some(notifier));
     let producer = ProducerData {
         next_time: std::time::SystemTime::now() + Duration::from_millis(1000),
         next_idx: 0,
@@ -379,14 +383,17 @@ fn main() {
         producer: Mutex::new(producer),
         open_mask: AtomicU16::new(0),
     };
+    // Finish assembling Session
+    sessionbuilder.set_filesystem(fs.into());
     let mntpt = std::env::args()
         .nth(1)
         .expect("Expected mountpoint argument");
-    let session = fuser::Session::new(fs.into(), &mntpt, &options)
-        .expect("Failed to create FUSE session.");
+    sessionbuilder.mount_path(&mntpt, &options)
+        .expect("Failed to mount FUSE session.");
+    let session = sessionbuilder.build();
     println!("FUSE filesystem 'fsel_chan' mounted on {mntpt}. Press Ctrl-C to unmount.");
 
-    // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
+    // Drive the async session loop with a Tokio runtime.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -428,7 +435,6 @@ mod test {
     fn test_fs_poll_registers_handle_no_initial_event() {
         log::info!("test_fs_poll_registers_handle_no_initial_event: starting");
         let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
-        assert!(fs.init_notification_sender(tx_to_fs)); // Link FS's PollData to our test sender
 
         let req = RequestMeta {
             unique: 0,
@@ -499,7 +505,6 @@ mod test {
     fn test_fs_poll_registers_handle_with_initial_event() {
         log::info!("test_fs_poll_registers_handle_with_initial_event: starting");
         let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
-        assert!(fs.init_notification_sender(tx_to_fs));
 
         let req = RequestMeta {
             unique: 0,
@@ -561,7 +566,6 @@ mod test {
         log::info!("test_producer_marks_inode_ready_triggers_event: starting");
         // For this test, we need an Arc<Mutex<FSelFS>> because producer runs in a separate thread.
         let (mut fs_instance, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
-        assert!(fs_instance.init_notification_sender(tx_to_fs));
 
         let idx_to_test: u8 = 2;
         let ino_to_test = FSelData::idx_to_ino(idx_to_test);

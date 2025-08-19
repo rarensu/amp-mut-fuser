@@ -1,5 +1,5 @@
 use crossbeam_channel::{Receiver, Sender};
-use fuser::{NotificationKind, PollHandler};
+use fuser::{Notifier, PollHandler};
 use std::collections::{HashMap, HashSet};
 use std::io;
 
@@ -34,7 +34,7 @@ pub struct PollData {
 
 impl PollData {
     /// Creates a new `PollData` instance, optionally with an initial sender.
-    pub fn new(sender: Option<Sender<Notification>>) -> Self {
+    pub fn new(sender: Option<Notifier>) -> Self {
         PollData {
             ready_events_sender: sender,
             registered_poll_handles: HashMap::new(),
@@ -68,40 +68,24 @@ impl PollData {
     /// * `Option<u32>`: An initial event mask if the file is already ready, otherwise `None`.
     pub fn register_poll_handle(
         &mut self,
-        ph: u64,
+        ph: PollHandler,
         ino: u64,
         events_requested: u32,
     ) -> Option<u32> {
         self.registered_poll_handles
-            .insert(ph, (ino, events_requested));
+            .insert(ph.handle, (ino, events_requested, ph));
         self.inode_poll_handles.entry(ino).or_default().insert(ph);
 
         // Check if the file is already ready for any of the requested events.
         if let Some(current_readiness_mask) = self.ready_inodes.get(&ino) {
             let initial_events_to_send = events_requested & *current_readiness_mask;
             if initial_events_to_send != 0 {
-                if let Some(sender) = &self.ready_events_sender {
-                    log::debug!(
-                        "PollData::register_poll_handle() sending initial event: ph={ph}, initial_events_to_send={initial_events_to_send:#x}"
-                    );
-                    let (tx, rx) = crossbeam_channel::bounded(1);
-                    let notification = NotificationKind::Poll((
-                        Poll {
-                            ph,
-                            events: initial_events_to_send,
-                        },
-                        Some(tx),
-                    ));
-                    if sender.send(notification).is_err() {
-                        log::warn!(
-                            "PollData: Failed to send initial poll readiness event for ph {ph}. Channel might be disconnected."
-                        );
-                    } else {
-                        self.pending_replies.insert(ph, rx);
-                    }
-                }
+                log::debug!(
+                    "PollData::register_poll_handle() sending initial event: ph={ph}, initial_events_to_send={initial_events_to_send:#x}"
+                );
+                ph.notify();
                 // Unregister the poll handle after sending the notification
-                self.unregister_poll_handle(ph);
+                self.unregister_poll_handle(ph.handle);
                 // Return the subset of requested events that are currently ready.
                 return Some(initial_events_to_send);
             }
