@@ -16,8 +16,7 @@ use crate::reply::ReplyHandler;
 use crate::passthrough::BackingHandler;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{NotificationKind};
-#[cfg(not(feature = "abi-7-11"))]
-type NotificationKind = ();
+#[cfg(feature = "abi-7-11")]
 use crossbeam_channel::Sender;
 
 /// Request data structure
@@ -29,10 +28,13 @@ pub(crate) struct RequestHandler {
     pub meta: RequestMeta,
     /// Closure-like object to guarantee a response is sent
     pub replyhandler: ReplyHandler,
+    #[cfg(feature = "abi-7-40")]
     /// A copy of the main channel
     pub ch_main: Channel,
+    /*
     /// A copy of the side channel
     pub ch_side: Channel,
+     */
     #[cfg(feature = "abi-7-11")]
     /// A copy of the internal channel
     pub queue: Sender<NotificationKind>,
@@ -66,7 +68,9 @@ impl RequestHandler {
     /// Create a new request from the given data, and a Channel to receive the reply
     pub(crate) fn new(
         ch_main: Channel,
+        /*
         ch_side: Channel,
+        */
         #[cfg(feature = "abi-7-11")]
         queue: Sender<NotificationKind>,
         data: Vec<u8>
@@ -84,15 +88,26 @@ impl RequestHandler {
             gid: request.gid(),
             pid: request.pid(),
         };
-        let replyhandler = ReplyHandler::new(request.unique().into(), ch_main.clone());
+        #[cfg(feature = "abi-7-40")]
+        let another_ch_main = ch_main.clone();
+        let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);
         Some(Self {
             request,
             meta,
             replyhandler,
-            ch_main,
+            #[cfg(feature = "abi-7-40")]
+            ch_main: another_ch_main,
+            /*
             ch_side,
+            */
             #[cfg(feature = "abi-7-11")]
             queue,
         })
     }
 }
+#[cfg(feature = "abi-7-40")]
+macro_rules! get_backing_handler {
+    ($me:ident) => {BackingHandler::new($me.ch_main, $me.queue)}
+}
+#[cfg(feature = "abi-7-40")]
+pub(crate) use get_backing_handler;

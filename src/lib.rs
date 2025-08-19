@@ -87,7 +87,7 @@ pub use reply::{Dirent, DirentList, Entry, FileAttr, FileType, Lock, Open, Statf
 pub use request::{Forget, RequestMeta};
 #[cfg(feature = "threaded")]
 pub use session::BackgroundSession;
-pub use session::{Session, SessionACL, SessionUnmounter};
+pub use session::{Session, SessionBuilder, SessionACL, SessionUnmounter};
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
 #[cfg(feature = "abi-7-13")]

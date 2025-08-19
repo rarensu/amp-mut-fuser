@@ -31,10 +31,9 @@ use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::notify::Queues;
 #[cfg(feature = "abi-7-11")]
-use crate::notify::{NotificationHandler, Notifier, NotificationKind, NotificationSender};
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::{Receiver, Sender};
-
+use crate::notify::{Notifier, NotificationSender};
+#[cfg(feature = "abi-7-40")]
+use crate::passthrough::BackingHandler;
 use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
@@ -95,6 +94,7 @@ pub(crate) struct SessionMeta {
     #[cfg(feature = "abi-7-11")]
     /// Whether this session currently has notification support
     pub(crate) notify: AtomicBool,
+    /// Whether this session does heartbeats, if nonzero
     pub(crate) heartbeat_interval: Duration,
 }
 
@@ -111,6 +111,7 @@ where
     pub(crate) filesystem: AnyFS<L, S, A>,
     /// Main communication channel to the kernel fuse driver
     pub(crate) ch_main: Channel,
+    #[cfg(feature = "abi-7-11")]
     /// Side communication channel to the kernel fuse driver
     pub(crate) ch_side: Channel,
     #[cfg(feature = "abi-7-11")]
@@ -146,7 +147,7 @@ where
         // Create the channel for fuse messages
         let mut se = SessionBuilder::new();
         se.set_filesystem(filesystem);
-        se.set_mount_from_fd(fd, acl)?;
+        se.set_fuse_fd(fd, acl)?;
         Ok(se.build())
     }
 
@@ -159,10 +160,10 @@ where
 
     /// Returns an object that can be used to queue notifications for the Session to process
     #[cfg(feature = "abi-7-11")]
-    pub fn get_notification_sender(&self) -> Sender<NotificationKind> {
+    pub fn get_notification_sender(&self) -> Notifier {
         // Sync/Async notification method
         self.meta.notify.store(true, Relaxed);
-        self.queues.sender.clone()
+        Notifier::new(self.queues.sender.clone())
     }
 
     /// Unmount the filesystem
@@ -347,6 +348,8 @@ impl fmt::Debug for BackgroundSession {
     }
 }
 
+#[derive(Debug)]
+/// SessionBuilder provides an alternative interface for 
 pub struct SessionBuilder<L, S, A>
 where
     L: LegacyFS,
@@ -358,6 +361,7 @@ where
     pub(crate) filesystem: Option<AnyFS<L, S, A>>,
     /// Main communication channel to the kernel fuse driver
     pub(crate) ch_main: Option<Channel>,
+    #[cfg(feature = "abi-7-11")]
     /// Side communication channel to the kernel fuse driver
     pub(crate) ch_side: Option<Channel>,
     #[cfg(feature = "abi-7-11")]
@@ -375,10 +379,12 @@ where
     S: SyncFS,
     A: AsyncFS,
 {
+    /// Create a new SessionBuilder with no Filesystem, no Mount, and default options.
     pub fn new() -> Self {
         SessionBuilder {
             filesystem: None,
             ch_main: None,
+            #[cfg(feature = "abi-7-11")]
             ch_side: None,
             #[cfg(feature = "abi-7-11")]
             queues: Queues::new(),
@@ -396,7 +402,7 @@ where
             }
         }
     }
-
+    /// Open a new fuse file descriptor and use it to mount this Session at the target path.
     pub fn mount_path<P: AsRef<Path>>(
         &mut self,
         mountpoint: P,
@@ -435,23 +441,57 @@ where
         self.meta.allowed = allowed;
         Ok(())
     }
-
+    /// Set a Filesystem (of Any type) for this Session.
     pub fn set_filesystem(&mut self, fs: AnyFS<L, S, A>) {
         self.filesystem = Some(fs);
     }
-
+    /// Set a Legacy Filesystem for this Session.
+    pub fn set_filesystem_legacy(&mut self, fs: L) {
+        let any = AnyFS::<L, S, A>::Legacy(fs);
+        self.filesystem = Some(any);
+    }
+    /// Set a Synchronous Filesystem for this Session.
+    pub fn set_filesystem_sync(&mut self, fs: S) {
+        let any = AnyFS::<L, S, A>::Sync(fs);
+        self.filesystem = Some(any);
+    }
+    /// Set an Asynchronous Filesystem for this Session.
+    pub fn set_filesystem_async(&mut self, fs: A) {
+        let any = AnyFS::<L, S, A>::Async(fs);
+        self.filesystem = Some(any);
+    }
+    /// Set a heartbeat interval for this Session. 
+    /// If zero (default), session will not send heartbeats.
     pub fn set_heartbeat_interval(&mut self, interval: Duration) {
         self.meta.heartbeat_interval = interval;
     }
-
+    /// Get a Notifier for this Session.
+    /// Can be used to send Notifications.
+    /// Enables Notifications for this session.
     #[cfg(feature = "abi-7-11")]
-    pub fn get_notification_sender(&mut self) -> Sender<NotificationKind> {
+    pub fn get_notification_sender(&mut self) -> Notifier {
         self.meta.notify.store(true, Relaxed);
         // Sync/Async notification method
-        self.queues.sender.clone()
+        Notifier::new(self.queues.sender.clone())
     }
-
-    pub fn set_mount_from_fd(&mut self, fd: OwnedFd, acl: SessionACL) -> io::Result<()> {
+    /// Get a BackingHandler for this Session.
+    /// Can be used to open and close BackingId.
+    /// Enables Notifications for this session.
+    #[cfg(feature = "abi-7-40")]
+    pub fn get_backing_handler(&mut self) -> BackingHandler {
+        if let Some(ch) = &self.ch_main {
+            self.meta.notify.store(true, Relaxed);
+            BackingHandler::new(
+                ch.clone(),
+                self.queues.sender.clone(),
+            )
+        } else {
+            panic!("No fuse channel! Did you forget to mount?");
+        } 
+    }
+    /// Set a fuse file descriptor without mounting the Session.
+    /// If this method is used, mounting must be done elsewhere.
+    pub fn set_fuse_fd(&mut self, fd: OwnedFd, acl: SessionACL) -> io::Result<()> {
         let ch = Channel::new(fd.into());
         self.set_ch(ch)?;
         let mut guard = self.mount.lock().unwrap();
@@ -459,25 +499,26 @@ where
         self.meta.allowed = acl;
         Ok(())
     }
-
+    /// Sets the main and side fuse channels. Internal use only.
     fn set_ch(&mut self, ch: Channel) -> io::Result<()> {
         // Create the channel for fuse messages
-        self.ch_side = Some(ch.fork()?);
+        #[cfg(feature = "abi-7-11")]
+        {
+            self.ch_side = Some(ch.fork()?);
+        }
         self.ch_main = Some(ch);
         Ok(())
     }
-
+    /// Assemble the parts of the SessionBuilder into a Session ready for use.
     pub fn build(self) -> Session<L, S, A> {
-        if self.ch_main.is_none() || self.ch_side.is_none() {
-            panic!("No fuse channel! Did you forget to mount?");
-        }
-        if self.filesystem.is_none() {
-            panic!("No filesystem! Did you forget to set one?")
-        }
         Session {
-            filesystem: self.filesystem.unwrap(),
-            ch_main: self.ch_main.unwrap(),
-            ch_side: self.ch_side.unwrap(),
+            filesystem: self.filesystem
+                .expect("No filesystem! Did you forget to set one?"),
+            ch_main: self.ch_main
+                .expect("No fuse channel! Did you forget to mount?"),
+            #[cfg(feature = "abi-7-11")]
+            ch_side: self.ch_side
+                .expect("No fuse channel! Did you forget to mount?"),
             mount: self.mount,
             #[cfg(feature = "abi-7-11")]
             queues: self.queues,

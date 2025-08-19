@@ -74,10 +74,11 @@ impl BackingOpener for crate::channel::Channel {
 }
 
 #[derive(Debug)]
-/// `BackingHandler` needs documentation
+/// `BackingHandler` allows the filesystem to open (and close) `BackingId`.
 pub struct BackingHandler {
     /// Mechanism to request a backing id
     pub opener: Box<dyn BackingOpener>,
+    // opener is Box<dyn> to hide its true type from the API
     /// Mechanism to queue a request to close a backing id
     pub queue: Sender<NotificationKind>,
 }
@@ -94,6 +95,10 @@ impl BackingHandler {
 }
 
 impl BackingHandler {
+    /// This method retrieves a backing id for the provided File. 
+    /// You may use this during `open` or `opendir` or `heartbeat`.
+    /// # Errors
+    /// Reports errors with the underlying fuse connection.
     pub fn open_backing<F: AsRawFd>(&self, file: F) -> std::io::Result<BackingId> {
         let fd = file.as_raw_fd() as u32;
         let id = self.opener.open_backing(fd)?;
@@ -103,6 +108,8 @@ impl BackingHandler {
             id,
         })
     }
+    /// This method closes a backing id. 
+    /// You may use this any time.
     pub fn close_backing(&self, mut backing: BackingId) {
         let id = backing.id;
         backing.id = 0;

@@ -2,7 +2,7 @@ use std::io;
 use std::fmt;
 #[cfg(feature = "abi-7-12")]
 use bytes::Bytes;
-use crossbeam_channel::{SendError, Sender, Receiver, unbounded};
+use crossbeam_channel::{Sender, Receiver, unbounded};
 #[allow(unused)]
 use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
 

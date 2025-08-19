@@ -136,7 +136,9 @@ where
         // Parse data
         match RequestHandler::new(
             se.ch_main.clone(),
+            /*
             se.ch_side.clone(),
+            */
             #[cfg(feature = "abi-7-11")]
             se.queues.sender.clone(),
             data

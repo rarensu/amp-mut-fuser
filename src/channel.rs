@@ -6,9 +6,10 @@ use std::{
 };
 
 use crate::ll::fuse_abi;
+#[cfg(feature = "abi-7-11")]
 use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
 
-use libc::{c_int, c_void, size_t, EPERM};
+use libc::{c_int, c_void, size_t};
 
 pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<fuse_abi::fuse_in_header>();
 
@@ -27,6 +28,7 @@ pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
 pub(crate) struct Channel {
     owned_fd: Arc<File>,
     pub raw_fd: i32,
+    #[cfg(feature = "abi-7-11")]
     is_main: bool,
 }
 
@@ -43,7 +45,12 @@ impl Channel {
     pub fn new(device: File) -> Self {
         let owned_fd = Arc::new(device);
         let raw_fd = owned_fd.as_raw_fd();
-        Self { owned_fd, raw_fd, is_main: true }
+        Self {
+            owned_fd,
+            raw_fd, 
+            #[cfg(feature = "abi-7-11")]
+            is_main: true 
+        }
     }
     // Create a new communication channel to the kernel driver.
     // The argument is a `Arc<File>` opened on a fuse device.
@@ -51,7 +58,12 @@ impl Channel {
     pub fn from_shared(device: &Arc<File>) -> Self {
         let raw_fd = device.as_raw_fd().as_raw_fd();
         let owned_fd = device.clone();
-        Self { raw_fd, owned_fd, is_main: true }
+        Self {
+            owned_fd,
+            raw_fd, 
+            #[cfg(feature = "abi-7-11")]
+            is_main: true 
+        }    
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
@@ -282,7 +294,7 @@ impl Channel {
     /// Writes data from the owned buffer.
     /// Can be awaited: blocks on a dedicated thread.
     #[allow(unused)] // this stub is a placeholder for future tokio async i/o
-    pub async fn send_async(&self, bufs: &[IoSlice<'_>]) -> io::Result<()> {
+    pub async fn send_async(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let bufs = bufs
             .iter()
             .map(|v| Vec::from(v.as_ref()))
@@ -291,13 +303,14 @@ impl Channel {
         tokio::task::spawn_blocking(move || {
             let bufs = bufs
                 .iter()
-                .map(|v| IoSlice::new(v))
-                .collect::<Vec<IoSlice<'_>>>();
+                .map(|v| io::IoSlice::new(v))
+                .collect::<Vec<io::IoSlice<'_>>>();
             thread_sender.send(&bufs)
         }); //.await.expect("Unable to recover worker i/o thread")
         Ok(())
     }
 
+    #[cfg(feature = "abi-7-11")]
     /// Creates a new fuse worker channel. Self should be the main channel.
     /// # Errors
     /// Propagates underlying errors.

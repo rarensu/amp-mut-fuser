@@ -8,6 +8,8 @@ use crate::request::{RequestHandler, RequestMeta};
 use crate::{ll::Errno, KernelConfig,};
 #[cfg(feature = "abi-7-40")]
 use crate::passthrough::BackingHandler;
+#[cfg(feature = "abi-7-40")]
+use crate::request::get_backing_handler;
 
 #[cfg(feature = "abi-7-24")]
 use super::ReplyLseek;
@@ -327,7 +329,7 @@ impl RequestHandler {
             }
             Operation::Open(x) => {
                 #[cfg(feature = "abi-7-40")]
-                let backinghandler = BackingHandler::new(self.ch_side, self.queue);
+                let backinghandler = get_backing_handler!(self);
                 #[cfg(feature = "abi-7-40")]
                 let callback = OpenHandler::new(self.replyhandler, backinghandler);
                 #[cfg(not(feature = "abi-7-40"))]
@@ -396,7 +398,7 @@ impl RequestHandler {
             }
             Operation::OpenDir(x) => {
                 #[cfg(feature = "abi-7-40")]
-                let backinghandler = BackingHandler::new(self.ch_side, self.queue);
+                let backinghandler = get_backing_handler!(self);
                 #[cfg(feature = "abi-7-40")]
                 let callback = OpenHandler::new(self.replyhandler, backinghandler);
                 #[cfg(not(feature = "abi-7-40"))]
