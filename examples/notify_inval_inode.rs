@@ -19,19 +19,16 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use clap::Parser;
-use crossbeam_channel::{Receiver, Sender};
 use fuser::{
     Dirent, DirentList, Entry, Errno, FUSE_ROOT_ID, FileAttr, FileType, Forget, FsStatus,
-    InvalInode, MountOption, Notification, Open, RequestMeta, Store, consts,
+    MountOption, Notifier, Open, RequestMeta, consts,
     trait_async::Filesystem,
 };
-use log::{info, warn};
 
 struct ClockFS<'a> {
     file_contents: Arc<Mutex<String>>,
     lookup_cnt: &'a AtomicU64,
-    notification_sender: Mutex<Option<Sender<Notification>>>,
-    notification_reply: Mutex<Option<Receiver<std::io::Result<()>>>>,
+    notifier: Notifier,
     opts: Arc<Options>,
     last_update: Mutex<SystemTime>,
 }
@@ -73,21 +70,7 @@ impl ClockFS<'_> {
 
 #[async_trait]
 impl Filesystem for ClockFS<'_> {
-    #[cfg(feature = "abi-7-11")]
-    fn init_notification_sender(&mut self, sender: Sender<Notification>) -> bool {
-        *self.notification_sender.lock().unwrap() = Some(sender);
-        true
-    }
-
     async fn heartbeat(&self) -> FsStatus {
-        if let Some(r) = self.notification_reply.lock().unwrap().take() {
-            if let Ok(result) = r.try_recv() {
-                match result {
-                    Ok(()) => info!("Received OK reply"),
-                    Err(e) => warn!("Received error reply: {e}"),
-                }
-            }
-        }
         let mut last_update_guard = self.last_update.lock().unwrap();
         let now = SystemTime::now();
         if now.duration_since(*last_update_guard).unwrap_or_default()
@@ -98,45 +81,24 @@ impl Filesystem for ClockFS<'_> {
             drop(s); // Release lock on file_contents
 
             if !self.opts.no_notify && self.lookup_cnt.load(SeqCst) != 0 {
-                if let Some(sender) = self.notification_sender.lock().unwrap().as_ref().cloned() {
-                    let (s, r) = crossbeam_channel::bounded(1);
-                    if self.opts.notify_store {
-                        let notification = Notification::Store((
-                            Store {
-                                ino: Self::FILE_INO,
-                                offset: 0,
-                                data: self
-                                    .file_contents
-                                    .lock()
-                                    .unwrap()
-                                    .as_bytes()
-                                    .to_vec()
-                                    .into(),
-                            },
-                            Some(s),
-                        ));
-                        if let Err(e) = sender.send(notification) {
-                            warn!("Warning: failed to send Store notification: {e}");
-                        } else {
-                            info!("Sent Store notification, preparing for reply.");
-                            *self.notification_reply.lock().unwrap() = Some(r);
-                        }
-                    } else {
-                        let notification = Notification::InvalInode((
-                            InvalInode {
-                                ino: Self::FILE_INO,
-                                offset: 0,
-                                len: olddata.len().try_into().unwrap_or(-1),
-                            },
-                            Some(s),
-                        ));
-                        if let Err(e) = sender.send(notification) {
-                            warn!("Warning: failed to send InvalInode notification: {e}");
-                        } else {
-                            info!("Sent InvalInode notification, preparing for reply.");
-                            *self.notification_reply.lock().unwrap() = Some(r);
-                        }
-                    }
+                if self.opts.notify_store {
+                    self.notifier.store(
+                        Self::FILE_INO,
+                        0,
+                        self
+                            .file_contents
+                            .lock()
+                            .unwrap()
+                            .as_bytes()
+                            .to_vec()
+                            .into()
+                    );
+                } else {
+                    self.notifier.inval_inode(
+                            Self::FILE_INO,
+                            0,
+                            olddata.len().try_into().unwrap_or(-1)
+                    );
                 }
             }
             *last_update_guard = now;
@@ -242,7 +204,6 @@ impl Filesystem for ClockFS<'_> {
         if offset < 0 {
             return Err(Errno::EINVAL);
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
         let file_guard = self.file_contents.lock().unwrap();
         let filedata = file_guard.as_bytes();
         let dlen: i64 = filedata.len().try_into().map_err(|_| Errno::EIO)?; // EIO if size doesn't fit i64
@@ -305,15 +266,17 @@ fn main() {
 
     env_logger::init();
 
+    let mut sessionbuilder = fuser::SessionBuilder::new();
+    sessionbuilder.set_heartbeat_interval(Duration::from_secs_f32(opts.update_interval));
+    let notifier = sessionbuilder.get_notification_sender();
     let fs = ClockFS {
         file_contents: fdata.clone(),
         lookup_cnt,
-        notification_sender: Mutex::new(None), // Will be initialized by the session
-        notification_reply: Mutex::new(None),
+        notifier,
         opts: opts.clone(),
         last_update: Mutex::new(SystemTime::now()),
     };
-
+    sessionbuilder.set_filesystem_async(fs);
     // The main thread will run the FUSE session loop.
     // No separate thread for notification logic is needed anymore.
     // No direct use of session.notifier() from main.
@@ -334,17 +297,17 @@ fn main() {
     // The simplest for now is to let the user unmount the FS to stop.
     // Or, if the session itself handles Ctrl-C, that's also fine.
 
-    let mut session = fuser::Session::new_mounted(fs.into(), &opts.mount_point, &mount_options)
+    sessionbuilder.mount_path(&opts.mount_point, &mount_options)
         .expect("Failed to create FUSE session.");
+    let session = sessionbuilder.build();
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(1)
+        .worker_threads(2)
         .build()
         .unwrap();
-    session.set_channels(2).unwrap();
-    match rt.block_on(session.run_concurrently_parts()) {
+    match rt.block_on(session.run_notifications_concurrently()) {
         Ok(()) => log::info!("Session ended safely"),
         Err(e) => log::info!("Session ended with error: {e:?}"),
     }

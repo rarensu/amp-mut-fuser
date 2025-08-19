@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "threaded")]
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use crate::any::{_Nl, _Ns, _Na};
 /*
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
@@ -445,21 +446,6 @@ where
     pub fn set_filesystem(&mut self, fs: AnyFS<L, S, A>) {
         self.filesystem = Some(fs);
     }
-    /// Set a Legacy Filesystem for this Session.
-    pub fn set_filesystem_legacy(&mut self, fs: L) {
-        let any = AnyFS::<L, S, A>::Legacy(fs);
-        self.filesystem = Some(any);
-    }
-    /// Set a Synchronous Filesystem for this Session.
-    pub fn set_filesystem_sync(&mut self, fs: S) {
-        let any = AnyFS::<L, S, A>::Sync(fs);
-        self.filesystem = Some(any);
-    }
-    /// Set an Asynchronous Filesystem for this Session.
-    pub fn set_filesystem_async(&mut self, fs: A) {
-        let any = AnyFS::<L, S, A>::Async(fs);
-        self.filesystem = Some(any);
-    }
     /// Set a heartbeat interval for this Session. 
     /// If zero (default), session will not send heartbeats.
     pub fn set_heartbeat_interval(&mut self, interval: Duration) {
@@ -524,5 +510,36 @@ where
             queues: self.queues,
             meta: self.meta,
         }
+    }
+}
+// Additional, trait-specific build functions.
+impl<L> SessionBuilder<L, _Ns, _Na>
+where
+    L: LegacyFS,
+{
+    /// Set a Legacy Filesystem for this Session.
+    pub fn set_filesystem_legacy(&mut self, fs: L) {
+        let any = AnyFS::<L, _Ns, _Na>::Legacy(fs);
+        self.filesystem = Some(any);
+    }
+}
+impl<S> SessionBuilder<_Nl, S, _Na>
+where
+    S: SyncFS,
+{
+    /// Set a Synchronous Filesystem for this Session.
+    pub fn set_filesystem_sync(&mut self, fs: S) {
+        let any = AnyFS::<_Nl, S, _Na>::Sync(fs);
+        self.filesystem = Some(any);
+    }
+}
+impl<A> SessionBuilder<_Nl, _Ns, A>
+where
+    A: AsyncFS,
+{
+    /// Set an Asynchronous Filesystem for this Session.
+    pub fn set_filesystem_async(&mut self, fs: A) {
+        let any = AnyFS::<_Nl, _Ns, A>::Async(fs);
+        self.filesystem = Some(any);
     }
 }

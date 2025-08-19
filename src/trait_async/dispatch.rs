@@ -59,6 +59,8 @@ impl RequestHandler {
                     replyhandler.$method( $( $args ),* );
                 });
                 #[cfg(all(feature = "threaded", feature = "tokio"))]
+                info!("Spawning a tokio thread for reply");
+                #[cfg(all(feature = "threaded", feature = "tokio"))]
                 tokio::task::spawn_blocking( move || {
                     replyhandler.$method( $( $args ),* );
                 });
