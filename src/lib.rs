@@ -29,7 +29,7 @@ pub use crate::ll::{Errno, TimeOrNow, fuse_abi::consts};
 pub use ll::fuse_abi::fuse_forget_one;
 pub use mnt::mount_options::MountOption;
 #[cfg(feature = "abi-7-11")]
-pub use notify::{NotificationHandler, PollHandler};
+pub use notify::PollHandler;
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
 pub use request::RequestMeta;
@@ -38,20 +38,19 @@ pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 
 // Default trait is the Legacy `Filesystem` trait with `Reply` callbacks
 pub use trait_legacy::{Filesystem, Request};
-#[cfg(feature = "abi-7-11")]
-pub use trait_legacy::ReplyPoll;
-#[cfg(target_os = "macos")]
-pub use trait_legacy::ReplyXTimes;
+
 pub use trait_legacy::{
     ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyXattr,
     ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite,
 };
 #[cfg(feature = "abi-7-11")]
-pub use trait_legacy::ReplyIoctl;
-#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::{ReplyIoctl, ReplyPoll, LegacyNotifier};
+#[cfg(feature = "abi-7-21")]
 pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
 pub use trait_legacy::ReplyLseek;
+#[cfg(target_os = "macos")]
+pub use trait_legacy::ReplyXTimes;
 
 /* ------ Imports for use in this file ------ */
 
@@ -89,7 +88,8 @@ const INIT_FLAGS: u64 = FUSE_ASYNC_READ | FUSE_BIG_WRITES;
 const INIT_FLAGS: u64 = FUSE_ASYNC_READ | FUSE_CASE_INSENSITIVE | FUSE_VOL_RENAME | FUSE_XTIMES;
 // TODO: Add FUSE_EXPORT_SUPPORT and FUSE_BIG_WRITES (requires ABI 7.10)
 
-const fn default_init_flags(#[allow(unused_variables)] capabilities: u64) -> u64 {
+#[allow(unused_variables)]
+const fn default_init_flags(capabilities: u64) -> u64 {
     #[cfg(not(feature = "abi-7-28"))]
     {
         INIT_FLAGS
