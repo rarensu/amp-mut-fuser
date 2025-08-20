@@ -11,14 +11,16 @@ pub struct fuse_backing_map_out {
     pub flags: u32,
     pub padding: u64,
 }
-
+#[cfg(any(feature = "abi-7-40", feature = "side-channel"))]
 const FUSE_DEV_IOC_MAGIC: u8 = 229;
+#[cfg(any(feature = "abi-7-40", feature = "side-channel"))]
 const FUSE_DEV_IOC_CLONE: u8 = 0;
 #[cfg(feature = "abi-7-40")]
 const FUSE_DEV_IOC_BACKING_OPEN: u8 = 1;
 #[cfg(feature = "abi-7-40")]
 const FUSE_DEV_IOC_BACKING_CLOSE: u8 = 2;
 
+#[cfg(feature = "side-channel")]
 // This ioctl is used to acquire additional worker fuse file descriptors
 nix::ioctl_read!(
     fuse_dev_ioc_clone,
@@ -47,6 +49,7 @@ nix::ioctl_write_ptr!(
     u32
 );
 
+#[cfg(feature = "side-channel")]
 pub(crate) fn ioctl_clone_fuse_fd(channel_fd: i32, main_fuse_fd: u32) -> std::io::Result<()> {
     // For some reason I don't undersand, this argument must be declared as mutable.
     let mut mut_main_fuse_fd: u32 = main_fuse_fd;

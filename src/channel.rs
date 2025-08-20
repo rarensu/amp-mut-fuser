@@ -7,7 +7,11 @@ use std::{
 
 use libc::{c_int, c_void, size_t};
 
-pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<crate::ll::fuse_abi::fuse_in_header>();
+use crate::ll::fuse_abi;
+#[cfg(feature = "side-channel")]
+use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
+
+pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<fuse_abi::fuse_in_header>();
 
 pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
     let off = alignment - (buf.as_ptr() as usize) % alignment;
@@ -24,6 +28,8 @@ pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
 pub(crate) struct Channel {
     owned_fd: Arc<File>,
     pub raw_fd: i32,
+    #[cfg(feature = "side-channel")]
+    is_main: bool,
 }
 
 use std::os::fd::{AsFd, BorrowedFd};
@@ -39,7 +45,12 @@ impl Channel {
     pub fn new(device: File) -> Self {
         let owned_fd = Arc::new(device);
         let raw_fd = owned_fd.as_raw_fd();
-        Self { owned_fd, raw_fd }
+        Self {
+            owned_fd,
+            raw_fd, 
+            #[cfg(feature = "side-channel")]
+            is_main: true 
+        }
     }
     // Create a new communication channel to the kernel driver.
     // The argument is a `Arc<File>` opened on a fuse device.
@@ -47,18 +58,17 @@ impl Channel {
     pub fn from_shared(device: &Arc<File>) -> Self {
         let raw_fd = device.as_raw_fd().as_raw_fd();
         let owned_fd = device.clone();
-        Self { raw_fd, owned_fd }
+        Self {
+            owned_fd,
+            raw_fd, 
+            #[cfg(feature = "side-channel")]
+            is_main: true 
+        }
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
     /// Populates data into the buffer starting from the point of alignment
     pub fn receive(&self, buffer: &mut [u8]) -> io::Result<Vec<u8>> {
-        log::debug!("about to try a blocking read on fd {:?}", self.raw_fd);
-        log::debug!(
-            "about to try a blocking read on with buffer {:?}, {:?}",
-            buffer.len(),
-            buffer.get(0..20)
-        );
         let buf_aligned = aligned_sub_buf(buffer, FUSE_HEADER_ALIGNMENT);
         let rc = unsafe {
             libc::read(
@@ -75,7 +85,8 @@ impl Channel {
             Ok(data)
         }
     }
-
+    /// Writes data from the owned buffer.
+    /// Blocks the current thread.
     pub fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let rc = unsafe {
             libc::writev(
@@ -90,5 +101,27 @@ impl Channel {
             debug_assert_eq!(bufs.iter().map(|b| b.len()).sum::<usize>(), rc as usize);
             Ok(())
         }
+    }
+
+    #[cfg(feature = "side-channel")]
+    /// Creates a new fuse worker channel. Self should be the main channel.
+    /// # Errors
+    /// Propagates underlying errors.
+    pub fn fork(&self) -> std::io::Result<Self> {
+        if !self.is_main {
+            log::error!("Attempted to create a new fuse worker from a fuse channel that is not main");
+        }
+        let fuse_device_name = "/dev/fuse";
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(fuse_device_name)?;
+        let raw_fd = file.as_raw_fd();
+        ioctl_clone_fuse_fd(raw_fd, self.raw_fd as u32)?;
+        Ok(Channel {
+            owned_fd: Arc::new(file),
+            raw_fd,
+            is_main: false,
+        })
     }
 }

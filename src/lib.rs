@@ -6,50 +6,7 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use log::warn;
-use mnt::mount_options::parse_options_from_args;
-#[cfg(feature = "serializable")]
-use serde::{Deserialize, Serialize};
-use std::ffi::OsStr;
-use std::io;
-use std::path::Path;
-#[cfg(feature = "abi-7-23")]
-use std::time::Duration;
-use std::{convert::AsRef, io::ErrorKind};
-
-pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
-use crate::ll::fuse_abi::consts::*;
-pub use crate::ll::{Errno, TimeOrNow, fuse_abi::consts};
-use crate::mnt::mount_options::check_option_conflicts;
-use crate::session::MAX_WRITE_SIZE;
-#[cfg(feature = "abi-7-16")]
-pub use ll::fuse_abi::fuse_forget_one;
-pub use mnt::mount_options::MountOption;
-#[cfg(feature = "abi-7-11")]
-pub use notify::{NotificationHandler, PollHandler};
-#[cfg(feature = "abi-7-11")]
-pub use trait_legacy::ReplyIoctl;
-#[cfg(feature = "abi-7-11")]
-pub use trait_legacy::ReplyDirectoryPlus;
-#[cfg(feature = "abi-7-24")]
-pub use trait_legacy::ReplyLseek;
-#[cfg(feature = "abi-7-40")]
-pub use passthrough::BackingId;
-#[cfg(feature = "abi-7-11")]
-pub use trait_legacy::ReplyPoll;
-#[cfg(target_os = "macos")]
-pub use trait_legacy::ReplyXTimes;
-pub use trait_legacy::{
-    ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyXattr,
-    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite,
-};
-pub use request::RequestMeta;
-pub use reply::{FileAttr, FileType};
-pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
-#[cfg(feature = "abi-7-28")]
-use std::cmp::max;
-#[cfg(feature = "abi-7-13")]
-use std::cmp::min;
+/* ------ Modules ------ */
 
 mod channel;
 mod ll;
@@ -61,10 +18,63 @@ mod passthrough;
 mod reply;
 mod request;
 mod session;
-
 /// Legacy Filesystem trait with callbacks
 pub mod trait_legacy;
+
+/* ------ Public Exports ------ */
+
+pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
+pub use crate::ll::{Errno, TimeOrNow, fuse_abi::consts};
+#[cfg(feature = "abi-7-16")]
+pub use ll::fuse_abi::fuse_forget_one;
+pub use mnt::mount_options::MountOption;
+#[cfg(feature = "abi-7-11")]
+pub use notify::{NotificationHandler, PollHandler};
+#[cfg(feature = "abi-7-40")]
+pub use passthrough::BackingId;
+pub use request::RequestMeta;
+pub use reply::{FileAttr, FileType};
+pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
+
+// Default trait is the Legacy `Filesystem` trait with `Reply` callbacks
 pub use trait_legacy::{Filesystem, Request};
+#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::ReplyPoll;
+#[cfg(target_os = "macos")]
+pub use trait_legacy::ReplyXTimes;
+pub use trait_legacy::{
+    ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyXattr,
+    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite,
+};
+#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::ReplyIoctl;
+#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::ReplyDirectoryPlus;
+#[cfg(feature = "abi-7-24")]
+pub use trait_legacy::ReplyLseek;
+
+/* ------ Imports for use in this file ------ */
+
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
+use mnt::mount_options::parse_options_from_args;
+use mnt::mount_options::check_option_conflicts;
+use ll::fuse_abi::consts::*;
+use session::MAX_WRITE_SIZE;
+#[cfg(feature = "serializable")]
+use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
+use std::io;
+use std::path::Path;
+#[cfg(feature = "abi-7-23")]
+use std::time::Duration;
+use std::{convert::AsRef, io::ErrorKind};
+#[cfg(feature = "abi-7-28")]
+use std::cmp::max;
+#[cfg(feature = "abi-7-13")]
+use std::cmp::min;
+
+/* ------ FUSE configuration ------ */
 
 /// We generally support async reads
 #[cfg(all(not(target_os = "macos"), not(feature = "abi-7-10")))]
@@ -268,6 +278,8 @@ impl KernelConfig {
         ((max(self.max_write, self.max_readahead) - 1) / page_size::get() as u32) as u16 + 1
     }
 }
+
+/* ------ Easy mode functions ------ */
 
 /// Mount the given filesystem to the given mountpoint. This function will
 /// not return until the filesystem is unmounted.

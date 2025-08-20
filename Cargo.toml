@@ -40,6 +40,7 @@ default = []
 libfuse = ["pkg-config"]
 serializable = ["serde"]
 macfuse-4-compat = []
+side-channel = []
 abi-7-9 = []
 abi-7-10 = ["abi-7-9"]
 abi-7-11 = ["abi-7-10"]
@@ -84,6 +85,10 @@ required-features = ["abi-7-15"]
 
 [[example]]
 name = "ioctl"
+required-features = ["abi-7-11"]
+
+[[example]]
+name = "ioctl_client"
 required-features = ["abi-7-11"]
 
 [[example]]
