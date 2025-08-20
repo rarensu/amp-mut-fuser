@@ -80,23 +80,44 @@ impl<'a> Response<'a> {
         entry_ttl: Duration,
         attr: &crate::FileAttr,
         attr_ttl: Duration,
+        attr_ttl_override: bool,
     ) -> Self {
         let d = abi::fuse_entry_out {
             nodeid: ino.into(),
             generation: generation.into(),
             entry_valid: entry_ttl.as_secs(),
-            attr_valid: attr_ttl.as_secs(),
+            attr_valid: if attr_ttl_override {
+                0
+            } else {
+                attr_ttl.as_secs()
+            },
             entry_valid_nsec: entry_ttl.subsec_nanos(),
-            attr_valid_nsec: attr_ttl.subsec_nanos(),
+            attr_valid_nsec: if attr_ttl_override {
+                0
+            } else {
+                attr_ttl.subsec_nanos()
+            },
             attr: fuse_attr_from_attr(attr),
         };
         Self::from_struct(d.as_bytes())
     }
 
-    pub(crate) fn new_attr(ttl: &Duration, attr: &crate::reply::FileAttr) -> Self {
+    pub(crate) fn new_attr(
+        ttl: &Duration,
+        attr: &crate::FileAttr,
+        attr_ttl_override: bool
+    ) -> Self {
         let r = abi::fuse_attr_out {
-            attr_valid: ttl.as_secs(),
-            attr_valid_nsec: ttl.subsec_nanos(),
+            attr_valid: if attr_ttl_override {
+                0
+            } else {
+                ttl.as_secs()
+            },
+            attr_valid_nsec: if attr_ttl_override {
+                0
+            } else {
+                ttl.subsec_nanos()
+            },
             dummy: 0,
             attr: fuse_attr_from_attr(attr),
         };
@@ -190,6 +211,7 @@ impl<'a> Response<'a> {
         file_ttl: &Duration,
         attr: &Attr,
         attr_ttl: &Duration,
+        attr_ttl_override: bool,
         generation: Generation,
         fh: FileHandle,
         flags: u32,
@@ -203,9 +225,17 @@ impl<'a> Response<'a> {
                 nodeid: attr.attr.ino,
                 generation: generation.into(),
                 entry_valid: file_ttl.as_secs(),
-                attr_valid: attr_ttl.as_secs(),
+                attr_valid: if attr_ttl_override {
+                    0
+                } else {
+                    attr_ttl.as_secs()
+                },
                 entry_valid_nsec: file_ttl.subsec_nanos(),
-                attr_valid_nsec: attr_ttl.subsec_nanos(),
+                attr_valid_nsec: if attr_ttl_override {
+                    0
+                } else {
+                    attr_ttl.subsec_nanos()
+                },
                 attr: attr.attr,
             },
             abi::fuse_open_out {
@@ -220,6 +250,7 @@ impl<'a> Response<'a> {
         Self::from_struct(&r)
     }
 
+    #[cfg(feature = "abi-7-11")]
     // TODO: Are you allowed to send data while result != 0?
     pub(crate) fn new_ioctl(result: i32, data: &[IoSlice<'_>]) -> Self {
         let r = abi::fuse_ioctl_out {
@@ -255,7 +286,8 @@ impl<'a> Response<'a> {
         let r = abi::fuse_getxattr_out { size, padding: 0 };
         Self::from_struct(&r)
     }
-
+    
+    #[cfg(feature = "abi-7-24")]
     pub(crate) fn new_lseek(offset: i64) -> Self {
         let r = abi::fuse_lseek_out { offset };
         Self::from_struct(&r)
@@ -294,7 +326,7 @@ pub(crate) fn mode_from_kind_and_perm(kind: FileType, perm: u16) -> u32 {
         | u32::from(perm)
 }
 /// Returns a fuse_attr from FileAttr
-pub(crate) fn fuse_attr_from_attr(attr: &crate::reply::FileAttr) -> abi::fuse_attr {
+pub(crate) fn fuse_attr_from_attr(attr: &crate::FileAttr) -> abi::fuse_attr {
     let (atime_secs, atime_nanos) = time_from_system_time(&attr.atime);
     let (mtime_secs, mtime_nanos) = time_from_system_time(&attr.mtime);
     let (ctime_secs, ctime_nanos) = time_from_system_time(&attr.ctime);
@@ -445,15 +477,24 @@ impl DirentPlusBuf {
         &mut self,
         x: &crate::reply::Dirent,
         y: &crate::reply::Entry,
+        attr_ttl_override: bool,
     ) -> bool {
         let header = abi::fuse_direntplus {
             entry_out: abi::fuse_entry_out {
                 nodeid: y.ino,
                 generation: y.generation.unwrap_or(1),
                 entry_valid: y.file_ttl.as_secs(),
-                attr_valid: y.attr_ttl.as_secs(),
+                attr_valid: if attr_ttl_override {
+                    0
+                } else {
+                    y.attr_ttl.as_secs()
+                },
                 entry_valid_nsec: y.file_ttl.subsec_nanos(),
-                attr_valid_nsec: y.attr_ttl.subsec_nanos(),
+                attr_valid_nsec: if attr_ttl_override {
+                    0
+                } else {
+                    y.attr_ttl.subsec_nanos()
+                },
                 attr: fuse_attr_from_attr(&y.attr),
             },
             dirent: abi::fuse_dirent {
@@ -565,7 +606,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr.into(), ttl);
+        let r = Response::new_entry(INodeNo(0x11), Generation(0xaa), ttl, &attr, ttl, false);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected
@@ -624,7 +665,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_attr(&ttl, &attr.into());
+        let r = Response::new_attr(&ttl, &attr.into(), false);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected
@@ -757,6 +798,7 @@ mod test {
             &ttl,
             &attr.into(),
             &ttl,
+            false,
             Generation(0xaa),
             FileHandle(0xbb),
             0xcc,

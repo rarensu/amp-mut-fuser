@@ -4,14 +4,20 @@ use std::fmt;
 use std::{convert::TryInto, ffi::OsStr};
 
 use crate::{
-    ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification},
+    ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification}
 };
+#[cfg(feature = "abi-7-40")]
+use crate::ll::fuse_ioctl::ioctl_close_backing;
+use crate::channel::Channel;
 
 /* ------ General Notification Handling ------ */
 
+/* ------ Kernel Communication ------ */
+
 /// Callback for sending notifications to the fuse device
-pub trait NotificationSender: Send + Sync + Unpin + 'static {
+pub(crate) trait NotificationSender: Send + Sync + Unpin + 'static {
     fn notify(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()>;
+    fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 
 impl fmt::Debug for Box<dyn NotificationSender> {
@@ -27,25 +33,28 @@ impl NotificationSender for crate::channel::Channel {
             .with_iovec(code, |iov| self.send(iov))
             .map_err(too_big_err)?
     }
+    #[cfg(feature = "abi-7-40")]
+    fn close_backing(&self, id: u32) -> io::Result<u32> {
+        ioctl_close_backing(self.raw_fd, id)
+    }
 }
 
 /// Create an error for indicating when a notification message
 /// would exceed the capacity that its length descriptor field is
 /// capable of encoding.
-fn too_big_err(tfie: std::num::TryFromIntError) -> io::Error {
+pub(crate) fn too_big_err(tfie: std::num::TryFromIntError) -> io::Error {
     io::Error::new(io::ErrorKind::Other, format!("Data too large: {}", tfie))
 }
 
 #[derive(Debug)]
 pub struct NotificationHandler {
-    pub sender: Box<dyn NotificationSender>,
+    channel: Channel,
 }
 impl NotificationHandler {
     /// Create a reply handler for a specific request identifier
-    pub(crate) fn new<S: NotificationSender>(sender: S) -> NotificationHandler {
-        let sender = Box::new(sender);
+    pub(crate) fn new(channel: Channel) -> NotificationHandler {
         NotificationHandler {
-            sender,
+            channel,
         }
     }
 }
@@ -55,7 +64,7 @@ impl NotificationHandler {
     #[cfg(feature = "abi-7-11")]
     pub fn poll(&self, ph: u64) -> io::Result<()> {
         let notif = Notification::new_poll(ph);
-        self.sender.notify(notify_code::FUSE_POLL, &notif)
+        self.channel.notify(notify_code::FUSE_POLL, &notif)
     }
 
     /// Invalidate the kernel cache for a given directory entry
@@ -92,7 +101,8 @@ impl NotificationHandler {
 
     #[allow(unused)]
     fn send_inval(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
-        match self.sender.notify(code, notification) {
+        match self.channel
+        .notify(code, notification) {
             // ENOENT is harmless for an invalidation (the
             // kernel may have already dropped the cached
             // entry on its own anyway), so ignore it.
@@ -109,11 +119,11 @@ impl NotificationHandler {
 #[derive(Debug)]
 pub struct PollHandler {
     handle: u64,
-    sender: NotificationHandler,
+    sender: crate::trait_legacy::LegacyNotifier,
 }
 
 impl PollHandler {
-    pub(crate) fn new(handler: NotificationHandler, ph: u64) -> Self {
+    pub(crate) fn new(handler: crate::trait_legacy::LegacyNotifier, ph: u64) -> Self {
         Self {
             handle: ph,
             sender: handler,

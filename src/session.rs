@@ -51,8 +51,11 @@ pub enum SessionACL {
 pub struct Session<FS: Filesystem> {
     /// Filesystem operation implementations
     pub(crate) filesystem: FS,
-    /// Communication channel to the kernel driver
-    pub(crate) ch: Channel,
+    /// Main communication channel to the kernel fuse driver
+    pub(crate) ch_main: Channel,
+    #[cfg(feature = "side-channel")]
+    /// Side communication channel to the kernel fuse driver
+    pub(crate) ch_side: Channel,
     /// Handle to the mount.  Dropping this unmounts.
     pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
     /// Session metadata
@@ -79,7 +82,7 @@ pub(crate) struct SessionMeta {
 
 impl<FS: Filesystem> AsFd for Session<FS> {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.ch.as_fd()
+        self.ch_main.as_fd()
     }
 }
 
@@ -145,7 +148,9 @@ impl<FS: Filesystem> Session<FS> {
         };
         Session {
             filesystem,
-            ch,
+            ch_main: ch,
+            #[cfg(feature = "side-channel")]
+            ch_side: ch,
             mount: Arc::new(Mutex::new(mount)),
             meta,
         }

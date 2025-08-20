@@ -6,6 +6,8 @@ use crate::ll::{self, Operation, Request as AnyRequest};
 use crate::session::{SessionACL, SessionMeta};
 use crate::request::{RequestHandler, RequestMeta};
 use crate::{ll::Errno, KernelConfig,};
+#[cfg(feature = "abi-7-40")]
+use crate::request::get_backing_handler;
 
 #[cfg(feature = "abi-7-24")]
 use super::ReplyLseek;
@@ -70,7 +72,7 @@ impl RequestHandler {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
-    pub(crate) fn dispatch_legacy<FS: Filesystem>(self, fs: &mut FS, se_meta: &SessionMeta) {
+    pub(crate) fn dispatch_legacy<FS: Filesystem>(mut self, fs: &mut FS, se_meta: &SessionMeta) {
         debug!("{}", self.request);
         let op = if let Ok(op) = self.request.operation() {
             op
@@ -170,6 +172,9 @@ impl RequestHandler {
             }
             /* ------ Regular Operations ------ */
             Operation::Lookup(x) => {
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
                 fs.lookup(
                     &req,
@@ -181,8 +186,12 @@ impl RequestHandler {
             }
             Operation::Forget(x) => {
                 fs.forget(&req, self.request.nodeid().into(), x.nlookup()); // no response
+                self.replyhandler.disable(); // no reply
             }
             Operation::GetAttr(_attr) => {
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
                 #[cfg(feature = "abi-7-9")]
                 fs.getattr(
@@ -203,6 +212,9 @@ impl RequestHandler {
                 );
             }
             Operation::SetAttr(x) => {
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
                 fs.setattr(
                     &req,
@@ -227,6 +239,9 @@ impl RequestHandler {
                 fs.readlink(&req, self.request.nodeid().into(), reply);
             }
             Operation::MkNod(x) => {
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
                 fs.mknod(
                     &req,
@@ -239,6 +254,9 @@ impl RequestHandler {
                 );
             }
             Operation::MkDir(x) => {
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
                 fs.mkdir(
                     &req,
@@ -269,6 +287,9 @@ impl RequestHandler {
                 );
             }
             Operation::SymLink(x) => {
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
                 fs.symlink(
                     &req,
@@ -291,6 +312,9 @@ impl RequestHandler {
                 );
             }
             Operation::Link(x) => {
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    self.replyhandler.attr_ttl_override();
+                }
                 let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
                 fs.link(
                     &req,
@@ -302,7 +326,9 @@ impl RequestHandler {
             }
             Operation::Open(x) => {
                 #[cfg(feature = "abi-7-40")]
-                let callback = OpenHandler::new(self.replyhandler, self.backinghandler);
+                let backinghandler = get_backing_handler!(self);
+                #[cfg(feature = "abi-7-40")]
+                let callback = OpenHandler::new(self.replyhandler, backinghandler);
                 #[cfg(not(feature = "abi-7-40"))]
                 let callback = OpenHandler::new(self.replyhandler);
                 let reply = ReplyOpen::new(Box::new(callback));
@@ -369,7 +395,9 @@ impl RequestHandler {
             }
             Operation::OpenDir(x) => {
                 #[cfg(feature = "abi-7-40")]
-                let callback = OpenHandler::new(self.replyhandler, self.backinghandler);
+                let backinghandler = get_backing_handler!(self);
+                #[cfg(feature = "abi-7-40")]
+                let callback = OpenHandler::new(self.replyhandler, backinghandler);
                 #[cfg(not(feature = "abi-7-40"))]
                 let callback = OpenHandler::new(self.replyhandler);                
                 let reply = ReplyOpen::new(Box::new(callback));
@@ -575,7 +603,8 @@ impl RequestHandler {
             }
             #[cfg(feature = "abi-7-16")]
             Operation::BatchForget(x) => {
-                fs.batch_forget(&req, x.nodes());
+                fs.batch_forget(&req, x.nodes()); // no response
+                self.replyhandler.disable(); // no reply
             }
             #[cfg(feature = "abi-7-19")]
             Operation::FAllocate(x) => {
@@ -592,6 +621,9 @@ impl RequestHandler {
             }
             #[cfg(feature = "abi-7-21")]
             Operation::ReadDirPlus(x) => {
+                if se_meta.allowed == SessionACL::RootAndOwner {
+                    callback.attr_ttl_override();
+                }
                 let mut callback = DirectoryPlusHandler::new(x.size() as usize, self.replyhandler);
                 let reply = ReplyDirectoryPlus::new(Box::new(callback));
                 fs.readdirplus(

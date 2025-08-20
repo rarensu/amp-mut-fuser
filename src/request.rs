@@ -28,10 +28,10 @@ pub(crate) struct RequestHandler {
     pub replyhandler: ReplyHandler,
     #[cfg(feature = "abi-7-40")]
     /// Closure-like object to enable opening and closing of Backing Id.
-    pub backinghandler: BackingHandler,
+    pub ch_main: Channel,
     #[cfg(feature = "abi-7-11")]
     /// Closure-like object to enable sending of notifications.
-    pub notificationhandler: NotificationHandler,
+    pub notificationhandler: crate::trait_legacy::LegacyNotifier,
 }
 
 /// Request metadata structure
@@ -60,7 +60,7 @@ pub struct Forget {
 
 impl RequestHandler {
     /// Create a new request from the given data, and a Channel to receive the reply
-    pub(crate) fn new(sender: Channel, data: Vec<u8>) -> Option<RequestHandler> {
+    pub(crate) fn new(ch_main: Channel, data: Vec<u8>) -> Option<RequestHandler> {
         let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
@@ -75,18 +75,27 @@ impl RequestHandler {
             pid: request.pid(),
         };
         #[cfg(feature = "abi-7-11")]
-        let notificationhandler = NotificationHandler::new(sender.clone());
+        let notificationhandler = crate::trait_legacy::LegacyNotifier::new(sender.clone());
         #[cfg(feature = "abi-7-40")]
-        let backinghandler = BackingHandler::new(sender.clone());
-        let replyhandler = ReplyHandler::new(request.unique().into(), sender);
+        let another_ch_main = ch_main.clone();
+        let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);        
         Some(Self {
             request,
             meta,
             replyhandler,
             #[cfg(feature = "abi-7-40")]
-            backinghandler,
+            ch_main,
             #[cfg(feature = "abi-7-11")]
             notificationhandler,
         })
     }
 }
+
+#[cfg(feature = "abi-7-40")]
+macro_rules! get_backing_handler {
+    ($me:ident) => {
+        crate::passthrough::BackingHandler::new($me.ch_main, $me.queue)
+    }
+}
+#[cfg(feature = "abi-7-40")]
+pub(crate) use get_backing_handler;

@@ -20,9 +20,12 @@ impl<FS: Filesystem> Session<FS> {
         loop {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
-            match self.ch.receive(&mut buffer) {
+            match self.ch_main.receive(&mut buffer) {
                 Ok(data) => {
-                    match RequestHandler::new(self.ch.clone(), data) {
+                    match RequestHandler::new(
+                        self.ch_main.clone(),
+                        data
+                    ) {
                         // Dispatch request
                         Some(req) => req.dispatch_legacy(&mut self.filesystem, &self.meta),
                         // Quit loop on illegal request

@@ -1,5 +1,5 @@
 use libc::c_int;
-use std::{convert::AsRef};
+use std::convert::AsRef;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::time::Duration;
@@ -21,7 +21,7 @@ use super::PollHandler;
 */
 
 #[cfg(feature = "abi-7-40")]
-use std::fs::File;
+use std::os::fd::AsRawFd;
 #[cfg(feature = "abi-7-40")]
 use std::io;
 #[cfg(feature = "abi-7-40")]
@@ -255,7 +255,9 @@ pub trait CallbackOpen: CallbackErr {
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: File) -> io::Result<BackingId>;
+    fn open_backing(&self, fd: i32) -> io::Result<BackingId>;
+    // Note: although an implementor of this trait may support `<F: AsRawFd>`, trait
+    // must specify a concrete type `i32` for dyn compatibility.
 }
 
 /// Legacy callback handler for ReplyOpen
@@ -300,7 +302,9 @@ impl CallbackOpen for OpenHandler {
     }
     #[cfg(feature = "abi-7-40")]
     fn opened_passthrough(&mut self, fh: u64, flags: u32, backing_id: &BackingId) {
-        if let Some(handler) = self.handler.take() {
+        if backing_id.id == 0 {
+            log::error!("Attemped to re-use already-closed backing id");
+        } else if let Some(handler) = self.handler.take() {
             handler.opened(&Open {
                 fh,
                 flags: flags | FOPEN_PASSTHROUGH,
@@ -309,7 +313,10 @@ impl CallbackOpen for OpenHandler {
         }
     }
     #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: File) -> io::Result<BackingId> {
+    fn open_backing(&self, fd: i32) -> io::Result<BackingId> {
+        // Note: although BackingHandler supports generic `<F: AsRawFd>`, 
+        // CallbackOpen requires a fixed type for this call.
+        // `i32` is a valid concrete type for `AsRawFd`
         self.backer.open_backing(fd)
     }
 }
@@ -337,12 +344,15 @@ impl ReplyOpen {
         self.handler.opened_passthrough(fh, flags, backing_id);
     }
 
-    /// Registers a fd for passthrough, returning a `BackingId`.  Once you have the backing ID,
+    /// Registers a file for passthrough, returning a `BackingId`.  Once you have the backing ID,
     /// you can pass it as the 3rd parameter of `ReplyOpen::opened_passthrough()`.  This is done in
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     #[cfg(feature = "abi-7-40")]
-    pub fn open_backing(&self, fd: File) -> io::Result<BackingId> {
+    pub fn open_backing<F: AsRawFd>(&self, file: F) -> io::Result<BackingId> {
+        let fd = file.as_raw_fd();
+        // If the user passes in an single-owner `File`, this function must retain it long enough 
+        // to obtain a backing id. It can be dropped (closed) afterwards.
         self.handler.open_backing(fd)
     }
     default_error!();
@@ -789,6 +799,7 @@ pub trait CallbackDirectoryPlus: CallbackErr {
 pub(crate) struct DirectoryPlusHandler {
     buf: Option<EntListBuf>,
     handler: Option<ReplyHandler>,
+    attr_ttl_override: bool,
 }
 #[cfg(feature = "abi-7-21")]
 impl DirectoryPlusHandler {
@@ -796,7 +807,12 @@ impl DirectoryPlusHandler {
         DirectoryPlusHandler {
             buf: Some(EntListBuf::new(max_size)),
             handler: Some(handler),
+            attr_ttl_override: false,
         }
+    }
+    /// Disable attribute cacheing.
+    pub fn attr_ttl_override(&mut self) {
+        self.attr_ttl_override = true;
     }
 }
 #[cfg(feature = "abi-7-21")]
@@ -832,9 +848,17 @@ impl CallbackDirectoryPlus for DirectoryPlusHandler {
                     nodeid: ino,
                     generation,
                     entry_valid: ttl.as_secs(),
-                    attr_valid: ttl.as_secs(),
+                    attr_valid: if self.attr_ttl_override {
+                        0
+                    } else {
+                        ttl.as_secs()
+                    },
                     entry_valid_nsec: ttl.subsec_nanos(),
-                    attr_valid_nsec: ttl.subsec_nanos(),
+                    attr_valid_nsec: if self.attr_ttl_override {
+                        0
+                    } else {
+                        ttl.subsec_nanos()
+                    },
                     attr: fuse_attr_from_attr(attr),
                 },
                 dirent: crate::ll::fuse_abi::fuse_dirent {
