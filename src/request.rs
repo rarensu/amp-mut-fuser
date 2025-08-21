@@ -31,7 +31,7 @@ pub(crate) struct RequestHandler {
     pub ch_main: Channel,
     #[cfg(feature = "abi-7-11")]
     /// Closure-like object to enable sending of notifications.
-    pub notificationhandler: crate::trait_legacy::LegacyNotifier,
+    pub notificationhandler: NotificationHandler,
 }
 
 /// Request metadata structure
@@ -75,7 +75,7 @@ impl RequestHandler {
             pid: request.pid(),
         };
         #[cfg(feature = "abi-7-11")]
-        let notificationhandler = crate::trait_legacy::LegacyNotifier::new(ch_main.clone());
+        let notificationhandler = NotificationHandler::new(ch_main.clone());
         #[cfg(feature = "abi-7-40")]
         let ch_main_clone = ch_main.clone();
         let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);        

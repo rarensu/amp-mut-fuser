@@ -120,11 +120,11 @@ impl NotificationHandler {
 #[derive(Debug)]
 pub struct PollHandler {
     handle: u64,
-    sender: crate::trait_legacy::LegacyNotifier,
+    sender: NotificationHandler,
 }
 
 impl PollHandler {
-    pub(crate) fn new(handler: crate::trait_legacy::LegacyNotifier, ph: u64) -> Self {
+    pub(crate) fn new(handler: NotificationHandler, ph: u64) -> Self {
         Self {
             handle: ph,
             sender: handler,

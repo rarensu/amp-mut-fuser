@@ -44,7 +44,7 @@ pub use trait_legacy::{
     ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite,
 };
 #[cfg(feature = "abi-7-11")]
-pub use trait_legacy::{ReplyIoctl, ReplyPoll, LegacyNotifier};
+pub use trait_legacy::{ReplyIoctl, ReplyPoll};
 #[cfg(feature = "abi-7-21")]
 pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
