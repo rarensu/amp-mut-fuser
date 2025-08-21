@@ -94,7 +94,8 @@ impl BackingHandler {
     /// You may use this during `open` or `opendir` or `heartbeat`.
     /// # Errors
     /// Reports errors with the underlying fuse connection.
-    pub fn close_backing(&self, mut backing: BackingId) -> io::Result<(u32)> {
+    #[allow(unused)] // for completeness
+    pub fn close_backing(&self, mut backing: BackingId) -> io::Result<u32> {
         let id = backing.id;
         backing.id = 0;
         self.sender.close_backing(id) 

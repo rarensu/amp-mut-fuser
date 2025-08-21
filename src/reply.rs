@@ -166,27 +166,6 @@ pub struct Entry {
     pub attr_ttl: Duration,
 }
 
-#[derive(Clone, Debug)]
-// TODO: implement Deserialize on Bytes or Dirent, somehow
-// #[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-/// A single directory entry.
-pub struct Dirent {
-    /// file inode number
-    pub ino: u64,
-    /// entry number in directory
-    pub offset: i64,
-    /// kind of file
-    pub kind: FileType,
-    /// name of file
-    pub name: Vec<u8>,
-}
-
-/// A list of directory entries.
-pub type DirentList = Vec<Dirent>;
-
-#[cfg(feature = "abi-7-21")]
-/// A list of directory entries, plus additional file data for the kernel cache.
-pub type DirentPlusList = Vec<(Dirent, Entry)>;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
@@ -246,29 +225,6 @@ pub struct Lock {
     pub pid: u32,
 }
 
-/// `Xattr` represents the response for extended attribute operations (`getxattr`, `listxattr`).
-/// It can either indicate the size of the attribute data or provide the data itself
-/// using `Bytes` for flexible ownership.
-#[derive(Clone, Debug)]
-pub enum Xattr {
-    /// Indicates the size of the extended attribute data. Used when the caller
-    /// provides a zero-sized buffer to query the required buffer size.
-    Size(u32),
-    /// Contains the extended attribute data. `Bytes` allows this data to be
-    /// returned in a zero-copy data ownership model.
-    Data(Vec<u8>),
-}
-
-#[cfg(feature = "abi-7-11")]
-#[derive(Clone, Debug)]
-/// File io control reponse data
-pub struct Ioctl {
-    /// Result of the ioctl operation
-    pub result: i32,
-    /// Data to be returned with the ioctl operation
-    pub data: Vec<u8>,
-}
-
 //
 // Methods to reply to a request for each kind of data
 //
@@ -284,25 +240,9 @@ impl ReplyHandler {
         self.send_ll(&ll::Response::new_empty());
     }
 
-    /// Reply to a general request with no data or an error
-    pub fn ok_or_err(self, result: Result<(), Errno>) {
-        match result {
-            Ok(()) => self.ok(),
-            Err(err) => self.error(err),
-        }
-    }
-
     /// Reply to a general request with data
     pub fn data(self, data: &[u8]) {
         self.send_ll(&ll::Response::new_slice(data));
-    }
-
-    /// Reply to a general request with data or an error
-    pub fn data_or_err(self, result: Result<Vec<u8>, Errno>) {
-        match result {
-            Ok(data) => self.data(&data),
-            Err(err) => self.error(err),
-        }
     }
 
     // Reply to an init request with available features
@@ -359,14 +299,6 @@ impl ReplyHandler {
         ));
     }
 
-    /// Reply to a request with a file entry or an error
-    pub fn entry_or_err(self, result: Result<Entry, Errno>) {
-        match result {
-            Ok(entry) => self.entry(&entry),
-            Err(err) => self.error(err),
-        }
-    }
-
     /// Reply to a request with file attributes
     pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
         let attr_ttl_override = self.attr_ttl_override;
@@ -377,27 +309,10 @@ impl ReplyHandler {
         ));
     }
 
-    /// Reply to a request with file attributes or an error
-    pub fn attr_or_err(self, result: Result<(FileAttr, Duration), Errno>) {
-        match result {
-            Ok((attr, ttl)) => self.attr(&attr, &ttl),
-            Err(err) => self.error(err),
-        }
-    }
-
     #[cfg(target_os = "macos")]
     /// Reply to a request with xtimes attributes
     pub fn xtimes(self, xtimes: XTimes) {
         self.send_ll(&ll::Response::new_xtimes(xtimes.bkuptime, xtimes.crtime))
-    }
-
-    #[cfg(target_os = "macos")]
-    /// Reply to a request with xtimes attributes or an error
-    pub fn xtimes_or_err(self, result: Result<XTimes, Errno>) {
-        match result {
-            Ok(xtimes) => self.xtimes(xtimes),
-            Err(err) => self.error(err),
-        }
     }
 
     /// Reply to a request with a newly opened file handle
@@ -409,25 +324,9 @@ impl ReplyHandler {
         ));
     }
 
-    /// Reply to a request with a newly opened file handle or an error
-    pub fn opened_or_err(self, result: Result<Open, Errno>) {
-        match result {
-            Ok(open) => self.opened(&open),
-            Err(err) => self.error(err),
-        }
-    }
-
     /// Reply to a request with the number of bytes written
     pub fn written(self, size: u32) {
         self.send_ll(&ll::Response::new_write(size));
-    }
-
-    /// Reply to a request with the number of bytes written or an error
-    pub fn written_or_err(self, result: Result<u32, Errno>) {
-        match result {
-            Ok(size) => self.written(size),
-            Err(err) => self.error(err),
-        }
     }
 
     /// Reply to a statfs request with filesystem information
@@ -442,14 +341,6 @@ impl ReplyHandler {
             statfs.namelen,
             statfs.frsize,
         ));
-    }
-
-    /// Reply to a statfs request with filesystem information or an error
-    pub fn statfs_or_err(self, result: Result<Statfs, Errno>) {
-        match result {
-            Ok(statfs) => self.statfs(&statfs),
-            Err(err) => self.error(err),
-        }
     }
 
     /// Reply to a request with a newly created file entry and its newly open file handle
@@ -467,14 +358,6 @@ impl ReplyHandler {
         ));
     }
 
-    /// Reply to a request with a newly created file entry and its newly open file handle or an error
-    pub fn created_or_err(self, result: Result<(Entry, Open), Errno>) {
-        match result {
-            Ok((entry, open)) => self.created(&entry, &open),
-            Err(err) => self.error(err),
-        }
-    }
-
     /// Reply to a request with a file lock
     pub fn locked(self, lock: &Lock) {
         self.send_ll(&ll::Response::new_lock(&ll::Lock {
@@ -484,25 +367,9 @@ impl ReplyHandler {
         }));
     }
 
-    /// Reply to a request with a file lock or an error
-    pub fn locked_or_err(self, result: Result<Lock, Errno>) {
-        match result {
-            Ok(lock) => self.locked(&lock),
-            Err(err) => self.error(err),
-        }
-    }
-
     /// Reply to a request with a bmap
     pub fn bmap(self, block: u64) {
         self.send_ll(&ll::Response::new_bmap(block));
-    }
-
-    /// Reply to a request with a bmap or an error
-    pub fn bmap_or_err(self, result: Result<u64, Errno>) {
-        match result {
-            Ok(block) => self.bmap(block),
-            Err(err) => self.error(err),
-        }
     }
 
     #[cfg(feature = "abi-7-11")]
@@ -512,29 +379,12 @@ impl ReplyHandler {
     }
 
     #[cfg(feature = "abi-7-11")]
-    /// Reply to a request with an ioctl or an error
-    pub fn ioctl_or_err(self, result: Result<Ioctl, Errno>) {
-        match result {
-            Ok(ioctl) => self.ioctl(ioctl.result, &ioctl.data),
-            Err(err) => self.error(err),
-        }
-    }
-
-    #[cfg(feature = "abi-7-11")]
     /// Reply to a request with a poll events
     pub fn poll(self, revents: u32) {
         self.send_ll(&ll::Response::new_poll(revents));
     }
 
-    #[cfg(feature = "abi-7-11")]
-    /// Reply to a request with a poll events or an error
-    pub fn poll_or_err(self, result: Result<u32, Errno>) {
-        match result {
-            Ok(revents) => self.poll(revents),
-            Err(err) => self.error(err),
-        }
-    }
-
+    /*
     // Note: trait_legacy has its own implementation of this function;
     // this one is for (future) Sync/Async traits
     /// Reply to a request with a filled directory buffer
@@ -544,42 +394,10 @@ impl ReplyHandler {
         min_offset: i64,
         size: usize,
         /* blank space */
-    ) {
-        let mut buf = ll::reply::DirentBuf::new(size);
-        for item in entries_list.iter() {
-            if item.offset <= min_offset {
-                log::debug!(
-                    "ReplyHandler::dir: skipping item with offset #{}",
-                    item.offset
-                );
-                continue;
-            }
-            log::debug!(
-                "ReplyHandler::dir: processing item with offset #{}",
-                item.offset
-            );
-            if buf.push(item) {
-                log::debug!("ReplyHandler::dir: buffer full!");
-                break;
-            }
-        }
-        self.send_ll(&buf.into());
-    }
+    ) {}
+    */
 
-    /// Reply to a request with a filled directory buffer or an error
-    pub fn dir_or_err(
-        self,
-        result: Result<DirentList, Errno>,
-        min_offset: i64,
-        size: usize,
-        /* blank space */
-    ) {
-        match result {
-            Ok(entries) => self.dir(&entries, min_offset, size),
-            Err(err) => self.error(err),
-        }
-    }
-
+    /*
     #[cfg(feature = "abi-7-21")]
     // Note: trait_legacy has its own implementation of this function
     // this one is for (future) Sync/Async traits
@@ -590,50 +408,8 @@ impl ReplyHandler {
         min_offset: i64,
         size: usize,
         /* blank space */
-    ) {
-        let mut buf = ll::reply::DirentPlusBuf::new(size);
-        for (dirent, entry) in entries_plus_list.iter() {
-            if dirent.offset <= min_offset {
-                log::debug!(
-                    "ReplyHandler::dirplus: skipping item with offset #{}",
-                    dirent.offset
-                );
-                continue;
-            }
-            log::debug!(
-                "ReplyHandler::dirplus: processing item with offset #{}",
-                dirent.offset
-            );
-            if buf.push(dirent, entry, self.attr_ttl_override) {
-                log::debug!("ReplyHandler::dirplus: buffer full!");
-                break;
-            }
-        }
-        self.send_ll(&buf.into());
-    }
-
-    #[cfg(feature = "abi-7-21")]
-    // Reply to a request with a filled directory plus buffer or an error
-    pub fn dirplus_or_err(
-        self,
-        result: Result<DirentPlusList, Errno>,
-        min_offset: i64,
-        size: usize,
-        /* blank space */
-    ) {
-        match result {
-            Ok(entries) => self.dirplus(&entries, min_offset, size),
-            Err(err) => self.error(err),
-        }
-    }
-
-    /// Reply to a request with extended attribute information
-    pub fn xattr(self, reply: Xattr) {
-        match reply {
-            Xattr::Size(s) => self.xattr_size(s),
-            Xattr::Data(d) => self.xattr_data(&d),
-        }
-    }
+    ) {}
+    */
 
     /// Reply to a request with the size of an extended attribute
     pub fn xattr_size(self, size: u32) {
@@ -645,27 +421,10 @@ impl ReplyHandler {
         self.send_ll(&ll::Response::new_slice(data));
     }
 
-    /// Reply to a request with extended attribute information or an error
-    pub fn xattr_or_err(self, result: Result<Xattr, Errno>) {
-        match result {
-            Ok(xattr) => self.xattr(xattr),
-            Err(err) => self.error(err),
-        }
-    }
-
     #[cfg(feature = "abi-7-24")]
     /// Reply to a request with a seeked offset
     pub fn offset(self, offset: i64) {
         self.send_ll(&ll::Response::new_lseek(offset));
-    }
-
-    #[cfg(feature = "abi-7-24")]
-    /// Reply to a request with a seeked offset or an error
-    pub fn offset_or_err(self, result: Result<i64, Errno>) {
-        match result {
-            Ok(offset) => self.offset(offset),
-            Err(err) => self.error(err),
-        }
     }
 
     /// Disable this replyhandler. No reply will be sent.
@@ -1118,150 +877,11 @@ mod test {
 
     #[test]
     fn reply_directory() {
-        let sender = AssertSender {
-            expected: vec![
-                0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65,
-                0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00,
-                0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
-            ],
-        };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        let entries = vec![
-            Dirent {
-                ino: 0xaabb,
-                offset: 1,
-                kind: FileType::Directory,
-                name: Vec::from(b"hello"),
-            },
-            Dirent {
-                ino: 0xccdd,
-                offset: 2,
-                kind: FileType::RegularFile,
-                name: Vec::from(b"world.rs"),
-            },
-        ];
-        replyhandler.dir(&entries.into(), 0, std::mem::size_of::<u8>() * 128);
     }
 
     #[test]
     #[cfg(feature = "abi-7-24")]
     fn reply_directory_plus() {
-        // prepare the expected file attribute portion of the message
-        // see test::reply_entry() for details
-        let mut entry_bytes = Vec::new();
-        entry_bytes.extend_from_slice(&[
-            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-        ]);
-        let mut attr_bytes = default_attr_bytes!();
-
-        let mut expected = Vec::new();
-
-        expected.extend_from_slice(&[
-            // FUSE header
-            0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-            0x00, 0x00,
-        ]);
-
-        /* ------ file 1 ------- */
-        // entry 1 and attr 1 get a specific ino value
-        entry_bytes[0] = 0xbb;
-        entry_bytes[1] = 0xaa;
-        attr_bytes[0] = 0xbb;
-        attr_bytes[1] = 0xaa;
-        // entry 1 and attr 1 have the directory
-        let i = if cfg!(target_os = "macos") { 73 } else { 61 };
-        attr_bytes[i] = 0x41;
-        expected.extend_from_slice(&entry_bytes);
-        expected.extend_from_slice(&attr_bytes);
-        // dirent 1
-        // see test::reply_directory() for details
-        expected.extend_from_slice(&[
-            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c,
-            0x6f, 0x00, 0x00, 0x00,
-        ]);
-
-        /* ------ file 2 ------- */
-        let mut attr_bytes = default_attr_bytes!();
-        // entry 2 and attr 2 get a specific ino value
-        entry_bytes[0] = 0xdd;
-        entry_bytes[1] = 0xcc;
-        attr_bytes[0] = 0xdd;
-        attr_bytes[1] = 0xcc;
-        expected.extend_from_slice(&entry_bytes);
-        expected.extend_from_slice(&attr_bytes);
-        // dirent 2
-        expected.extend_from_slice(&[
-            0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c,
-            0x64, 0x2e, 0x72, 0x73,
-        ]);
-        // correct the header
-        expected[0] = (expected.len()) as u8;
-        // test reply will be compared to expected
-        let sender = AssertSender { expected };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
-        let ttl = Duration::new(0x8765, 0x4321);
-        let attr1 = FileAttr {
-            ino: 0xaabb,
-            size: 0x22,
-            blocks: 0x33,
-            atime: time,
-            mtime: time,
-            ctime: time,
-            crtime: time,
-            kind: FileType::Directory,
-            perm: 0o644,
-            nlink: 0x55,
-            uid: 0x66,
-            gid: 0x77,
-            rdev: 0x88,
-            flags: 0x99,
-            blksize: 0xbb,
-        };
-        let mut attr2 = attr1; //implicit copy
-        attr2.ino = 0xccdd;
-        attr2.kind = FileType::RegularFile;
-        let generation = Some(0xaa);
-        let entries = vec![
-            (
-                Dirent {
-                    ino: 0xaabb,
-                    offset: 1,
-                    kind: FileType::Directory,
-                    name: Bytes::from_static(OsStr::new("hello").as_bytes()),
-                },
-                Entry {
-                    ino: 0xaabb,
-                    generation,
-                    file_ttl: ttl,
-                    attr: attr1,
-                    attr_ttl: ttl,
-                },
-            ),
-            (
-                Dirent {
-                    ino: 0xccdd,
-                    offset: 2,
-                    kind: FileType::RegularFile,
-                    name: Bytes::from_static(OsStr::new("world.rs").as_bytes()),
-                },
-                Entry {
-                    ino: 0xccdd,
-                    generation,
-                    file_ttl: ttl,
-                    attr: attr2,
-                    attr_ttl: ttl,
-                },
-            ),
-        ];
-        replyhandler.dirplus(&entries.into(), 0, std::mem::size_of::<u8>() * 4096);
     }
 
     #[test]
@@ -1273,7 +893,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.xattr(Xattr::Size(0x12345678));
+        replyhandler.xattr_size(0x12345678);
     }
 
     #[test]
@@ -1285,7 +905,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.xattr(Xattr::Data(Vec::from(&[0x11, 0x22, 0x33, 0x44])));
+        replyhandler.xattr_data(&Vec::from(&[0x11, 0x22, 0x33, 0x44]));
     }
 
     impl super::ReplySender for SyncSender<()> {

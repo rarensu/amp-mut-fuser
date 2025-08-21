@@ -423,7 +423,8 @@ impl From<DirEntOffset> for i64 {
 }
 */
 
-/// Used to respond to [ReadDirPlus] requests.
+/* Note: the Legacy Callback module has its own implementation of this feature. This one is for future Sync/Asycn filesystems
+/// Used to respond to [ReadDir] requests.
 #[derive(Debug)]
 pub struct DirentBuf(EntListBuf);
 impl From<DirentBuf> for Response<'_> {
@@ -442,13 +443,6 @@ impl DirentBuf {
     /// value to request the next entries in further readdir calls
     #[must_use]
     pub fn push(&mut self, ent: &crate::reply::Dirent) -> bool {
-        let header = abi::fuse_dirent {
-            ino: ent.ino.into(),
-            off: ent.offset,
-            namelen: ent.name.len().try_into().expect("Name too long"),
-            typ: mode_from_kind_and_perm(ent.kind, 0) >> 12,
-        };
-        self.0.push([header.as_bytes(), &ent.name])
     }
 }
 
@@ -479,34 +473,9 @@ impl DirentPlusBuf {
         y: &crate::reply::Entry,
         attr_ttl_override: bool,
     ) -> bool {
-        let header = abi::fuse_direntplus {
-            entry_out: abi::fuse_entry_out {
-                nodeid: y.ino,
-                generation: y.generation.unwrap_or(1),
-                entry_valid: y.file_ttl.as_secs(),
-                attr_valid: if attr_ttl_override {
-                    0
-                } else {
-                    y.attr_ttl.as_secs()
-                },
-                entry_valid_nsec: y.file_ttl.subsec_nanos(),
-                attr_valid_nsec: if attr_ttl_override {
-                    0
-                } else {
-                    y.attr_ttl.subsec_nanos()
-                },
-                attr: fuse_attr_from_attr(&y.attr),
-            },
-            dirent: abi::fuse_dirent {
-                ino: x.ino,
-                off: x.offset,
-                namelen: x.name.len().try_into().expect("Name too long"),
-                typ: mode_from_kind_and_perm(x.kind, 0) >> 12,
-            },
-        };
-        self.0.push([header.as_bytes(), &x.name])
     }
 }
+*/
 
 #[cfg(test)]
 mod test {
@@ -869,35 +838,5 @@ mod test {
 
     #[test]
     fn reply_directory() {
-        let expected = vec![
-            0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-            0x00, 0x00, 0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65,
-            0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00,
-            0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
-        ];
-        let mut buf = DirentBuf::new(4096);
-        assert!(
-            !buf.push(&crate::reply::Dirent {
-                ino: 0xaabb,
-                offset: 1,
-                kind: FileType::Directory,
-                name: "hello".into()
-            })
-        );
-        assert!(
-            !buf.push(&crate::reply::Dirent {
-                ino: 0xccdd,
-                offset: 2,
-                kind: FileType::RegularFile,
-                name: "world.rs".into()
-            })
-        );
-        let r: Response<'_> = buf.into();
-        assert_eq!(
-            r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
-            expected
-        );
     }
 }

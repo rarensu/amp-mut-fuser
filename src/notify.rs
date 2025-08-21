@@ -6,8 +6,6 @@ use std::{convert::TryInto, ffi::OsStr};
 use crate::{
     ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification}
 };
-#[cfg(feature = "abi-7-40")]
-use crate::ll::fuse_ioctl::ioctl_close_backing;
 use crate::channel::Channel;
 
 /* ------ General Notification Handling ------ */
@@ -17,8 +15,6 @@ use crate::channel::Channel;
 /// Callback for sending notifications to the fuse device
 pub(crate) trait NotificationSender: Send + Sync + Unpin + 'static {
     fn notify(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()>;
-    #[cfg(feature = "abi-7-40")]
-    fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 
 impl fmt::Debug for Box<dyn NotificationSender> {
@@ -33,10 +29,6 @@ impl NotificationSender for crate::channel::Channel {
         notification
             .with_iovec(code, |iov| self.send(iov))
             .map_err(too_big_err)?
-    }
-    #[cfg(feature = "abi-7-40")]
-    fn close_backing(&self, id: u32) -> io::Result<u32> {
-        ioctl_close_backing(self.raw_fd, id)
     }
 }
 

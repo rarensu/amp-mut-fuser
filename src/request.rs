@@ -12,8 +12,6 @@ use std::convert::Into;
 use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
 use crate::reply::ReplyHandler;
-#[cfg(feature = "abi-7-40")]
-use crate::passthrough::BackingHandler;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::NotificationHandler;
 
