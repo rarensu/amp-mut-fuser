@@ -77,14 +77,14 @@ impl RequestHandler {
         #[cfg(feature = "abi-7-11")]
         let notificationhandler = crate::trait_legacy::LegacyNotifier::new(ch_main.clone());
         #[cfg(feature = "abi-7-40")]
-        let another_ch_main = ch_main.clone();
+        let ch_main_clone = ch_main.clone();
         let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);        
         Some(Self {
             request,
             meta,
             replyhandler,
             #[cfg(feature = "abi-7-40")]
-            ch_main,
+            ch_main: ch_main_clone,
             #[cfg(feature = "abi-7-11")]
             notificationhandler,
         })
