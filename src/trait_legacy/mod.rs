@@ -49,4 +49,4 @@ pub use callback::{
 use crate::notify::{PollHandler, NotificationHandler};
 
 #[cfg(feature = "abi-7-40")]
-use crate::passthrough::{BackingId, BackingHandler};
+use crate::passthrough::BackingId;

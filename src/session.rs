@@ -92,7 +92,7 @@ impl<FS: Filesystem> Session<FS> {
         filesystem: FS,
         mountpoint: P,
         options: &[MountOption],
-    ) -> io::Result<Session<FS>> {
+    ) -> io::Result<Self> {
         let mountpoint = mountpoint.as_ref();
         info!("Mounting {}", mountpoint.display());
         // Create the channel for fuse messages
@@ -120,12 +120,12 @@ impl<FS: Filesystem> Session<FS> {
             SessionACL::Owner
         };
         let mount = Some((mountpoint.to_owned(), mount));
-        Ok(Session::from_mount(filesystem, ch, allowed, mount))
+        Session::from_mount(filesystem, ch, allowed, mount)
     }
 
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
-    pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
+    pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> io::Result<Self> {
         // Create the channel for fuse messages
         let ch = Channel::new(fd.into());
         Session::from_mount(filesystem, ch, acl, None)
@@ -137,7 +137,7 @@ impl<FS: Filesystem> Session<FS> {
         ch: Channel,
         allowed: SessionACL,
         mount: Option<(PathBuf, Mount)>,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let meta = SessionMeta {
             allowed,
             session_owner: geteuid().as_raw(),
@@ -148,14 +148,14 @@ impl<FS: Filesystem> Session<FS> {
         };
         #[cfg(feature = "side-channel")]
         let ch_side = ch.fork()?;
-        Session {
+        Ok(Session {
             filesystem,
             ch_main: ch,
             #[cfg(feature = "side-channel")]
             ch_side,
             mount: Arc::new(Mutex::new(mount)),
             meta,
-        }
+        })
     }
 
     /// This function starts the main Session loop of a Legacy Filesystem in the current thread.

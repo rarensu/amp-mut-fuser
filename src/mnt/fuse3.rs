@@ -11,7 +11,6 @@ use std::{
     os::unix::{ffi::OsStrExt, io::FromRawFd},
     path::Path,
     ptr,
-    sync::Arc,
 };
 
 /// Ensures that an os error is never 0/Success
