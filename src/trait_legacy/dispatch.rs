@@ -621,10 +621,10 @@ impl RequestHandler {
             }
             #[cfg(feature = "abi-7-21")]
             Operation::ReadDirPlus(x) => {
+                let mut callback = DirectoryPlusHandler::new(x.size() as usize, self.replyhandler);
                 if se_meta.allowed == SessionACL::RootAndOwner {
                     callback.attr_ttl_override();
                 }
-                let mut callback = DirectoryPlusHandler::new(x.size() as usize, self.replyhandler);
                 let reply = ReplyDirectoryPlus::new(Box::new(callback));
                 fs.readdirplus(
                     &req,

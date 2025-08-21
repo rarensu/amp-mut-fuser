@@ -146,11 +146,13 @@ impl<FS: Filesystem> Session<FS> {
             initialized: AtomicBool::new(false),
             destroyed: AtomicBool::new(false),
         };
+        #[cfg(feature = "side-channel")]
+        let ch_side = ch.fork()?;
         Session {
             filesystem,
             ch_main: ch,
             #[cfg(feature = "side-channel")]
-            ch_side: ch,
+            ch_side,
             mount: Arc::new(Mutex::new(mount)),
             meta,
         }
@@ -176,7 +178,11 @@ impl<FS: Filesystem> Session<FS> {
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
     pub fn notifier(&self) -> NotificationHandler {
-        NotificationHandler::new(self.ch.clone())
+        #[cfg(not(feature = "side-channel"))]
+        let this_ch = self.ch_main.clone();
+        #[cfg(feature = "side-channel")]
+        let this_ch = self.ch_side.clone();
+        NotificationHandler::new(this_ch)
     }
 }
 
@@ -230,8 +236,10 @@ impl BackgroundSession {
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
     pub fn new<FS: Filesystem + Send + 'static>(se: Session<FS>) -> io::Result<BackgroundSession> {
-        #[cfg(feature = "abi-7-11")]
-        let sender = se.ch.clone();
+        #[cfg(all(feature = "abi-7-11", not(feature = "side-channel")))]
+        let sender = se.ch_main.clone();
+        #[cfg(all(feature = "abi-7-11", feature = "side-channel"))]
+        let sender = se.ch_side.clone();
         // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         let guard = thread::spawn(move || {

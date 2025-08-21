@@ -17,6 +17,7 @@ use crate::channel::Channel;
 /// Callback for sending notifications to the fuse device
 pub(crate) trait NotificationSender: Send + Sync + Unpin + 'static {
     fn notify(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()>;
+    #[cfg(feature = "abi-7-40")]
     fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 

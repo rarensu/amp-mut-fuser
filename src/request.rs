@@ -75,7 +75,7 @@ impl RequestHandler {
             pid: request.pid(),
         };
         #[cfg(feature = "abi-7-11")]
-        let notificationhandler = crate::trait_legacy::LegacyNotifier::new(sender.clone());
+        let notificationhandler = crate::trait_legacy::LegacyNotifier::new(ch_main.clone());
         #[cfg(feature = "abi-7-40")]
         let another_ch_main = ch_main.clone();
         let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);        
@@ -94,7 +94,7 @@ impl RequestHandler {
 #[cfg(feature = "abi-7-40")]
 macro_rules! get_backing_handler {
     ($me:ident) => {
-        crate::passthrough::BackingHandler::new($me.ch_main, $me.queue)
+        crate::passthrough::BackingHandler::new($me.ch_main)
     }
 }
 #[cfg(feature = "abi-7-40")]
