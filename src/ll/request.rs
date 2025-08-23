@@ -966,7 +966,7 @@ mod op {
         arg: &'a fuse_init_in,
     }
     impl_request!(Init<'a>);
-    impl<'a> Init<'a> {
+    impl Init<'_> {
         pub fn capabilities(&self) -> u64 {
             #[cfg(feature = "abi-7-36")]
             if self.arg.flags & (FUSE_INIT_EXT as u32) != 0 {

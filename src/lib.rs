@@ -59,8 +59,6 @@ use ll::fuse_abi::consts::*;
 use log::{debug, error, info, warn};
 use mnt::mount_options::check_option_conflicts;
 use mnt::mount_options::parse_options_from_args;
-#[cfg(feature = "serializable")]
-use serde::{Deserialize, Serialize};
 use session::MAX_WRITE_SIZE;
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;

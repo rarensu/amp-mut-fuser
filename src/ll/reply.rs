@@ -203,6 +203,7 @@ impl<'a> Response<'a> {
     }
 
     // TODO: Can flags be more strongly typed?
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_create(
         file_ttl: &Duration,
         attr: &Attr,
@@ -630,7 +631,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_attr(&ttl, &attr.into(), false);
+        let r = Response::new_attr(&ttl, &attr, false);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected

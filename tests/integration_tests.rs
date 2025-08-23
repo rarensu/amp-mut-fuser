@@ -2,7 +2,7 @@
 #![cfg(target_os = "linux")]
 
 #[test]
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn unmount_no_send() {
     use fuser::{Filesystem, Session};
     use std::rc::Rc;

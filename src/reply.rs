@@ -31,7 +31,7 @@ impl fmt::Debug for Box<dyn ReplySender> {
 impl ReplySender for crate::channel::Channel {
     /// Send data.
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-        crate::channel::Channel::send(&self, data)
+        crate::channel::Channel::send(self, data)
     }
 }
 
@@ -300,7 +300,7 @@ impl ReplyHandler {
     /// Reply to a request with file attributes
     pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
         let attr_ttl_override = self.attr_ttl_override;
-        self.send_ll(&ll::Response::new_attr(ttl, &attr, attr_ttl_override));
+        self.send_ll(&ll::Response::new_attr(ttl, attr, attr_ttl_override));
     }
 
     #[cfg(target_os = "macos")]
@@ -439,11 +439,7 @@ mod test {
     #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::{FileAttr, FileType};
-    #[cfg(feature = "abi-7-24")]
-    use std::ffi::OsStr;
     use std::io::IoSlice;
-    #[cfg(feature = "abi-7-24")]
-    use std::os::unix::ffi::OsStrExt;
     use std::sync::mpsc::{SyncSender, sync_channel};
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
