@@ -10,6 +10,9 @@ mod run;
 
 mod callback;
 
+#[cfg(test)]
+mod test;
+
 /* ------ Structs ------ */
 #[cfg(feature = "abi-7-21")]
 pub use callback::ReplyDirectoryPlus;

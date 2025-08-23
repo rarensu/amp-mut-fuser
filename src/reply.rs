@@ -432,6 +432,22 @@ impl ReplyHandler {
     }
 }
 
+pub mod test_utils {
+    pub struct AssertSender {
+        pub expected: Vec<u8>,
+    }
+    impl super::ReplySender for AssertSender {
+        fn send(&self, data: &[std::io::IoSlice<'_>]) -> std::io::Result<()> {
+            let mut v = vec![];
+            for x in data {
+                v.extend_from_slice(x);
+            }
+            assert_eq!(self.expected, v);
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unreadable_literal)] // ugly hardcoded literals for testing
 #[allow(clippy::cast_possible_truncation)] // predetermined literals will not be truncated
@@ -439,6 +455,7 @@ mod test {
     #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::{FileAttr, FileType};
+    use super::test_utils::AssertSender;
     use std::io::IoSlice;
     use std::sync::mpsc::{SyncSender, sync_channel};
     use std::thread;
@@ -472,21 +489,6 @@ mod test {
             c: 0x5678,
         };
         assert_eq!(data.as_bytes(), [0x12, 0x34, 0x78, 0x56]);
-    }
-
-    struct AssertSender {
-        expected: Vec<u8>,
-    }
-
-    impl super::ReplySender for AssertSender {
-        fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-            let mut v = vec![];
-            for x in data {
-                v.extend_from_slice(x);
-            }
-            assert_eq!(self.expected, v);
-            Ok(())
-        }
     }
 
     #[test]
