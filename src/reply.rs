@@ -4,7 +4,6 @@
 //! Either the request logic will call the one of the reply handler's self-destructive methods,
 //! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
 
-
 use crate::ll; // too many structs to list
 use crate::{Errno, KernelConfig};
 #[allow(unused_imports)]
@@ -37,7 +36,7 @@ impl ReplySender for crate::channel::Channel {
 }
 
 /// `ReplyHandler` is a struct which holds the unique identifiers needed to reply
-/// to a specific request. Replying methods consume `self` to guarantee at most one 
+/// to a specific request. Replying methods consume `self` to guarantee at most one
 /// reply is sent per request.
 #[derive(Debug)]
 pub(crate) struct ReplyHandler {
@@ -165,7 +164,6 @@ pub struct Entry {
     /// duration to cache file attributes
     pub attr_ttl: Duration,
 }
-
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
@@ -295,18 +293,14 @@ impl ReplyHandler {
             entry.file_ttl,
             &entry.attr,
             entry.attr_ttl,
-            attr_ttl_override
+            attr_ttl_override,
         ));
     }
 
     /// Reply to a request with file attributes
     pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
         let attr_ttl_override = self.attr_ttl_override;
-        self.send_ll(&ll::Response::new_attr(
-            ttl,
-            &attr,
-            attr_ttl_override
-        ));
+        self.send_ll(&ll::Response::new_attr(ttl, &attr, attr_ttl_override));
     }
 
     #[cfg(target_os = "macos")]
@@ -876,13 +870,11 @@ mod test {
     }
 
     #[test]
-    fn reply_directory() {
-    }
+    fn reply_directory() {}
 
     #[test]
     #[cfg(feature = "abi-7-24")]
-    fn reply_directory_plus() {
-    }
+    fn reply_directory_plus() {}
 
     #[test]
     fn reply_xattr_size() {

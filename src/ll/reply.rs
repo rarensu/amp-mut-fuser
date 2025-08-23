@@ -105,14 +105,10 @@ impl<'a> Response<'a> {
     pub(crate) fn new_attr(
         ttl: &Duration,
         attr: &crate::FileAttr,
-        attr_ttl_override: bool
+        attr_ttl_override: bool,
     ) -> Self {
         let r = abi::fuse_attr_out {
-            attr_valid: if attr_ttl_override {
-                0
-            } else {
-                ttl.as_secs()
-            },
+            attr_valid: if attr_ttl_override { 0 } else { ttl.as_secs() },
             attr_valid_nsec: if attr_ttl_override {
                 0
             } else {
@@ -286,7 +282,7 @@ impl<'a> Response<'a> {
         let r = abi::fuse_getxattr_out { size, padding: 0 };
         Self::from_struct(&r)
     }
-    
+
     #[cfg(feature = "abi-7-24")]
     pub(crate) fn new_lseek(offset: i64) -> Self {
         let r = abi::fuse_lseek_out { offset };
@@ -837,6 +833,5 @@ mod test {
     }
 
     #[test]
-    fn reply_directory() {
-    }
+    fn reply_directory() {}
 }

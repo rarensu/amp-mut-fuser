@@ -1,9 +1,4 @@
-use std::{
-    fs::File,
-    io,
-    os::unix::prelude::AsRawFd,
-    sync::Arc,
-};
+use std::{fs::File, io, os::unix::prelude::AsRawFd, sync::Arc};
 
 use libc::{c_int, c_void, size_t};
 
@@ -47,9 +42,9 @@ impl Channel {
         let raw_fd = owned_fd.as_raw_fd();
         Self {
             owned_fd,
-            raw_fd, 
+            raw_fd,
             #[cfg(feature = "side-channel")]
-            is_main: true 
+            is_main: true,
         }
     }
     // Create a new communication channel to the kernel driver.
@@ -60,9 +55,9 @@ impl Channel {
         let owned_fd = device.clone();
         Self {
             owned_fd,
-            raw_fd, 
+            raw_fd,
             #[cfg(feature = "side-channel")]
-            is_main: true 
+            is_main: true,
         }
     }
 
@@ -109,7 +104,9 @@ impl Channel {
     /// Propagates underlying errors.
     pub fn fork(&self) -> std::io::Result<Self> {
         if !self.is_main {
-            log::error!("Attempted to create a new fuse worker from a fuse channel that is not main");
+            log::error!(
+                "Attempted to create a new fuse worker from a fuse channel that is not main"
+            );
         }
         let fuse_device_name = "/dev/fuse";
         let file = std::fs::OpenOptions::new()

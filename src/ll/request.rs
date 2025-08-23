@@ -2155,7 +2155,12 @@ impl<'a> AnyRequest {
         let opcode = fuse_opcode::try_from(self.header.opcode)
             .map_err(|_: InvalidOpcodeError| RequestError::UnknownOperation(self.header.opcode))?;
         // Parse/check operation arguments
-        op::parse(&self.header, &opcode, &self.raw[self.body_start..self.body_end]).ok_or(RequestError::InsufficientData)
+        op::parse(
+            &self.header,
+            &opcode,
+            &self.raw[self.body_start..self.body_end],
+        )
+        .ok_or(RequestError::InsufficientData)
     }
 }
 

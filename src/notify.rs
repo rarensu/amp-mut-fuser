@@ -1,12 +1,10 @@
-use std::io;
 use std::fmt;
+use std::io;
 #[allow(unused)]
 use std::{convert::TryInto, ffi::OsStr};
 
-use crate::{
-    ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification}
-};
 use crate::channel::Channel;
+use crate::ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification};
 
 /* ------ General Notification Handling ------ */
 
@@ -46,9 +44,7 @@ pub struct NotificationHandler {
 impl NotificationHandler {
     /// Create a reply handler for a specific request identifier
     pub(crate) fn new(channel: Channel) -> NotificationHandler {
-        NotificationHandler {
-            channel,
-        }
+        NotificationHandler { channel }
     }
 }
 
@@ -94,8 +90,7 @@ impl NotificationHandler {
 
     #[allow(unused)]
     fn send_inval(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
-        match self.channel
-        .notify(code, notification) {
+        match self.channel.notify(code, notification) {
             // ENOENT is harmless for an invalidation (the
             // kernel may have already dropped the cached
             // entry on its own anyway), so ignore it.
@@ -109,7 +104,6 @@ impl NotificationHandler {
 
 /// A handle to a pending poll() request. Can be saved and used to notify the
 /// kernel when a poll is ready.
-#[derive(Debug)]
 pub struct PollHandler {
     handle: u64,
     sender: NotificationHandler,
@@ -134,10 +128,9 @@ impl From<PollHandler> for u64 {
         value.handle
     }
 }
-/*
+
 impl std::fmt::Debug for PollHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("PollHandler").field(&self.handle).finish()
     }
 }
-*/

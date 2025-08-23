@@ -10,7 +10,12 @@ use crate::XTimes;
 #[cfg(feature = "abi-7-21")]
 use crate::ll::reply::fuse_attr_from_attr;
 use crate::{
-    ll::{reply::{mode_from_kind_and_perm, EntListBuf, Response}, Errno}, reply::{Entry, Lock, Open, ReplyHandler, Statfs}, FileAttr, FileType
+    FileAttr, FileType,
+    ll::{
+        Errno,
+        reply::{EntListBuf, Response, mode_from_kind_and_perm},
+    },
+    reply::{Entry, Lock, Open, ReplyHandler, Statfs},
 };
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
@@ -21,13 +26,13 @@ use super::PollHandler;
 */
 
 #[cfg(feature = "abi-7-40")]
-use std::os::fd::AsRawFd;
+use super::{BackingHandler, BackingId};
+#[cfg(feature = "abi-7-40")]
+use crate::consts::FOPEN_PASSTHROUGH;
 #[cfg(feature = "abi-7-40")]
 use std::io;
 #[cfg(feature = "abi-7-40")]
-use super::{BackingId, BackingHandler};
-#[cfg(feature = "abi-7-40")]
-use crate::consts::FOPEN_PASSTHROUGH;
+use std::os::fd::AsRawFd;
 
 /* ------ Err ------ */
 
@@ -314,7 +319,7 @@ impl CallbackOpen for OpenHandler {
     }
     #[cfg(feature = "abi-7-40")]
     fn open_backing(&self, fd: i32) -> io::Result<BackingId> {
-        // Note: although BackingHandler supports generic `<F: AsRawFd>`, 
+        // Note: although BackingHandler supports generic `<F: AsRawFd>`,
         // CallbackOpen requires a fixed type for this call.
         // `i32` is a valid concrete type for `AsRawFd`
         self.backer.open_backing(fd)
@@ -351,7 +356,7 @@ impl ReplyOpen {
     #[cfg(feature = "abi-7-40")]
     pub fn open_backing<F: AsRawFd>(&self, file: F) -> io::Result<BackingId> {
         let fd = file.as_raw_fd();
-        // If the user passes in an single-owner `File`, this function must retain it long enough 
+        // If the user passes in an single-owner `File`, this function must retain it long enough
         // to obtain a backing id. It can be dropped (closed) afterwards.
         self.handler.open_backing(fd)
     }

@@ -11,9 +11,9 @@ use std::convert::Into;
 
 use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
-use crate::reply::ReplyHandler;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::NotificationHandler;
+use crate::reply::ReplyHandler;
 
 /// Request data structure
 #[derive(Debug)]
@@ -76,7 +76,7 @@ impl RequestHandler {
         let notificationhandler = NotificationHandler::new(ch_main.clone());
         #[cfg(feature = "abi-7-40")]
         let ch_main_clone = ch_main.clone();
-        let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);        
+        let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);
         Some(Self {
             request,
             meta,
@@ -93,7 +93,7 @@ impl RequestHandler {
 macro_rules! get_backing_handler {
     ($me:ident) => {
         crate::passthrough::BackingHandler::new($me.ch_main)
-    }
+    };
 }
 #[cfg(feature = "abi-7-40")]
 pub(crate) use get_backing_handler;

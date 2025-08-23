@@ -22,16 +22,13 @@ impl<FS: Filesystem> Session<FS> {
             // The kernel driver makes sure that we get exactly one request per read
             match self.ch_main.receive(&mut buffer) {
                 Ok(data) => {
-                    match RequestHandler::new(
-                        self.ch_main.clone(),
-                        data
-                    ) {
+                    match RequestHandler::new(self.ch_main.clone(), data) {
                         // Dispatch request
                         Some(req) => req.dispatch_legacy(&mut self.filesystem, &self.meta),
                         // Quit loop on illegal request
                         None => break,
                     }
-                },
+                }
                 Err(err) => match err.raw_os_error() {
                     // Operation interrupted. Accordingly to FUSE, this is safe to retry
                     Some(ENOENT) => continue,

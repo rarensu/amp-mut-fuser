@@ -9,6 +9,7 @@
 use log::{debug, error, info, warn};
 use nix::unistd::geteuid;
 use std::fmt;
+use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{
@@ -17,13 +18,12 @@ use std::sync::atomic::{
 };
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::io;
 
 use crate::Filesystem;
 use crate::MountOption;
-use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
 use crate::notify::NotificationHandler;
+use crate::{channel::Channel, mnt::Mount};
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS

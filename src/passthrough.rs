@@ -1,8 +1,8 @@
-use std::io;
 use std::fmt;
+use std::io;
 use std::os::fd::AsRawFd;
 
-use crate::ll::fuse_ioctl::{ioctl_open_backing, ioctl_close_backing};
+use crate::ll::fuse_ioctl::{ioctl_close_backing, ioctl_open_backing};
 
 /// A reference to a previously opened fd intended to be used for passthrough
 ///
@@ -40,7 +40,7 @@ impl Drop for BackingId {
     }
 }
 
-pub trait BackingSender: Send + Sync + Unpin + 'static  {
+pub trait BackingSender: Send + Sync + Unpin + 'static {
     fn open_backing(&self, fd: u32) -> io::Result<u32>;
     fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
@@ -70,27 +70,25 @@ pub struct BackingHandler {
 impl BackingHandler {
     /// Create a handler for backing id operations
     pub fn new(sender: crate::channel::Channel) -> BackingHandler {
-        BackingHandler {
-            sender,
-        }
+        BackingHandler { sender }
     }
 }
 
 impl BackingHandler {
-    /// This method builds a `BackingId` for the provided File. 
+    /// This method builds a `BackingId` for the provided File.
     /// You may use this during `open` or `opendir` or `heartbeat`.
     /// # Errors
     /// Reports errors with the underlying fuse connection.
     pub fn open_backing<F: AsRawFd>(&self, file: F) -> io::Result<BackingId> {
         let fd = file.as_raw_fd() as u32;
         let id = self.sender.open_backing(fd)?;
-        Ok( BackingId {
+        Ok(BackingId {
             _fd: fd,
             closer: self.sender.clone(),
             id,
         })
     }
-    /// This method destroys a `BackingId`. 
+    /// This method destroys a `BackingId`.
     /// You may use this during `open` or `opendir` or `heartbeat`.
     /// # Errors
     /// Reports errors with the underlying fuse connection.
@@ -98,6 +96,6 @@ impl BackingHandler {
     pub fn close_backing(&self, mut backing: BackingId) -> io::Result<u32> {
         let id = backing.id;
         backing.id = 0;
-        self.sender.close_backing(id) 
+        self.sender.close_backing(id)
     }
 }

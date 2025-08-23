@@ -10,7 +10,6 @@ mod run;
 
 mod callback;
 
-
 /* ------ Structs ------ */
 #[cfg(feature = "abi-7-21")]
 pub use callback::ReplyDirectoryPlus;
@@ -49,4 +48,4 @@ pub use callback::{
 use crate::notify::PollHandler;
 
 #[cfg(feature = "abi-7-40")]
-use crate::passthrough::{BackingId, BackingHandler};
+use crate::passthrough::{BackingHandler, BackingId};

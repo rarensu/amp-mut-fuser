@@ -3,11 +3,11 @@ use log::{debug, error, info, warn};
 use std::sync::atomic::Ordering::Relaxed;
 
 use crate::ll::{self, Operation, Request as AnyRequest};
-use crate::session::{SessionACL, SessionMeta};
-use crate::request::{RequestHandler, RequestMeta};
-use crate::{ll::Errno, KernelConfig,};
 #[cfg(feature = "abi-7-40")]
 use crate::request::get_backing_handler;
+use crate::request::{RequestHandler, RequestMeta};
+use crate::session::{SessionACL, SessionMeta};
+use crate::{KernelConfig, ll::Errno};
 
 #[cfg(feature = "abi-7-24")]
 use super::ReplyLseek;
@@ -399,7 +399,7 @@ impl RequestHandler {
                 #[cfg(feature = "abi-7-40")]
                 let callback = OpenHandler::new(self.replyhandler, backinghandler);
                 #[cfg(not(feature = "abi-7-40"))]
-                let callback = OpenHandler::new(self.replyhandler);                
+                let callback = OpenHandler::new(self.replyhandler);
                 let reply = ReplyOpen::new(Box::new(callback));
                 fs.opendir(
                     &req,
@@ -587,10 +587,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    PollHandler::new(
-                        self.notificationhandler,
-                        x.kernel_handle(),
-                    ),
+                    PollHandler::new(self.notificationhandler, x.kernel_handle()),
                     x.events(),
                     x.flags(),
                     reply,

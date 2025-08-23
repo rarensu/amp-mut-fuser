@@ -32,46 +32,46 @@ pub use mnt::mount_options::MountOption;
 pub use notify::PollHandler;
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
-pub use request::RequestMeta;
 pub use reply::{FileAttr, FileType};
+pub use request::RequestMeta;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 
 // Default trait is the Legacy `Filesystem` trait with `Reply` callbacks
 pub use trait_legacy::{Filesystem, Request};
 
-pub use trait_legacy::{
-    ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyXattr,
-    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite,
-};
-#[cfg(feature = "abi-7-11")]
-pub use trait_legacy::{ReplyIoctl, ReplyPoll};
 #[cfg(feature = "abi-7-21")]
 pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
 pub use trait_legacy::ReplyLseek;
 #[cfg(target_os = "macos")]
 pub use trait_legacy::ReplyXTimes;
+pub use trait_legacy::{
+    ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+};
+#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::{ReplyIoctl, ReplyPoll};
 
 /* ------ Imports for use in this file ------ */
 
+use ll::fuse_abi::consts::*;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
-use mnt::mount_options::parse_options_from_args;
 use mnt::mount_options::check_option_conflicts;
-use ll::fuse_abi::consts::*;
-use session::MAX_WRITE_SIZE;
+use mnt::mount_options::parse_options_from_args;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
+use session::MAX_WRITE_SIZE;
+#[cfg(feature = "abi-7-28")]
+use std::cmp::max;
+#[cfg(feature = "abi-7-13")]
+use std::cmp::min;
 use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
 use std::{convert::AsRef, io::ErrorKind};
-#[cfg(feature = "abi-7-28")]
-use std::cmp::max;
-#[cfg(feature = "abi-7-13")]
-use std::cmp::min;
 
 /* ------ FUSE configuration ------ */
 
