@@ -185,8 +185,8 @@ where
             self.meta.notify.store(false, Relaxed);
         } else {
             // Process the notification; blocks until sent
-            let notifier = NotificationHandler::new(notification, self.ch_side.clone());
-            if let Err(e) = notifier.dispatch() {
+            let notifier = NotificationHandler::new(self.ch_side.clone());
+            if let Err(e) = notifier.dispatch(notification) {
                 error!("Failed to send notification: {e:?}");
                 // TODO. Decide if error is fatal. ENODEV might mean unmounted.
                 return Err(e);

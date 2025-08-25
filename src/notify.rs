@@ -115,24 +115,25 @@ impl NotificationHandler {
             }
             #[cfg(feature = "abi-7-12")]
             NotificationKind::InvalEntry(parent, name) => {
-                self.inval_entry(*parent, name)
+                self.inval_entry(parent, &name)
             }
             #[cfg(feature = "abi-7-12")]
             NotificationKind::InvalInode(ino, offset, len) => {
-                self.inval_inode(*ino, *offset, *len);
+                self.inval_inode(ino, offset, len)
             }
             #[cfg(feature = "abi-7-15")]
             NotificationKind::Store(ino, offset, data) => {
-                self.store(*ino, *offset, data)
+                self.store(ino, offset, &data)
             }
             #[cfg(feature = "abi-7-18")]
             NotificationKind::Delete(parent, ino, name) => {
-                self.delete(*parent, *ino, &name)
+                self.delete(parent, ino, &name)
             }
             #[cfg(feature = "abi-7-40")]
             NotificationKind::CloseBacking(id) => {
                 // Channel is also a BackingSender
-                self.channel.close_backing(*id)
+                self.channel.close_backing(id)
+                    .map(|_i|{}) // discard unused integer result
             }
             NotificationKind::Disable => {unreachable!();}
         }
@@ -221,7 +222,7 @@ impl Queues {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// Helper for queueing notifications to be delivered to the kernel at a later time
 pub struct Notifier {
     /// Mechanism to queue a notification
@@ -230,7 +231,7 @@ pub struct Notifier {
 
 impl Notifier {
     /// Create a reply handler for a specific request identifier
-    pub(crate) fn new(queue: Sender<NotificationKind>) -> Notifier {
+    pub fn new(queue: Sender<NotificationKind>) -> Notifier {
         Notifier {
             queue,
         }

@@ -27,82 +27,10 @@ pub mod trait_legacy;
 /// Synchronous Filesystem trait
 pub mod trait_sync;
 
-#[allow(unused_imports)]
-use log::{debug, error, info, warn};
-use mnt::mount_options::parse_options_from_args;
-/*
-#[cfg(feature = "serializable")]
-use serde::de::value::F64Deserializer;
-#[cfg(feature = "serializable")]
-use serde::{Deserialize, Serialize};
-*/
-use std::ffi::OsStr;
-use std::io;
-#[cfg(feature = "threaded")]
-use std::io::ErrorKind;
-use std::path::Path;
-use std::convert::AsRef;
-
-pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
-#[allow(clippy::wildcard_imports)] // avoid duplicating feature gates
-use crate::ll::fuse_abi::consts::*;
-pub use crate::ll::{Errno, TimeOrNow, fuse_abi::consts};
-use crate::mnt::mount_options::check_option_conflicts;
-use crate::session::MAX_WRITE_SIZE;
-use crate::trait_async::Filesystem as AsyncFS;
-use crate::trait_legacy::Filesystem as LegacyFS;
-use crate::trait_sync::Filesystem as SyncFS;
-pub use any::AnyFS;
-pub use bytes::Bytes;
-pub use container::{Container, SafeBorrow};
-pub use mnt::mount_options::MountOption;
-/*
-#[cfg(feature = "abi-7-18")]
-pub use notify::Delete;
-#[cfg(feature = "abi-7-15")]
-pub use notify::Store;
-#[cfg(feature = "abi-7-12")]
-pub use notify::{InvalEntry, InvalInode};
-*/
-#[cfg(feature = "abi-7-11")]
-pub use notify::{Notifier, PollHandler};
-#[cfg(feature = "abi-7-11")]
-pub use trait_legacy::{ReplyIoctl, LegacyNotifier};
-#[cfg(feature = "abi-7-21")]
-pub use trait_legacy::ReplyDirectoryPlus;
-#[cfg(feature = "abi-7-24")]
-pub use trait_legacy::ReplyLseek;
-#[cfg(target_os = "macos")]
-pub use trait_legacy::ReplyXTimes;
-pub use trait_legacy::{
-    ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyXattr,
-    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite,
-};
-#[cfg(feature = "abi-7-40")]
-pub use passthrough::BackingId;
-#[cfg(feature = "abi-7-21")]
-pub use reply::DirentPlusList;
-#[cfg(feature = "abi-7-11")]
-pub use reply::Ioctl;
-#[cfg(target_os = "macos")]
-pub use reply::XTimes;
-pub use reply::{Dirent, DirentList, Entry, FileAttr, FileType, Lock, Open, Statfs, Xattr};
-pub use request::{Forget, RequestMeta};
-#[cfg(feature = "threaded")]
-pub use session::BackgroundSession;
-pub use session::{Session, SessionBuilder, SessionACL, SessionUnmounter};
-#[cfg(feature = "abi-7-28")]
-use std::cmp::max;
-#[cfg(feature = "abi-7-13")]
-use std::cmp::min;
-#[cfg(feature = "abi-7-23")]
-use std::time::Duration;
-
 /* ------ Public Exports ------ */
 
 /// Legacy Filesystem trait with callbacks
 pub use trait_legacy::{Filesystem, Request};
-
 #[cfg(feature = "abi-7-21")]
 pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
@@ -116,8 +44,34 @@ pub use trait_legacy::{
 #[cfg(feature = "abi-7-11")]
 pub use trait_legacy::{ReplyIoctl, ReplyPoll};
 
+/// Sync, Async, and general-purpose stucts
+pub use any::AnyFS;
+pub use container::{Container, SafeBorrow};
+pub use ll::fuse_abi::{FUSE_ROOT_ID, consts};
+pub use ll::{Errno, TimeOrNow};
+pub use mnt::mount_options::MountOption;
+#[cfg(feature = "abi-7-11")]
+pub use notify::{NotificationHandler, NotificationKind, Notifier, PollHandler};
+#[cfg(feature = "abi-7-40")]
+pub use passthrough::BackingId;
+#[cfg(feature = "abi-7-21")]
+pub use reply::DirentPlusList;
+#[cfg(feature = "abi-7-11")]
+pub use reply::Ioctl;
+#[cfg(target_os = "macos")]
+pub use reply::XTimes;
+pub use reply::{Dirent, DirentList, Entry, FileAttr, FileType, Lock, Open, Statfs, Xattr};
+pub use request::{Forget, RequestMeta};
+#[cfg(feature = "threaded")]
+pub use session::BackgroundSession;
+pub use session::{Session, SessionBuilder, SessionACL, SessionUnmounter};
+
 /* ------ Imports for use in this file ------ */
 
+use crate::trait_async::Filesystem as AsyncFS;
+use crate::trait_legacy::Filesystem as LegacyFS;
+use crate::trait_sync::Filesystem as SyncFS;
+#[allow(clippy::wildcard_imports)] // wildcard is used here to avoid duplicating feature gates
 use ll::fuse_abi::consts::*;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -133,7 +87,7 @@ use std::io;
 use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
-use std::{convert::AsRef, io::ErrorKind};
+use std::convert::AsRef;
 
 /* ------ FUSE configuration ------ */
 
@@ -463,7 +417,7 @@ where
         .iter()
         .map(|x| Some(MountOption::from_str(x.to_str()?)))
         .collect();
-    let options = options.ok_or(ErrorKind::InvalidData)?;
+    let options = options.ok_or(io::ErrorKind::InvalidData)?;
     let se = Session::new(filesystem, mountpoint.as_ref(), options.as_ref())?;
     se.spawn()
 }

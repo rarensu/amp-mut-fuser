@@ -12,7 +12,7 @@ use core::panic;
 #[cfg(feature = "threaded")]
 use std::fmt;
 use std::io;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{
     AtomicBool, AtomicU32,
@@ -30,14 +30,12 @@ use crate::notify::{Notification, Notifier};
 use crate::{AnyFS, MountOption};
 use crate::{channel::Channel, mnt::Mount};
 #[cfg(feature = "abi-7-11")]
-use crate::notify::{Queues, Notifier};
+use crate::notify::{Queues, Notifier, NotificationHandler};
 #[cfg(feature = "abi-7-40")]
 use crate::passthrough::BackingHandler;
 use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
-#[cfg(feature = "abi-7-11")]
-use crate::LegacyNotifier;
 
 pub const SYNC_SLEEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
@@ -98,7 +96,7 @@ where
     pub(crate) filesystem: AnyFS<L, S, A>,
     /// Main communication channel to the kernel fuse driver
     pub(crate) ch_main: Channel,
-    #[cfg(feature = "side_channel")]
+    #[cfg(feature = "side-channel")]
     /// Side communication channel to the kernel fuse driver
     pub(crate) ch_side: Channel,
     #[cfg(feature = "abi-7-11")]
@@ -110,7 +108,12 @@ where
     pub(crate) meta: SessionMeta,
 }
 
-impl AsFd for Session<'_ , '_, '_> {
+impl<L, S, A> AsFd for Session<L, S, A>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS,
+{
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.ch_main.as_fd()
     }
@@ -268,8 +271,8 @@ pub struct BackgroundSession {
     /// Thread guard of the main session loop
     pub guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
-    /*#[cfg(feature = "abi-7-11")]
-    sender: Channel,*/
+    #[cfg(feature = "abi-7-11")]
+    notification_sender: Channel,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }
@@ -286,9 +289,9 @@ impl BackgroundSession {
         A: AsyncFS + Send + Sync + 'static,
     {
         #[cfg(all(feature = "abi-7-11", not(feature = "side-channel")))]
-        let sender = se.ch_main.clone();
+        let notification_sender = se.ch_main.clone();
         #[cfg(all(feature = "abi-7-11", feature = "side-channel"))]
-        let sender = se.ch_side.clone();
+        let notification_sender = se.ch_side.clone();
         // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         // The main session (se) is moved into this thread.
@@ -299,7 +302,7 @@ impl BackgroundSession {
         Ok(BackgroundSession {
             guard,
             #[cfg(feature = "abi-7-11")]
-            sender,
+            notification_sender,
             _mount: mount,
         })
     }
@@ -308,7 +311,7 @@ impl BackgroundSession {
         let Self {
             guard,
             #[cfg(feature = "abi-7-11")]
-            sender: _,
+            notification_sender: _,
             _mount,
         } = self;
         // Unmount the filesystem
@@ -321,13 +324,11 @@ impl BackgroundSession {
         info!("Session loop end with result {res:?}.");
     }
 
-    /*
     /// Returns an object that can be used to send notifications to the kernel
     #[cfg(feature = "abi-7-11")]
-    pub fn notifier(&self) -> Notifier {
-        Notifier::new(self.sender.clone())
+    pub fn notifier(&self) -> NotificationHandler {
+        NotificationHandler::new(self.notification_sender.clone())
     }
-    */
 }
 
 // replace with #[derive(Debug)] if Debug ever gets implemented for
@@ -337,10 +338,10 @@ impl fmt::Debug for BackgroundSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         let mut builder = f.debug_struct("BackgroundSession");
         builder.field("main_loop_guard", &self.guard);
-        /*#[cfg(feature = "abi-7-11")]
+        #[cfg(feature = "abi-7-11")]
         {
-            builder.field("sender", &self.sender);
-        }*/
+            builder.field("notification_sender", &self.notification_sender);
+        }
         builder.field("_mount", &self._mount);
         builder.finish()
     }
@@ -359,7 +360,7 @@ where
     pub(crate) filesystem: Option<AnyFS<L, S, A>>,
     /// Main communication channel to the kernel fuse driver
     pub(crate) ch_main: Option<Channel>,
-    #[cfg(feature = "side_channel")]
+    #[cfg(feature = "side-channel")]
     /// Side communication channel to the kernel fuse driver
     pub(crate) ch_side: Option<Channel>,
     #[cfg(feature = "abi-7-11")]
@@ -382,7 +383,7 @@ where
         SessionBuilder {
             filesystem: None,
             ch_main: None,
-            #[cfg(feature = "side_channel")]
+            #[cfg(feature = "side-channel")]
             ch_side: None,
             #[cfg(feature = "abi-7-11")]
             queues: Queues::new(),
@@ -485,7 +486,7 @@ where
     /// Sets the main and side fuse channels. Internal use only.
     fn set_ch(&mut self, ch: Channel) -> io::Result<()> {
         // Create the channel for fuse messages
-        #[cfg(feature = "side_channel")]
+        #[cfg(feature = "side-channel")]
         {
             self.ch_side = Some(ch.fork()?);
         }
@@ -499,7 +500,7 @@ where
                 .expect("No filesystem! Did you forget to set one?"),
             ch_main: self.ch_main
                 .expect("No fuse channel! Did you forget to mount?"),
-            #[cfg(feature = "side_channel")]
+            #[cfg(feature = "side-channel")]
             ch_side: self.ch_side
                 .expect("No fuse channel! Did you forget to mount?"),
             mount: self.mount,

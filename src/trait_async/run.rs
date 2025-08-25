@@ -217,12 +217,12 @@ where
             info!("Disabling notifications.");
             se.meta.notify.store(false, Relaxed);
         } else {
-            let notifier = NotificationHandler::new(notification, se.ch_side.clone());
+            let notifier = NotificationHandler::new(se.ch_side.clone());
             #[cfg(not(feature = "tokio"))]
-            let res = notifier.dispatch();
+            let res = notifier.dispatch(notification);
             #[cfg(feature = "tokio")]
             let res = {
-                tokio::task::spawn_blocking(async move || notifier.dispatch())
+                tokio::task::spawn_blocking(async move || notifier.dispatch(notification))
                     .await
                     .expect("unable to recover a background i/o thread")
                     .await

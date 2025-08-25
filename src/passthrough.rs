@@ -63,12 +63,6 @@ pub trait BackingSender: Send + Sync + Unpin + 'static {
     fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 
-impl fmt::Debug for Box<dyn BackingOpener> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Box<BackingSender>")
-    }
-}
-
 impl BackingSender for Channel {
     fn open_backing(&self, fd: u32) -> io::Result<u32> {
         ioctl_open_backing(self.raw_fd, fd)
@@ -89,7 +83,7 @@ pub struct BackingHandler {
 
 impl BackingHandler {
     /// Create a reply handler for a specific request identifier
-    pub fn new(sender: Channel, queue: Sender<NotificationKind>) -> BackingHandler {
+    pub(crate) fn new(sender: Channel, queue: Sender<NotificationKind>) -> BackingHandler {
         BackingHandler {
             sender,
             queue
@@ -107,7 +101,7 @@ impl BackingHandler {
         let id = self.sender.open_backing(fd)?;
         Ok(BackingId {
             _fd: fd,
-            closer: self.sender.clone(),
+            queue: self.queue.clone(),
             id,
         })
     }

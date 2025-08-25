@@ -16,9 +16,6 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::Sender;
-
 mod poll_data;
 use poll_data::PollData;
 
@@ -26,7 +23,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use fuser::{
     Dirent, DirentList, Entry, Errno, FUSE_ROOT_ID, FileAttr, FileType, FsStatus, MountOption,
-    Notification, Open, RequestMeta,
+    Open, RequestMeta,
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
     trait_async::Filesystem,
 };
@@ -133,7 +130,6 @@ impl FSelFS {
 #[async_trait]
 impl Filesystem for FSelFS {
     async fn heartbeat(&self) -> FsStatus {
-        self.poll_handler.lock().unwrap().check_replies();
         if self.producer.lock().unwrap().is_ready() {
             self.produce_data();
             self.producer.lock().unwrap().advance();
@@ -364,14 +360,14 @@ fn main() {
     env_logger::init();
     log::info!("Starting fsel example with poll support.");
     // Get notifier from SessionBuilder
-    let sessionbuilder = fuser::SessionBuilder::new();
+    let mut sessionbuilder = fuser::SessionBuilder::new();
     sessionbuilder.set_heartbeat_interval(Duration::from_millis(100));
     let notifier = sessionbuilder.get_notification_sender();
     // Assemble Filesystem
     let data = FSelData {
         bytecnt: [0; NUMFILES as usize],
     };
-    let poll_handler = PollData::new(Some(notifier));
+    let poll_handler = PollData::new(notifier);
     let producer = ProducerData {
         next_time: std::time::SystemTime::now() + Duration::from_millis(1000),
         next_idx: 0,
@@ -407,17 +403,18 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crossbeam_channel::{Receiver, unbounded};
+    use crossbeam_channel::{Sender, Receiver, unbounded};
+    use fuser::{Notifier, NotificationKind};
 
     // Helper to create FSelFS and a channel pair for its PollData for tests
-    fn setup_test_fs_with_channel() -> (FSelFS, Sender<Notification>, Receiver<Notification>) {
+    fn setup_test_fs_with_channel() -> (FSelFS, Sender<NotificationKind>, Receiver<NotificationKind>) {
         log::debug!("Setting up test FS with poll channel");
         let (tx, rx) = unbounded();
         let data = FSelData {
             bytecnt: [0; NUMFILES as usize],
         };
-        // PollData with None sender.
-        let poll_handler = PollData::new(None);
+        // PollData with sender.
+        let poll_handler = PollData::new(Notifier::new(tx.clone()));
         let fs = FSelFS {
             data: Mutex::new(data),
             poll_handler: Mutex::new(poll_handler),
@@ -434,7 +431,7 @@ mod test {
     #[test]
     fn test_fs_poll_registers_handle_no_initial_event() {
         log::info!("test_fs_poll_registers_handle_no_initial_event: starting");
-        let (mut fs, tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
+        let (mut fs, _tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
 
         let req = RequestMeta {
             unique: 0,
@@ -552,13 +549,7 @@ mod test {
                 .contains_key(&ph)
         );
 
-        match rx_from_fs.try_recv() {
-            Ok(Notification::Poll((poll, _))) => {
-                assert_eq!(poll.ph, ph);
-                assert_eq!(poll.events, libc::POLLIN as u32);
-            }
-            _ => panic!("Expected an initial event on the channel"),
-        }
+        assert!(rx_from_fs.try_recv().is_err());
     }
 
     #[test]
@@ -590,9 +581,8 @@ mod test {
         log::debug!("test_producer_marks_inode_ready_triggers_event: marked inode ready");
 
         match rx_from_fs.try_recv() {
-            Ok(Notification::Poll((poll, _))) => {
-                assert_eq!(poll.ph, ph_to_test);
-                assert_eq!(poll.events, libc::POLLIN as u32);
+            Ok(NotificationKind::Poll(poll)) => {
+                assert_eq!(poll, ph_to_test);
             }
             _ => {
                 panic!("Producer marking inode ready should have triggered an event on the channel")

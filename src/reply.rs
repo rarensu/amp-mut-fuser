@@ -1249,7 +1249,7 @@ mod test {
                     ino: 0xaabb,
                     offset: 1,
                     kind: FileType::Directory,
-                    name: Bytes::from_static(OsStr::new("hello").as_bytes()),
+                    name: Bytes::from_static(b"hello"),
                 },
                 Entry {
                     ino: 0xaabb,
@@ -1264,7 +1264,7 @@ mod test {
                     ino: 0xccdd,
                     offset: 2,
                     kind: FileType::RegularFile,
-                    name: Bytes::from_static(OsStr::new("world.rs").as_bytes()),
+                    name: Bytes::from_static(b"world.rs"),
                 },
                 Entry {
                     ino: 0xccdd,

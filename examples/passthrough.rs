@@ -54,7 +54,7 @@ struct PendingBackingId {
 #[derive(Debug)]
 struct ReadyBackingId {
     // The notifier is used to safely close the backing id after any miscellaneous unexpected failures.
-    notifier: Sender<Notification>,
+    notifier: Sender<NotificationKind>,
     // This is the literal backing_id the kernel assigns to the filesystem.
     backing_id: u32,
     // there is a limit to how many you backing id the filesystem can hold open.
@@ -67,7 +67,7 @@ struct ReadyBackingId {
 impl Drop for ReadyBackingId {
     fn drop(&mut self) {
         // It is important to notify the kernel when backing ids are no longer in use.
-        let notification = Notification::CloseBacking((self.backing_id, self.reply_sender.take()));
+        let notification = NotificationKind::CloseBacking((self.backing_id, self.reply_sender.take()));
         let _ = self.notifier.send(notification);
         // TODO: handle the case where the notifier is broken.
     }
@@ -85,7 +85,7 @@ struct PassthroughFs {
     passthrough_file_attr: FileAttr,
     backing_cache: Mutex<HashMap<u64, BackingStatus>>,
     next_fh: AtomicU64,
-    notification_sender: Mutex<Option<Sender<Notification>>>,
+    notification_sender: Mutex<Option<Sender<NotificationKind>>>,
 }
 
 static ROOT_DIRENTS: [Dirent; 3] = [
@@ -202,7 +202,7 @@ impl PassthroughFs {
     // The boolean return is so that it works with `HashMap::retain` for efficiently dropping stale cache entries.
     fn backing_status_is_ok(
         backing_status: &mut BackingStatus,
-        notifier: &Sender<Notification>,
+        notifier: &Sender<NotificationKind>,
         extend: bool,
     ) -> bool {
         match backing_status {
@@ -299,21 +299,19 @@ impl Filesystem for PassthroughFs {
             if !self.any_backing_status(2) {
                 log::info!("new pending backing id request");
                 if let Some(sender) = self.notification_sender.lock().unwrap().as_ref().cloned() {
-                    let (tx, rx) = crossbeam_channel::bounded(1);
-                    let file = File::open("/etc/profile").unwrap();
+                    /*let file = File::open("/etc/profile").unwrap();
                     let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
-                    if let Err(e) = sender.send(Notification::OpenBacking((fd as u32, Some(tx)))) {
+                    if let Err(e) = sender.send(NotificationKind::OpenBacking(fd as u32)) {
                         log::error!("failed to send OpenBacking notification: {e}");
                     } else {
                         let backing_id = PendingBackingId {
-                            reply: rx,
                             _file: Arc::new(file),
                         };
                         self.backing_cache
                             .lock()
                             .unwrap()
                             .insert(2, BackingStatus::Pending(backing_id));
-                    }
+                    }*/
                 } else {
                     log::warn!("unable to request a backing id. no notification sender available");
                 }
@@ -503,7 +501,7 @@ mod tests {
         ));
         let notification = rx.try_recv().unwrap();
         let (fd, sender) = match notification {
-            Notification::OpenBacking(d) => d,
+            NotificationKind::OpenBacking(d) => d,
             _ => panic!("unexpected notification"),
         };
         assert!(fd > 0);
@@ -547,7 +545,7 @@ mod tests {
         // Simulate the kernel replying to the close backing request
         let notification = rx.try_recv().unwrap();
         let (backing_id, sender) = match notification {
-            Notification::CloseBacking(d) => d,
+            NotificationKind::CloseBacking(d) => d,
             _ => panic!("unexpected notification"),
         };
         assert_eq!(backing_id, 123);
