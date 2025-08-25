@@ -1,6 +1,5 @@
 use fuser::Notifier;
 use std::collections::{HashMap, HashSet};
-use std::io;
 
 /// `PollData` holds the state required for managing asynchronous poll notifications.
 /// It is typically owned by a `Filesystem` implementation. The `Sender` end of its
@@ -178,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_register_and_unregister_poll_handle() {
-        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (tx, _rx) = crossbeam_channel::bounded(1);
         let poll_data_arc = Arc::new(Mutex::new(PollData::new(Notifier::new(tx))));
         let ph1: u64 = 1001;
         let ino1: u64 = 1;
@@ -313,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_mark_inode_not_ready() {
-        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (tx, _rx) = crossbeam_channel::bounded(1);
         let poll_data_arc = Arc::new(Mutex::new(PollData::new(Notifier::new(tx))));
         let ino1: u64 = 5;
         let poll_in_event = libc::POLLIN as u32;

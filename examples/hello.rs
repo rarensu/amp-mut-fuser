@@ -245,10 +245,9 @@ mod test {
 
     #[test]
     fn test_lookup_hello_txt() {
-        let hellofs = super::HelloFS::new();
+        let mut hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result =
-            futures::executor::block_on(hellofs.lookup(req, 1, &OsString::from("hello.txt")));
+        let result = hellofs.lookup(req, 1, &OsString::from("hello.txt"));
         assert!(result.is_ok(), "Lookup for hello.txt should succeed");
         if let Ok(entry) = result {
             assert_eq!(
@@ -269,9 +268,9 @@ mod test {
 
     #[test]
     fn test_read_hello_txt() {
-        let hellofs = super::HelloFS::new();
+        let mut hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = futures::executor::block_on(hellofs.read(req, 2, 0, 0, 13, 0, None));
+        let result = hellofs.read(req, 2, 0, 0, 13, 0, None);
         assert!(result.is_ok(), "Read for hello.txt should succeed");
         if let Ok(content) = result {
             assert_eq!(
@@ -284,9 +283,9 @@ mod test {
 
     #[test]
     fn test_readdir_root() {
-        let hellofs = super::HelloFS::new();
+        let mut hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = futures::executor::block_on(hellofs.readdir(req, 1, 0, 0, 4096));
+        let result = hellofs.readdir(req, 1, 0, 0, 4096);
         assert!(result.is_ok(), "Readdir on root should succeed");
         if let Ok(entries_list) = result {
             // using lock().unwrap() in case locking variants are enabled in the current build.
@@ -347,17 +346,16 @@ mod test {
 
     #[test]
     fn test_create_fails_readonly() {
-        let hellofs = super::HelloFS::new();
+        let mut hellofs = super::HelloFS::new();
         let req = dummy_meta();
-        let result = futures::executor::block_on(fuser::trait_sync::Filesystem::create(
-            &hellofs,
+        let result = hellofs.create(
             req,
             1,
             &OsString::from("newfile.txt"),
             0o644,
             0,
             0,
-        ));
+        );
         assert!(
             result.is_err(),
             "Create should fail for read-only filesystem"
