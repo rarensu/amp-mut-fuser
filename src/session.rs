@@ -61,20 +61,6 @@ pub enum SessionACL {
     #[default]
     Owner,
 }
-/* // note: from since channel variant
-/// Session data structure
-#[derive(Debug)]
-pub struct Session<FS: Filesystem> {
-    /// Filesystem operation implementations
-    pub(crate) filesystem: FS,
-    /// Communication channel to the kernel driver
-    pub(crate) ch: Channel,
-    /// Handle to the mount.  Dropping this unmounts.
-    pub(crate) mount: Arc<Mutex<Option<(PathBuf, Mount)>>>,
-    /// Session metadata
-    pub(crate) meta: SessionMeta,
-}
-*/
 
 /// Session metadata
 #[derive(Debug)]
@@ -124,6 +110,12 @@ where
     pub(crate) meta: SessionMeta,
 }
 
+impl AsFd for Session<'_ , '_, '_> {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.ch_main.as_fd()
+    }
+}
+
 impl<L, S, A> Session<L, S, A>
 where
     L: LegacyFS,
@@ -153,10 +145,13 @@ where
     }
 
     /// Returns an object that can be used to send notifications to the kernel
-    #[cfg(all(feature = "abi-7-11", feature = "side_channel"))]
-    pub fn notifier(&self) -> LegacyNotifier {
-        // Legacy notification method
-        LegacyNotifier::new(self.ch_side.clone())
+    #[cfg(feature = "abi-7-11")]
+    pub fn notifier(&self) -> NotificationHandler {
+        #[cfg(not(feature = "side-channel"))]
+        let this_ch = self.ch_main.clone();
+        #[cfg(feature = "side-channel")]
+        let this_ch = self.ch_side.clone();
+        NotificationHandler::new(this_ch)
     }
 
     /// Returns an object that can be used to queue notifications for the Session to process
@@ -290,8 +285,10 @@ impl BackgroundSession {
         S: SyncFS + Send + Sync + 'static,
         A: AsyncFS + Send + Sync + 'static,
     {
-        /*#[cfg(feature = "abi-7-11")]
-        let sender = se.chs[0].clone();*/
+        #[cfg(all(feature = "abi-7-11", not(feature = "side-channel")))]
+        let sender = se.ch_main.clone();
+        #[cfg(all(feature = "abi-7-11", feature = "side-channel"))]
+        let sender = se.ch_side.clone();
         // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         // The main session (se) is moved into this thread.
@@ -301,8 +298,8 @@ impl BackgroundSession {
         });
         Ok(BackgroundSession {
             guard,
-            /*#[cfg(feature = "abi-7-11")]
-            sender,*/
+            #[cfg(feature = "abi-7-11")]
+            sender,
             _mount: mount,
         })
     }
@@ -310,8 +307,8 @@ impl BackgroundSession {
     pub fn join(self) {
         let Self {
             guard,
-            /*#[cfg(feature = "abi-7-11")]
-            sender: _,*/
+            #[cfg(feature = "abi-7-11")]
+            sender: _,
             _mount,
         } = self;
         // Unmount the filesystem

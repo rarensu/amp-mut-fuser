@@ -227,8 +227,7 @@ impl Errno {
     /// exist.  This resolves to the appropriate platform-specific error code.
     #[cfg(not(target_os = "linux"))]
     pub const NO_XATTR: Errno = Self::ENOATTR;
-
-    /// Use this to try to convert an integer error code into a fuser Errno
+    /// Convert libc-style error codes into `fuser::Errno`
     pub fn from_i32(err: i32) -> Errno {
         err.try_into().ok().map_or(Errno::EIO, Errno)
     }

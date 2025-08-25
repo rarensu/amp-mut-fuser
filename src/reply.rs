@@ -4,7 +4,6 @@
 //! Either the request logic will call the one of the reply handler's self-destructive methods,
 //! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
 
-
 use crate::ll; // too many structs to list
 use crate::{Container, Errno, KernelConfig};
 use bytes::Bytes;
@@ -33,12 +32,12 @@ impl fmt::Debug for Box<dyn ReplySender> {
 impl ReplySender for crate::channel::Channel {
     /// Send data.
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-        crate::channel::Channel::send(&self, data)
+        crate::channel::Channel::send(self, data)
     }
 }
 
 /// `ReplyHandler` is a struct which holds the unique identifiers needed to reply
-/// to a specific request. Replying methods consume `self` to guarantee at most one 
+/// to a specific request. Replying methods consume `self` to guarantee at most one
 /// reply is sent per request.
 #[derive(Debug)]
 pub(crate) struct ReplyHandler {
@@ -591,8 +590,6 @@ impl ReplyHandler {
     }
 
     #[cfg(feature = "abi-7-21")]
-    // Note: trait_legacy has its own implementation of this function
-    // this one is for (future) Sync/Async traits
     // Reply to a request with a filled directory plus buffer
     pub fn dirplus(
         self,
@@ -698,6 +695,22 @@ impl ReplyHandler {
     }
 }
 
+pub mod test_utils {
+    pub struct AssertSender {
+        pub expected: Vec<u8>,
+    }
+    impl super::ReplySender for AssertSender {
+        fn send(&self, data: &[std::io::IoSlice<'_>]) -> std::io::Result<()> {
+            let mut v = vec![];
+            for x in data {
+                v.extend_from_slice(x);
+            }
+            assert_eq!(self.expected, v);
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unreadable_literal)] // ugly hardcoded literals for testing
 #[allow(clippy::cast_possible_truncation)] // predetermined literals will not be truncated
@@ -705,11 +718,8 @@ mod test {
     #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::{FileAttr, FileType};
-    #[cfg(feature = "abi-7-24")]
-    use std::ffi::OsStr;
+    use super::test_utils::AssertSender;
     use std::io::IoSlice;
-    #[cfg(feature = "abi-7-24")]
-    use std::os::unix::ffi::OsStrExt;
     use std::sync::mpsc::{SyncSender, sync_channel};
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
@@ -742,21 +752,6 @@ mod test {
             c: 0x5678,
         };
         assert_eq!(data.as_bytes(), [0x12, 0x34, 0x78, 0x56]);
-    }
-
-    struct AssertSender {
-        expected: Vec<u8>,
-    }
-
-    impl super::ReplySender for AssertSender {
-        fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
-            let mut v = vec![];
-            for x in data {
-                v.extend_from_slice(x);
-            }
-            assert_eq!(self.expected, v);
-            Ok(())
-        }
     }
 
     #[test]
@@ -1292,7 +1287,7 @@ mod test {
             ],
         };
         let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.xattr(Xattr::Size(0x12345678));
+        replyhandler.xattr_size(0x12345678);
     }
 
     #[test]

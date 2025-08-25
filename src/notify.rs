@@ -1,8 +1,8 @@
-use std::io;
 use std::fmt;
 #[cfg(feature = "abi-7-12")]
 use bytes::Bytes;
 use crossbeam_channel::{Sender, Receiver, unbounded};
+use std::io;
 #[allow(unused)]
 use std::{convert::TryInto, ffi::OsStr, ffi::OsString};
 
@@ -94,57 +94,86 @@ pub(crate) fn too_big_err(tfie: std::num::TryFromIntError) -> io::Error {
     io::Error::new(io::ErrorKind::Other, format!("Data too large: {}", tfie))
 }
 
-/// Tool for translating NotificationKind into lower-level Notification
-pub(crate) struct NotificationHandler {
-    notification: NotificationKind,
+/// An object which translates Notifications to a lower-level representation and sends them to the kernel
+#[derive(Debug)]
+pub struct NotificationHandler {
     channel: Channel,
+    // Channel is both a NotificationSender and a BackingSender
 }
 
 impl NotificationHandler {
     pub(crate) fn new(
-        notification: NotificationKind,
         channel: Channel
     ) -> Self {
-        NotificationHandler {notification, channel}
+        NotificationHandler {channel}
     }
-    pub(crate) fn dispatch(self) -> io::Result<()> {
-        match &self.notification {
+    pub(crate) fn dispatch(self, notification: NotificationKind) -> io::Result<()> {
+        match notification {
             #[cfg(feature = "abi-7-11")]
             NotificationKind::Poll(ph) => {
-                let notif = Notification::new_poll(*ph);
-                self.channel.notify(notify_code::FUSE_POLL, &notif)
+                self.poll(ph)
             }
             #[cfg(feature = "abi-7-12")]
             NotificationKind::InvalEntry(parent, name) => {
-                let notif = Notification::new_inval_entry(*parent, name)
-                    .map_err(too_big_err)?;
-                self.send_inval(notify_code::FUSE_NOTIFY_INVAL_ENTRY, &notif)
+                self.inval_entry(*parent, name)
             }
             #[cfg(feature = "abi-7-12")]
             NotificationKind::InvalInode(ino, offset, len) => {
-                let notif = Notification::new_inval_inode(*ino, *offset, *len);
-                self.send_inval(notify_code::FUSE_NOTIFY_INVAL_INODE, &notif)
+                self.inval_inode(*ino, *offset, *len);
             }
             #[cfg(feature = "abi-7-15")]
             NotificationKind::Store(ino, offset, data) => {
-                let notif = Notification::new_store(*ino, *offset, data)
-                    .map_err(too_big_err)?;
-                // Not strictly an invalidate, but the inode we're operating
-                // on may have been evicted anyway, so treat is as such
-                self.send_inval(notify_code::FUSE_NOTIFY_STORE, &notif)
+                self.store(*ino, *offset, data)
             }
             #[cfg(feature = "abi-7-18")]
             NotificationKind::Delete(parent, ino, name) => {
-                let notif = Notification::new_delete(*parent, *ino, &name)
-                    .map_err(too_big_err)?;
-                self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif)
+                self.delete(*parent, *ino, &name)
             }
             #[cfg(feature = "abi-7-40")]
             NotificationKind::CloseBacking(id) => {
-                self.channel.close_backing(*id).map(|_|{})
+                // Channel is also a BackingSender
+                self.channel.close_backing(*id)
             }
             NotificationKind::Disable => {unreachable!();}
         }
+    }
+    /// Notify poll clients of I/O readiness
+    #[cfg(feature = "abi-7-11")]
+    pub fn poll(&self, ph: u64) -> io::Result<()> {
+        let notif = Notification::new_poll(ph);
+        self.channel.notify(notify_code::FUSE_POLL, &notif)
+    }
+
+    /// Invalidate the kernel cache for a given directory entry
+    #[cfg(feature = "abi-7-12")]
+    pub fn inval_entry(&self, parent: u64, name: &[u8]) -> io::Result<()> {
+        let notif = Notification::new_inval_entry(parent, name).map_err(too_big_err)?;
+        self.send_inval(notify_code::FUSE_NOTIFY_INVAL_ENTRY, &notif)
+    }
+
+    /// Invalidate the kernel cache for a given inode (metadata and
+    /// data in the given range)
+    #[cfg(feature = "abi-7-12")]
+    pub fn inval_inode(&self, ino: u64, offset: i64, len: i64) -> io::Result<()> {
+        let notif = Notification::new_inval_inode(ino, offset, len);
+        self.send_inval(notify_code::FUSE_NOTIFY_INVAL_INODE, &notif)
+    }
+
+    /// Update the kernel's cached copy of a given inode's data
+    #[cfg(feature = "abi-7-15")]
+    pub fn store(&self, ino: u64, offset: u64, data: &[u8]) -> io::Result<()> {
+        let notif = Notification::new_store(ino, offset, data).map_err(too_big_err)?;
+        // Not strictly an invalidate, but the inode we're operating
+        // on may have been evicted anyway, so treat is as such
+        self.send_inval(notify_code::FUSE_NOTIFY_STORE, &notif)
+    }
+
+    /// Invalidate the kernel cache for a given directory entry and inform
+    /// inotify watchers of a file deletion.
+    #[cfg(feature = "abi-7-18")]
+    pub fn delete(&self, parent: u64, child: u64, name: &[u8]) -> io::Result<()> {
+        let notif = Notification::new_delete(parent, child, name).map_err(too_big_err)?;
+        self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif)
     }
     #[cfg(feature = "abi-7-12")]
     fn send_inval(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
@@ -288,4 +317,3 @@ impl std::fmt::Debug for PollHandler {
         f.debug_tuple("PollHandler").field(&self.handle).finish()
     }
 }
-

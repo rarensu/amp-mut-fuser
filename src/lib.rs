@@ -5,6 +5,8 @@
 //! and unmount calls which are needed to establish a fd to talk to the kernel driver.
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
+/* ------ Modules ------ */
+
 mod any;
 mod channel;
 mod container;
@@ -96,8 +98,44 @@ use std::cmp::min;
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
 
+/* ------ Public Exports ------ */
+
 /// Legacy Filesystem trait with callbacks
 pub use trait_legacy::{Filesystem, Request};
+
+#[cfg(feature = "abi-7-21")]
+pub use trait_legacy::ReplyDirectoryPlus;
+#[cfg(feature = "abi-7-24")]
+pub use trait_legacy::ReplyLseek;
+#[cfg(target_os = "macos")]
+pub use trait_legacy::ReplyXTimes;
+pub use trait_legacy::{
+    ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+};
+#[cfg(feature = "abi-7-11")]
+pub use trait_legacy::{ReplyIoctl, ReplyPoll};
+
+/* ------ Imports for use in this file ------ */
+
+use ll::fuse_abi::consts::*;
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
+use mnt::mount_options::check_option_conflicts;
+use mnt::mount_options::parse_options_from_args;
+use session::MAX_WRITE_SIZE;
+#[cfg(feature = "abi-7-28")]
+use std::cmp::max;
+#[cfg(feature = "abi-7-13")]
+use std::cmp::min;
+use std::ffi::OsStr;
+use std::io;
+use std::path::Path;
+#[cfg(feature = "abi-7-23")]
+use std::time::Duration;
+use std::{convert::AsRef, io::ErrorKind};
+
+/* ------ FUSE configuration ------ */
 
 /// We generally support async reads
 #[cfg(all(not(target_os = "macos"), not(feature = "abi-7-10")))]
@@ -339,6 +377,8 @@ pub enum FsStatus {
     /// Stopped indicates that the Filesystem will not accept new requests
     Stopped, // This list is a work in progress and I'm still trying to figure out what values would be useful
 }
+
+/* ------ Easy mode functions ------ */
 
 /// Mount the given filesystem to the given mountpoint. This function will
 /// block until the filesystem is unmounted.

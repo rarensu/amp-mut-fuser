@@ -1,15 +1,10 @@
-use std::{
-    fs::File,
-    io,
-    os::unix::prelude::AsRawFd,
-    sync::Arc,
-};
-
-use crate::ll::fuse_abi;
-#[cfg(feature = "side_channel")]
-use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
+use std::{fs::File, io, os::unix::prelude::AsRawFd, sync::Arc};
 
 use libc::{c_int, c_void, size_t};
+
+use crate::ll::fuse_abi;
+#[cfg(feature = "side-channel")]
+use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
 
 pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<fuse_abi::fuse_in_header>();
 
@@ -28,7 +23,7 @@ pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
 pub(crate) struct Channel {
     owned_fd: Arc<File>,
     pub raw_fd: i32,
-    #[cfg(feature = "side_channel")]
+    #[cfg(feature = "side-channel")]
     is_main: bool,
 }
 
@@ -47,9 +42,9 @@ impl Channel {
         let raw_fd = owned_fd.as_raw_fd();
         Self {
             owned_fd,
-            raw_fd, 
-            #[cfg(feature = "side_channel")]
-            is_main: true 
+            raw_fd,
+            #[cfg(feature = "side-channel")]
+            is_main: true,
         }
     }
     // Create a new communication channel to the kernel driver.
@@ -60,10 +55,10 @@ impl Channel {
         let owned_fd = device.clone();
         Self {
             owned_fd,
-            raw_fd, 
-            #[cfg(feature = "side_channel")]
-            is_main: true 
-        }    
+            raw_fd,
+            #[cfg(feature = "side-channel")]
+            is_main: true,
+        }
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
@@ -299,13 +294,15 @@ impl Channel {
         Ok(())
     }
 
-    #[cfg(feature = "side_channel")]
+    #[cfg(feature = "side-channel")]
     /// Creates a new fuse worker channel. Self should be the main channel.
     /// # Errors
     /// Propagates underlying errors.
     pub fn fork(&self) -> std::io::Result<Self> {
         if !self.is_main {
-            log::error!("Attempted to create a new fuse worker from a fuse channel that is not main");
+            log::error!(
+                "Attempted to create a new fuse worker from a fuse channel that is not main"
+            );
         }
         let fuse_device_name = "/dev/fuse";
         let file = std::fs::OpenOptions::new()

@@ -10,10 +10,8 @@ mod run;
 
 mod callback;
 
-#[cfg(feature = "abi-7-11")]
-mod notify;
-#[cfg(feature = "abi-7-11")]
-pub use notify::LegacyNotifier;
+#[cfg(test)]
+mod test;
 
 /* ------ Structs ------ */
 #[cfg(feature = "abi-7-21")]
@@ -47,8 +45,10 @@ pub use callback::{
     CallbackXattr,
 };
 
-#[cfg(feature = "abi-7-40")]
-use crate::passthrough::{BackingId, BackingHandler};
+/* ------ Additional imports for convenience ------ */
 
 #[cfg(feature = "abi-7-11")]
 use crate::notify::PollHandler;
+
+#[cfg(feature = "abi-7-40")]
+use crate::passthrough::{BackingHandler, BackingId};

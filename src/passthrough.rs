@@ -3,9 +3,9 @@ use std::fmt;
 use std::os::fd::{AsRawFd};
 use crossbeam_channel::{Sender};
 
-use crate::ll::fuse_ioctl::{ioctl_open_backing};
 use crate::notify::NotificationKind;
 use crate::channel::Channel;
+use crate::ll::fuse_ioctl::{ioctl_close_backing, ioctl_open_backing};
 
 /// A reference to a previously opened fd intended to be used for passthrough
 ///
@@ -58,8 +58,9 @@ impl BackingId {
     }
 }
 
-pub trait BackingOpener: Send + Sync + Unpin + 'static  {
+pub trait BackingSender: Send + Sync + Unpin + 'static {
     fn open_backing(&self, fd: u32) -> io::Result<u32>;
+    fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 
 impl fmt::Debug for Box<dyn BackingOpener> {
@@ -68,52 +69,56 @@ impl fmt::Debug for Box<dyn BackingOpener> {
     }
 }
 
-impl BackingOpener for Channel {
-    fn open_backing(&self, fd: u32) -> std::io::Result<u32> {
+impl BackingSender for Channel {
+    fn open_backing(&self, fd: u32) -> io::Result<u32> {
         ioctl_open_backing(self.raw_fd, fd)
+    }
+    fn close_backing(&self, id: u32) -> io::Result<u32> {
+        ioctl_close_backing(self.raw_fd, id)
     }
 }
 
 #[derive(Debug)]
 /// `BackingHandler` allows the filesystem to open (and close) `BackingId`.
 pub struct BackingHandler {
-    /// Mechanism to request a backing id
-    pub opener: Box<dyn BackingOpener>,
-    // opener is Box<dyn> to hide its true type from the API
-    /// Mechanism to queue a request to close a backing id
-    pub queue: Sender<NotificationKind>,
+    /// Mechanism to open and close backing id
+    sender: Channel,
+    /// Mechanism to queue close requests as notifications
+    queue: Sender<NotificationKind>,
 }
 
 impl BackingHandler {
     /// Create a reply handler for a specific request identifier
-    pub fn new<S: BackingOpener>(opener: S, queue: Sender<NotificationKind>) -> BackingHandler {
-        let opener = Box::new(opener);
+    pub fn new(sender: Channel, queue: Sender<NotificationKind>) -> BackingHandler {
         BackingHandler {
-            opener,
+            sender,
             queue
         }
     }
 }
 
 impl BackingHandler {
-    /// This method retrieves a backing id for the provided File. 
+    /// This method builds a `BackingId` for the provided File.
     /// You may use this during `open` or `opendir` or `heartbeat`.
     /// # Errors
     /// Reports errors with the underlying fuse connection.
-    pub fn open_backing<F: AsRawFd>(&self, file: F) -> std::io::Result<BackingId> {
+    pub fn open_backing<F: AsRawFd>(&self, file: F) -> io::Result<BackingId> {
         let fd = file.as_raw_fd() as u32;
-        let id = self.opener.open_backing(fd)?;
-        Ok( BackingId {
+        let id = self.sender.open_backing(fd)?;
+        Ok(BackingId {
             _fd: fd,
-            queue: self.queue.clone(),
+            closer: self.sender.clone(),
             id,
         })
     }
-    /// This method closes a backing id. 
-    /// You may use this any time.
-    pub fn close_backing(&self, mut backing: BackingId) {
+    /// This method destroys a `BackingId`.
+    /// You may use this during `open` or `opendir` or `heartbeat`.
+    /// # Errors
+    /// Reports errors with the underlying fuse connection.
+    #[allow(unused)] // for completeness
+    pub fn close_backing(&self, mut backing: BackingId) -> io::Result<u32> {
         let id = backing.id;
         backing.id = 0;
-        self.queue.send(NotificationKind::CloseBacking(id)).unwrap()   
+        self.sender.close_backing(id)
     }
 }

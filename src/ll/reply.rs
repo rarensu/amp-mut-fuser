@@ -102,7 +102,11 @@ impl<'a> Response<'a> {
         Self::from_struct(d.as_bytes())
     }
 
-    pub(crate) fn new_attr(ttl: &Duration, attr: &crate::FileAttr, attr_ttl_override: bool) -> Self {
+    pub(crate) fn new_attr(
+        ttl: &Duration,
+        attr: &crate::FileAttr,
+        attr_ttl_override: bool,
+    ) -> Self {
         let r = abi::fuse_attr_out {
             attr_valid: if attr_ttl_override { 0 } else { ttl.as_secs() },
             attr_valid_nsec: if attr_ttl_override {
@@ -199,6 +203,7 @@ impl<'a> Response<'a> {
     }
 
     // TODO: Can flags be more strongly typed?
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_create(
         file_ttl: &Duration,
         attr: &Attr,
@@ -242,6 +247,7 @@ impl<'a> Response<'a> {
         Self::from_struct(&r)
     }
 
+    #[cfg(feature = "abi-7-11")]
     // TODO: Are you allowed to send data while result != 0?
     // TODO: This used to be IoSlice -- does that have any additional utility here?
     #[cfg(feature = "abi-7-11")]
@@ -661,7 +667,7 @@ mod test {
             flags: 0x99,
             blksize: 0xbb,
         };
-        let r = Response::new_attr(&ttl, &attr.into(), false);
+        let r = Response::new_attr(&ttl, &attr, false);
         assert_eq!(
             r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
             expected

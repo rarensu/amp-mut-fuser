@@ -10,7 +10,12 @@ use crate::XTimes;
 #[cfg(feature = "abi-7-21")]
 use crate::ll::reply::fuse_attr_from_attr;
 use crate::{
-    ll::{reply::{mode_from_kind_and_perm, EntListBuf, Response}, Errno}, reply::{Entry, Lock, Open, ReplyHandler, Statfs}, FileAttr, FileType
+    FileAttr, FileType,
+    ll::{
+        Errno,
+        reply::{EntListBuf, Response, mode_from_kind_and_perm},
+    },
+    reply::{Entry, Lock, Open, ReplyHandler, Statfs},
 };
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
@@ -21,13 +26,13 @@ use super::PollHandler;
 */
 
 #[cfg(feature = "abi-7-40")]
-use std::os::fd::AsRawFd;
+use super::{BackingHandler, BackingId};
+#[cfg(feature = "abi-7-40")]
+use crate::consts::FOPEN_PASSTHROUGH;
 #[cfg(feature = "abi-7-40")]
 use std::io;
 #[cfg(feature = "abi-7-40")]
-use super::{BackingId, BackingHandler};
-#[cfg(feature = "abi-7-40")]
-use crate::consts::FOPEN_PASSTHROUGH;
+use std::os::fd::AsRawFd;
 
 /* ------ Err ------ */
 

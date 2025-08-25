@@ -14,8 +14,6 @@ use crate::ll::{AnyRequest, Request as RequestTrait};
 use crate::reply::ReplyHandler;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{NotificationKind};
-#[cfg(feature = "abi-7-11")]
-use crossbeam_channel::Sender;
 
 /// Request data structure
 #[derive(Debug)]
@@ -89,28 +87,25 @@ impl RequestHandler {
             pid: request.pid(),
         };
         #[cfg(feature = "abi-7-40")]
-        let another_ch_main = ch_main.clone();
+        let ch_main_clone = ch_main.clone();
         let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);
         Some(Self {
             request,
             meta,
             replyhandler,
             #[cfg(feature = "abi-7-40")]
-            ch_main: another_ch_main,
-            /*
-            #[cfg(feature = "side_channel")]
-            ch_side,
-            */
+            ch_main: ch_main_clone,
             #[cfg(feature = "abi-7-11")]
             queue,
         })
     }
 }
+
 #[cfg(feature = "abi-7-40")]
 macro_rules! get_backing_handler {
     ($me:ident) => {
-        crate::passthrough::BackingHandler::new($me.ch_main, $me.queue)
-    }
+        crate::passthrough::BackingHandler::new($me.ch_main)
+    };
 }
 #[cfg(feature = "abi-7-40")]
 pub(crate) use get_backing_handler;
