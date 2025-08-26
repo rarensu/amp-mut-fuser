@@ -366,13 +366,11 @@ impl ReplyHandler {
         self.send_ll(&ll::Response::new_bmap(block));
     }
 
-    #[cfg(feature = "abi-7-11")]
     /// Reply to a request with an ioctl
     pub fn ioctl(self, result: i32, data: &[u8]) {
         self.send_ll(&ll::Response::new_ioctl(result, &[IoSlice::new(data)]));
     }
 
-    #[cfg(feature = "abi-7-11")]
     /// Reply to a request with a poll events
     pub fn poll(self, revents: u32) {
         self.send_ll(&ll::Response::new_poll(revents));

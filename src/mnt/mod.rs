@@ -52,10 +52,8 @@ pub use fuse_pure::Mount;
 pub use fuse2::Mount;
 #[cfg(fuser_mount_impl = "libfuse3")]
 pub use fuse3::Mount;
-#[cfg(not(fuser_mount_impl = "libfuse3"))]
 use std::ffi::CStr;
 
-#[cfg(not(fuser_mount_impl = "libfuse3"))]
 #[inline]
 fn libc_umount(mnt: &CStr) -> io::Result<()> {
     #[cfg(any(

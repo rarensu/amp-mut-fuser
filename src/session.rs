@@ -21,7 +21,6 @@ use std::thread::{self, JoinHandle};
 
 use crate::Filesystem;
 use crate::MountOption;
-#[cfg(feature = "abi-7-11")]
 use crate::notify::NotificationHandler;
 use crate::{channel::Channel, mnt::Mount};
 
@@ -176,7 +175,6 @@ impl<FS: Filesystem> Session<FS> {
     }
 
     /// Returns an object that can be used to send notifications to the kernel
-    #[cfg(feature = "abi-7-11")]
     pub fn notifier(&self) -> NotificationHandler {
         #[cfg(not(feature = "side-channel"))]
         let this_ch = self.ch_main.clone();
@@ -225,7 +223,6 @@ pub struct BackgroundSession {
     /// Thread guard of the background session
     pub guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
-    #[cfg(feature = "abi-7-11")]
     sender: Channel,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
@@ -236,9 +233,9 @@ impl BackgroundSession {
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
     pub fn new<FS: Filesystem + Send + 'static>(se: Session<FS>) -> io::Result<BackgroundSession> {
-        #[cfg(all(feature = "abi-7-11", not(feature = "side-channel")))]
+        #[cfg(not(feature = "side-channel"))]
         let sender = se.ch_main.clone();
-        #[cfg(all(feature = "abi-7-11", feature = "side-channel"))]
+        #[cfg(feature = "side-channel")]
         let sender = se.ch_side.clone();
         // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
@@ -248,7 +245,6 @@ impl BackgroundSession {
         });
         Ok(BackgroundSession {
             guard,
-            #[cfg(feature = "abi-7-11")]
             sender,
             _mount: mount,
         })
@@ -257,8 +253,7 @@ impl BackgroundSession {
     pub fn join(self) {
         let Self {
             guard,
-            #[cfg(feature = "abi-7-11")]
-                sender: _,
+            sender: _,
             _mount,
         } = self;
         drop(_mount);
@@ -266,7 +261,6 @@ impl BackgroundSession {
     }
 
     /// Returns an object that can be used to send notifications to the kernel
-    #[cfg(feature = "abi-7-11")]
     pub fn notifier(&self) -> NotificationHandler {
         NotificationHandler::new(self.sender.clone())
     }

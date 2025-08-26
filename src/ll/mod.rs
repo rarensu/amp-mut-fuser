@@ -3,7 +3,6 @@
 mod argument;
 pub mod fuse_abi;
 pub(crate) mod fuse_ioctl;
-#[cfg(feature = "abi-7-11")]
 pub(crate) mod notify;
 pub(crate) mod reply;
 pub(crate) mod request;

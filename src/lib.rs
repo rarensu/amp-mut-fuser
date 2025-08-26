@@ -11,7 +11,6 @@
 mod channel;
 mod ll;
 mod mnt;
-#[cfg(feature = "abi-7-11")]
 mod notify;
 #[cfg(feature = "abi-7-40")]
 mod passthrough;
@@ -25,10 +24,8 @@ pub mod trait_legacy;
 
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
 pub use crate::ll::{Errno, TimeOrNow, fuse_abi::consts};
-#[cfg(feature = "abi-7-16")]
 pub use ll::fuse_abi::fuse_forget_one;
 pub use mnt::mount_options::MountOption;
-#[cfg(feature = "abi-7-11")]
 pub use notify::PollHandler;
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
@@ -47,10 +44,8 @@ pub use trait_legacy::ReplyLseek;
 pub use trait_legacy::ReplyXTimes;
 pub use trait_legacy::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
-    ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+    ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
-#[cfg(feature = "abi-7-11")]
-pub use trait_legacy::{ReplyIoctl, ReplyPoll};
 
 /* ------ Imports for use in this file ------ */
 
@@ -62,7 +57,6 @@ use mnt::mount_options::parse_options_from_args;
 use session::MAX_WRITE_SIZE;
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
-#[cfg(feature = "abi-7-13")]
 use std::cmp::min;
 use std::ffi::OsStr;
 use std::io;
@@ -74,9 +68,7 @@ use std::{convert::AsRef, io::ErrorKind};
 /* ------ FUSE configuration ------ */
 
 /// We generally support async reads
-#[cfg(all(not(target_os = "macos"), not(feature = "abi-7-10")))]
-const INIT_FLAGS: u64 = FUSE_ASYNC_READ;
-#[cfg(all(not(target_os = "macos"), feature = "abi-7-10"))]
+#[cfg(not(target_os = "macos"))]
 const INIT_FLAGS: u64 = FUSE_ASYNC_READ | FUSE_BIG_WRITES;
 // TODO: Add FUSE_EXPORT_SUPPORT
 
@@ -110,9 +102,7 @@ pub struct KernelConfig {
     requested: u64,
     max_readahead: u32,
     max_max_readahead: u32,
-    #[cfg(feature = "abi-7-13")]
     max_background: u16,
-    #[cfg(feature = "abi-7-13")]
     congestion_threshold: Option<u16>,
     max_write: u32,
     #[cfg(feature = "abi-7-23")]
@@ -128,9 +118,7 @@ impl KernelConfig {
             requested: default_init_flags(capabilities),
             max_readahead,
             max_max_readahead: max_readahead,
-            #[cfg(feature = "abi-7-13")]
             max_background: 16,
-            #[cfg(feature = "abi-7-13")]
             congestion_threshold: None,
             // use a max write size that fits into the session's buffer
             max_write: MAX_WRITE_SIZE as u32,
@@ -238,7 +226,6 @@ impl KernelConfig {
     /// Set the maximum number of pending background requests. Such as readahead requests.
     ///
     /// On success returns the previous value. On error returns the nearest value which will succeed
-    #[cfg(feature = "abi-7-13")]
     pub fn set_max_background(&mut self, value: u16) -> Result<u16, u16> {
         if value == 0 {
             return Err(1);
@@ -252,7 +239,6 @@ impl KernelConfig {
     /// request queue congested. (it may then switch to sleeping instead of spin-waiting, for example)
     ///
     /// On success returns the previous value. On error returns the nearest value which will succeed
-    #[cfg(feature = "abi-7-13")]
     pub fn set_congestion_threshold(&mut self, value: u16) -> Result<u16, u16> {
         if value == 0 {
             return Err(1);
@@ -262,7 +248,6 @@ impl KernelConfig {
         Ok(previous)
     }
 
-    #[cfg(feature = "abi-7-13")]
     fn congestion_threshold(&self) -> u16 {
         match self.congestion_threshold {
             // Default to a threshold of 3/4 of the max background threads

@@ -11,7 +11,6 @@ use std::convert::Into;
 
 use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
-#[cfg(feature = "abi-7-11")]
 use crate::notify::NotificationHandler;
 use crate::reply::ReplyHandler;
 
@@ -27,7 +26,6 @@ pub(crate) struct RequestHandler {
     #[cfg(feature = "abi-7-40")]
     /// Closure-like object to enable opening and closing of Backing Id.
     pub ch_main: Channel,
-    #[cfg(feature = "abi-7-11")]
     /// Closure-like object to enable sending of notifications.
     pub notificationhandler: NotificationHandler,
 }
@@ -72,7 +70,6 @@ impl RequestHandler {
             gid: request.gid(),
             pid: request.pid(),
         };
-        #[cfg(feature = "abi-7-11")]
         let notificationhandler = NotificationHandler::new(ch_main.clone());
         #[cfg(feature = "abi-7-40")]
         let ch_main_clone = ch_main.clone();
@@ -83,7 +80,6 @@ impl RequestHandler {
             replyhandler,
             #[cfg(feature = "abi-7-40")]
             ch_main: ch_main_clone,
-            #[cfg(feature = "abi-7-11")]
             notificationhandler,
         })
     }
