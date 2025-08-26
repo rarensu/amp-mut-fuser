@@ -22,7 +22,7 @@ use std::{
 use libc::{EACCES, EBADF, EBUSY, EINVAL, ENOENT, ENOTDIR};
 
 use fuser::{
-    FUSE_ROOT_ID, FileAttr, FileType, MountOption, PollHandle, Request,
+    FUSE_ROOT_ID, FileAttr, FileType, MountOption, PollHandler, Request,
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
 };
 
@@ -245,13 +245,13 @@ impl fuser::Filesystem for FSelFS {
         let data = vec![elt; size.try_into().unwrap()];
         reply.data(data.as_slice());
     }
-
+    #[cfg(feature = "abi-7-11")]
     fn poll(
         &mut self,
         _req: &Request,
         _ino: u64,
         fh: u64,
-        ph: PollHandle,
+        ph: PollHandler,
         _events: u32,
         flags: u32,
         reply: fuser::ReplyPoll,
@@ -293,7 +293,7 @@ impl fuser::Filesystem for FSelFS {
     }
 }
 
-fn producer(data: &Mutex<FSelData>, notifier: &fuser::Notifier) {
+fn producer(data: &Mutex<FSelData>, notifier: &fuser::NotificationHandler) {
     let mut idx: u8 = 0;
     let mut nr = 1;
     loop {

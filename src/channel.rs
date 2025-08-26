@@ -1,72 +1,92 @@
-use std::{
-    fs::File,
-    io,
-    os::{
-        fd::{AsFd, BorrowedFd},
-        unix::prelude::AsRawFd,
-    },
-    sync::Arc,
-};
+use std::{fs::File, io, os::unix::prelude::AsRawFd, sync::Arc};
 
 use libc::{c_int, c_void, size_t};
 
-#[cfg(feature = "abi-7-40")]
-use crate::passthrough::BackingId;
-use crate::reply::ReplySender;
+use crate::ll::fuse_abi;
+#[cfg(feature = "side-channel")]
+use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
 
-/// A raw communication channel to the FUSE kernel driver
-#[derive(Debug)]
-pub struct Channel(Arc<File>);
+pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<fuse_abi::fuse_in_header>();
 
+pub(crate) fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
+    let off = alignment - (buf.as_ptr() as usize) % alignment;
+    if off == alignment {
+        buf
+    } else {
+        &mut buf[off..]
+    }
+}
+
+/// A raw communication channel to the FUSE kernel driver.
+/// May be cloned and sent to other threads.
+#[derive(Clone, Debug)]
+pub(crate) struct Channel {
+    owned_fd: Arc<File>,
+    pub raw_fd: i32,
+    #[cfg(feature = "side-channel")]
+    is_main: bool,
+}
+
+use std::os::fd::{AsFd, BorrowedFd};
 impl AsFd for Channel {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
+        self.owned_fd.as_fd()
     }
 }
 
 impl Channel {
-    /// Create a new communication channel to the kernel driver by mounting the
-    /// given path. The kernel driver will delegate filesystem operations of
-    /// the given path to the channel.
-    pub(crate) fn new(device: Arc<File>) -> Self {
-        Self(device)
+    // Create a new communication channel to the kernel driver.
+    // The argument is a `File` opened on a fuse device.
+    pub fn new(device: File) -> Self {
+        let owned_fd = Arc::new(device);
+        let raw_fd = owned_fd.as_raw_fd();
+        Self {
+            owned_fd,
+            raw_fd,
+            #[cfg(feature = "side-channel")]
+            is_main: true,
+        }
+    }
+    // Create a new communication channel to the kernel driver.
+    // The argument is a `Arc<File>` opened on a fuse device.
+    #[allow(dead_code)]
+    pub fn from_shared(device: &Arc<File>) -> Self {
+        let raw_fd = device.as_raw_fd().as_raw_fd();
+        let owned_fd = device.clone();
+        Self {
+            owned_fd,
+            raw_fd,
+            #[cfg(feature = "side-channel")]
+            is_main: true,
+        }
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
-    pub fn receive(&self, buffer: &mut [u8]) -> io::Result<usize> {
+    /// Populates data into the buffer starting from the point of alignment
+    pub fn receive(&self, buffer: &mut [u8]) -> io::Result<Vec<u8>> {
+        let buf_aligned = aligned_sub_buf(buffer, FUSE_HEADER_ALIGNMENT);
         let rc = unsafe {
             libc::read(
-                self.0.as_raw_fd(),
-                buffer.as_ptr() as *mut c_void,
-                buffer.len() as size_t,
+                self.raw_fd,
+                buf_aligned.as_ptr() as *mut c_void,
+                buf_aligned.len() as size_t,
             )
         };
         if rc < 0 {
             Err(io::Error::last_os_error())
         } else {
-            Ok(rc as usize)
+            let data = Vec::from(&buf_aligned[..rc as usize]);
+            buf_aligned[..rc as usize].fill(0);
+            Ok(data)
         }
     }
-
-    /// Returns a sender object for this channel. The sender object can be
-    /// used to send to the channel. Multiple sender objects can be used
-    /// and they can safely be sent to other threads.
-    pub fn sender(&self) -> ChannelSender {
-        // Since write/writev syscalls are threadsafe, we can simply create
-        // a sender by using the same file and use it in other threads.
-        ChannelSender(self.0.clone())
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ChannelSender(Arc<File>);
-
-impl ReplySender for ChannelSender {
-    fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+    /// Writes data from the owned buffer.
+    /// Blocks the current thread.
+    pub fn send(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let rc = unsafe {
             libc::writev(
-                self.0.as_raw_fd(),
-                bufs.as_ptr() as *const libc::iovec,
+                self.raw_fd,
+                bufs.as_ptr().cast::<libc::iovec>(),
                 bufs.len() as c_int,
             )
         };
@@ -78,8 +98,27 @@ impl ReplySender for ChannelSender {
         }
     }
 
-    #[cfg(feature = "abi-7-40")]
-    fn open_backing(&self, fd: BorrowedFd<'_>) -> std::io::Result<BackingId> {
-        BackingId::create(&self.0, fd)
+    #[cfg(feature = "side-channel")]
+    /// Creates a new fuse worker channel. Self should be the main channel.
+    /// # Errors
+    /// Propagates underlying errors.
+    pub fn fork(&self) -> std::io::Result<Self> {
+        if !self.is_main {
+            log::error!(
+                "Attempted to create a new fuse worker from a fuse channel that is not main"
+            );
+        }
+        let fuse_device_name = "/dev/fuse";
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(fuse_device_name)?;
+        let raw_fd = file.as_raw_fd();
+        ioctl_clone_fuse_fd(raw_fd, self.raw_fd as u32)?;
+        Ok(Channel {
+            owned_fd: Arc::new(file),
+            raw_fd,
+            is_main: false,
+        })
     }
 }
