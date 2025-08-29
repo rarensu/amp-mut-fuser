@@ -2258,6 +2258,7 @@ mod tests {
     #[test]
     fn init() {
         let req = AnyRequest::try_from(INIT_REQUEST[..].to_vec()).unwrap();
+        #[cfg(not(feature = "abi-7-36"))]
         assert_eq!(req.header.len, 56);
         #[cfg(feature = "abi-7-36")]
         assert_eq!(req.header.len, 104);
