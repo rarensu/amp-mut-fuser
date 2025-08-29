@@ -34,7 +34,6 @@ where
                     /*
                     self.ch_side.clone(),
                     */
-                    #[cfg(feature = "abi-7-11")]
                     self.queues.sender.clone(),
                     data
                 ) {

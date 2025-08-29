@@ -4,7 +4,6 @@ use log::{debug, error, info, warn};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
-#[cfg(feature = "abi-7-11")]
 use std::sync::atomic::Ordering::Relaxed;
 
 use crate::FsStatus;
@@ -13,9 +12,7 @@ use crate::any::AnyFS;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
 */
-#[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{RecvError, TryRecvError};
-#[cfg(feature = "abi-7-11")]
 use crate::notify::{NotificationHandler, NotificationKind};
 use crate::request::RequestHandler;
 use crate::session::{BUFFER_SIZE, SYNC_SLEEP_INTERVAL, Session};
@@ -38,9 +35,6 @@ where
             _ => FsStatus::Default,
         };
         let se = Arc::new(self);
-        #[cfg(not(feature = "abi-7-11"))]
-        let notify = false;
-        #[cfg(feature = "abi-7-11")]
         let notify = se.meta.notify.load(Relaxed);
         if init_fs_status != FsStatus::Default || notify {
             Session::do_all_events_async(se.clone()).await
@@ -68,7 +62,6 @@ where
         let se = Arc::new(self);
         let mut futures = Vec::new();
         futures.push(tokio::spawn(Session::do_requests_async(se.clone())));
-        #[cfg(feature = "abi-7-11")]
         futures.push(tokio::spawn(Session::do_notifications_async(se.clone())));
         futures.push(tokio::spawn(Session::do_heartbeats_async(se.clone())));
         for future in futures {
@@ -138,7 +131,6 @@ where
             /*
             se.ch_side.clone(),
             */
-            #[cfg(feature = "abi-7-11")]
             se.queues.sender.clone(),
             data
         ) {
@@ -163,11 +155,11 @@ where
 
     /// Process notifications in a single task.
     /// This variant executes sleep() to prevent busy loops.
-    #[cfg(feature = "abi-7-11")]
     #[allow(unused)] // this function is reserved for future multithreaded implementations
     pub async fn do_notifications_async(
         se: Arc<Session<L, S, A>>
     ) -> io::Result<()> {
+        #[cfg(feature = "side-channel")]
         info!(
             "Starting notification loop on side channel with fd {}",
             &se.ch_side.raw_fd
@@ -203,7 +195,6 @@ where
         Ok(())
     }
 
-    #[cfg(feature = "abi-7-11")]
     async fn handle_one_notification_async(
         se: &Session<L, S, A>,
         notification: NotificationKind,
@@ -217,7 +208,11 @@ where
             info!("Disabling notifications.");
             se.meta.notify.store(false, Relaxed);
         } else {
-            let notifier = NotificationHandler::new(se.ch_side.clone());
+            #[cfg(feature = "side-channel")]
+            let this_ch = se.ch_side.clone();
+            #[cfg(not(feature = "side-channel"))]
+            let this_ch = se.ch_main.clone();
+            let notifier = NotificationHandler::new(this_ch);
             #[cfg(not(feature = "tokio"))]
             let res = notifier.dispatch(notification);
             #[cfg(feature = "tokio")]
@@ -277,7 +272,6 @@ where
         info!("Starting full task loop");
         loop {
             // Check for outgoing Notifications (non-blocking)
-            #[cfg(feature = "abi-7-11")]
             if se.meta.notify.load(Relaxed) {
                 match se.queues.receiver.try_recv() {
                     Ok(notification) => {

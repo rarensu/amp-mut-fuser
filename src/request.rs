@@ -12,9 +12,7 @@ use std::convert::Into;
 use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
 use crate::reply::ReplyHandler;
-#[cfg(feature = "abi-7-11")]
 use crate::notify::NotificationKind;
-#[cfg(feature = "abi-7-11")]
 use crossbeam_channel::Sender;
 
 /// Request data structure

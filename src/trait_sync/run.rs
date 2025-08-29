@@ -2,7 +2,6 @@ use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use std::io;
-#[cfg(feature = "abi-7-11")]
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
@@ -12,9 +11,7 @@ use crate::any::AnyFS;
 #[cfg(feature = "abi-7-11")]
 use crate::notify::{Notification, Notifier};
 */
-#[cfg(feature = "abi-7-11")]
 use crossbeam_channel::{RecvError, TryRecvError};
-#[cfg(feature = "abi-7-11")]
 use crate::notify::{NotificationHandler, NotificationKind};
 use crate::request::RequestHandler;
 use crate::session::{BUFFER_SIZE, SYNC_SLEEP_INTERVAL, Session};
@@ -55,9 +52,6 @@ where
         }
         #cfg[not((feature = "threaded"))]
         */
-        #[cfg(not(feature = "abi-7-11"))]
-        let notify = false;
-        #[cfg(feature = "abi-7-11")]
         let notify = self.meta.notify.load(Relaxed);
         // ch_idx=0 for the single-threaded case
         if init_fs_status != FsStatus::Default || notify {
@@ -114,7 +108,6 @@ where
             /*
             self.ch_side.clone(),
             */
-            #[cfg(feature = "abi-7-11")]
             self.queues.sender.clone(),
             data
         ) {
@@ -138,9 +131,9 @@ where
     }
 
     /// Process notifications, blocking a single thread.
-    #[cfg(feature = "abi-7-11")]
     #[allow(unused)] // this function is reserved for future multithreaded implementations
     pub fn do_notifications_sync(self: &mut Session<L, S, A>) -> io::Result<()> {
+        #[cfg(feature = "side-channel")]
         info!(
             "Starting notification loop on side channel with fd {}",
             &self.ch_side.raw_fd
@@ -170,7 +163,6 @@ where
         Ok(())
     }
 
-    #[cfg(feature = "abi-7-11")]
     fn handle_one_notification_sync(
         self: &mut Session<L, S, A>,
         notification: NotificationKind,
@@ -185,7 +177,11 @@ where
             self.meta.notify.store(false, Relaxed);
         } else {
             // Process the notification; blocks until sent
-            let notifier = NotificationHandler::new(self.ch_side.clone());
+            #[cfg(feature = "side-channel")]
+            let this_ch = self.ch_side.clone();
+            #[cfg(not(feature = "side-channel"))]
+            let this_ch = self.ch_main.clone();
+            let notifier = NotificationHandler::new(this_ch);
             if let Err(e) = notifier.dispatch(notification) {
                 error!("Failed to send notification: {e:?}");
                 // TODO. Decide if error is fatal. ENODEV might mean unmounted.
@@ -233,7 +229,6 @@ where
         let mut t_since_last_heartbeat = Duration::ZERO;
         info!("Starting full task loop");
         loop {
-            #[cfg(feature = "abi-7-11")]
             if self.meta.notify.load(Relaxed) {
                 // Check for outgoing notifications
                 // try_recv() returns immediately

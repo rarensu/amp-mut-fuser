@@ -41,7 +41,6 @@ impl RequestHandler {
                 | Operation::FSyncDir(_)
                 | Operation::Release(_)
                 | Operation::ReleaseDir(_) => false,
-                #[cfg(feature = "abi-7-16")]
                 Operation::BatchForget(_) => false,
                 #[cfg(feature = "abi-7-21")]
                 Operation::ReadDirPlus(_) => false,
@@ -135,19 +134,10 @@ impl RequestHandler {
                 self.replyhandler.disable(); // no reply
             }
             Operation::GetAttr(_attr) => {
-                #[cfg(feature = "abi-7-9")]
                 let result = fs.getattr(
                     self.meta,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into),
-                    /* blank space */
-                );
-                // Pre-abi-7-9 does not support providing a file handle.
-                #[cfg(not(feature = "abi-7-9"))]
-                let result = fs.getattr(
-                    self.meta,
-                    self.request.nodeid().into(),
-                    None,
                     /* blank space */
                 );
                 if se_meta.allowed == SessionACL::RootAndOwner {
@@ -492,8 +482,6 @@ impl RequestHandler {
                 );
                 self.replyhandler.bmap_or_err(result);
             }
-
-            #[cfg(feature = "abi-7-11")]
             Operation::IoCtl(x) => {
                 if x.unrestricted() {
                     self.replyhandler.error(Errno::ENOSYS);
@@ -510,7 +498,6 @@ impl RequestHandler {
                     self.replyhandler.ioctl_or_err(result);
                 }
             }
-            #[cfg(feature = "abi-7-11")]
             Operation::Poll(x) => {
                 let result = fs.poll(
                     self.meta,
@@ -522,12 +509,10 @@ impl RequestHandler {
                 );
                 self.replyhandler.poll_or_err(result);
             }
-            #[cfg(feature = "abi-7-15")]
             Operation::NotifyReply(_) => {
                 // TODO: handle FUSE_NOTIFY_REPLY
                 self.replyhandler.error(Errno::ENOSYS);
             }
-            #[cfg(feature = "abi-7-16")]
             Operation::BatchForget(x) => {
                 fs.batch_forget(self.meta, x.into()); // no response
                 self.replyhandler.disable(); // no reply
@@ -624,8 +609,6 @@ impl RequestHandler {
                 );
                 self.replyhandler.ok_or_err(result);
             }
-
-            #[cfg(feature = "abi-7-12")]
             Operation::CuseInit(_) => {
                 // TODO: handle CUSE_INIT
                 self.replyhandler.error(Errno::ENOSYS);

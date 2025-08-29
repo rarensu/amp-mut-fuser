@@ -285,11 +285,8 @@ impl KernelConfig {
         config.requested = self.requested;
         config.max_readahead = self.max_readahead;
         config.max_max_readahead = self.max_max_readahead;
-        #[cfg(feature = "abi-7-13")]
-        {
-            config.max_background = self.max_background;
-            config.congestion_threshold = self.congestion_threshold;
-        }
+        config.max_background = self.max_background;
+        config.congestion_threshold = self.congestion_threshold;
         config.max_write = self.max_write;
         #[cfg(feature = "abi-7-23")]
         {

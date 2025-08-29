@@ -607,14 +607,12 @@ impl ReplyBmap {
 
 /* ------ Ioctl ------ */
 
-#[cfg(feature = "abi-7-11")]
 /// Custom callback handler for ReplyIoctl
 pub trait CallbackIoctl: CallbackErr {
     /// Reply to a request with the given data result
     fn ioctl(&mut self, result: i32, data: &[u8]);
 }
 
-#[cfg(feature = "abi-7-11")]
 /// Legacy callback handler for ReplyIoctl
 impl CallbackIoctl for Option<ReplyHandler> {
     fn ioctl(&mut self, result: i32, data: &[u8]) {
@@ -624,14 +622,12 @@ impl CallbackIoctl for Option<ReplyHandler> {
     }
 }
 
-#[cfg(feature = "abi-7-11")]
 /// Callback container for operations that respond with ioctl data
 #[derive(Debug)]
 pub struct ReplyIoctl {
     handler: Box<dyn CallbackIoctl>,
 }
 
-#[cfg(feature = "abi-7-11")]
 impl ReplyIoctl {
     /// Create a ReplyIoctl from the given boxed CallbackIoctl.
     pub fn new(handler: Box<dyn CallbackIoctl>) -> Self {
@@ -646,14 +642,12 @@ impl ReplyIoctl {
 
 /* ------ Poll ------ */
 
-#[cfg(feature = "abi-7-11")]
 /// Custom callback handler for ReplyPoll
 pub trait CallbackPoll: CallbackErr {
     /// Reply to a request with the given poll result
     fn poll(&mut self, revents: u32);
 }
 
-#[cfg(feature = "abi-7-11")]
 /// Legacy callback handler for ReplyPoll
 impl CallbackPoll for Option<ReplyHandler> {
     fn poll(&mut self, revents: u32) {
@@ -663,14 +657,12 @@ impl CallbackPoll for Option<ReplyHandler> {
     }
 }
 
-#[cfg(feature = "abi-7-11")]
 /// Callback container for operations that respond with poll events
 #[derive(Debug)]
 pub struct ReplyPoll {
     handler: Box<dyn CallbackPoll>,
 }
 
-#[cfg(feature = "abi-7-11")]
 impl ReplyPoll {
     /// Create a ReplyPoll from the given boxed CallbackPoll.
     pub fn new(handler: Box<dyn CallbackPoll>) -> Self {

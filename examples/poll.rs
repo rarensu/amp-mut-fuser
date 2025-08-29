@@ -316,8 +316,6 @@ impl Filesystem for FSelFS {
         // example of converting to an explicit Owned Bytes variant
         Ok(Bytes::from_owner(data))
     }
-
-    #[cfg(feature = "abi-7-11")]
     async fn poll(
         &self,
         _req: RequestMeta,

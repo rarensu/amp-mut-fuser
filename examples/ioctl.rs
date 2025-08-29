@@ -169,7 +169,6 @@ impl Filesystem for FiocFS {
         Ok(DirentList::Static(&DIRENTS))
     }
 
-    #[cfg(feature = "abi-7-11")]
     async fn ioctl(
         &self,
         _req: RequestMeta,

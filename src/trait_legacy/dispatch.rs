@@ -16,10 +16,9 @@ use super::ReplyXTimes;
 use super::callback::{DirectoryHandler, OpenHandler};
 use super::{
     Filesystem, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+    ReplyEntry, ReplyIoctl, ReplyLock, ReplyOpen,  ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
-#[cfg(feature = "abi-7-11")]
-use super::{PollHandler, ReplyIoctl, ReplyPoll};
+use super::PollHandler;
 #[cfg(feature = "abi-7-21")]
 use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
 
@@ -99,7 +98,6 @@ impl RequestHandler {
                 | Operation::FSyncDir(_)
                 | Operation::Release(_)
                 | Operation::ReleaseDir(_) => false,
-                #[cfg(feature = "abi-7-16")]
                 Operation::BatchForget(_) => false,
                 #[cfg(feature = "abi-7-21")]
                 Operation::ReadDirPlus(_) => false,
@@ -194,20 +192,10 @@ impl RequestHandler {
                     self.replyhandler.attr_ttl_override();
                 }
                 let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
-                #[cfg(feature = "abi-7-9")]
                 fs.getattr(
                     &req,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into),
-                    reply,
-                    /* blank space */
-                );
-                // Pre-abi-7-9 does not support providing a file handle.
-                #[cfg(not(feature = "abi-7-9"))]
-                fs.getattr(
-                    &req,
-                    self.request.nodeid().into(),
-                    None,
                     reply,
                     /* blank space */
                 );
@@ -563,7 +551,6 @@ impl RequestHandler {
                     reply,
                 );
             }
-            #[cfg(feature = "abi-7-11")]
             Operation::IoCtl(x) => {
                 if x.unrestricted() {
                     self.replyhandler.error(Errno::ENOSYS);
@@ -581,7 +568,6 @@ impl RequestHandler {
                     );
                 }
             }
-            #[cfg(feature = "abi-7-11")]
             Operation::Poll(x) => {
                 let reply = ReplyPoll::new(Box::new(Some(self.replyhandler)));
                 fs.poll(
@@ -597,12 +583,10 @@ impl RequestHandler {
                     reply,
                 );
             }
-            #[cfg(feature = "abi-7-15")]
             Operation::NotifyReply(_) => {
                 // TODO: handle FUSE_NOTIFY_REPLY
                 self.replyhandler.error(Errno::ENOSYS);
             }
-            #[cfg(feature = "abi-7-16")]
             Operation::BatchForget(x) => {
                 fs.batch_forget(&req, x.nodes()); // no response
                 self.replyhandler.disable(); // no reply
@@ -710,7 +694,6 @@ impl RequestHandler {
                     reply,
                 );
             }
-            #[cfg(feature = "abi-7-12")]
             Operation::CuseInit(_) => {
                 // TODO: handle CUSE_INIT
                 self.replyhandler.error(Errno::ENOSYS);

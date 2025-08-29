@@ -8,17 +8,12 @@ use serde::de::value::F64Deserializer;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 */
-#[cfg(feature = "abi-7-11")]
-use crate::Ioctl;
-#[cfg(target_os = "macos")]
-use crate::XTimes;
-/*
-#[cfg(feature = "abi-7-11")]
-use crate::notify::Notification;
-*/
 #[cfg(feature = "abi-7-21")]
 use crate::reply::DirentPlusList;
-use crate::reply::{DirentList, Entry, FileAttr, Lock, Open, Statfs, Xattr};
+#[cfg(target_os = "macos")]
+use crate::reply::XTimes;
+use crate::reply::{DirentList, Entry, FileAttr, Ioctl, Lock, Open, Statfs, Xattr};
+
 use crate::request::{Forget, RequestMeta};
 use crate::{Errno, FsStatus, KernelConfig, TimeOrNow};
 use bytes::Bytes;
@@ -75,7 +70,6 @@ pub trait Filesystem: Send + Sync {
 
     /// Like forget, but take multiple forget requests at once for performance. The default
     /// implementation will fallback to `forget` for each node. This operation does not return a result.
-    #[cfg(feature = "abi-7-16")]
     async fn batch_forget(&self, req: RequestMeta, nodes: Vec<Forget>) {
         for node in nodes {
             self.forget(req, node).await;
@@ -627,7 +621,6 @@ pub trait Filesystem: Send + Sync {
 
     /// Control device.
     /// The method should return `Ok(Ioctl)` with the ioctl result, or `Err(Errno)` otherwise.
-    #[cfg(feature = "abi-7-11")]
     async fn ioctl(
         &self,
         req: RequestMeta,
@@ -657,7 +650,6 @@ pub trait Filesystem: Send + Sync {
     /// Ok(0) indicates that the file is not ready. In that case,
     /// the filesystem should save the poll handle (`ph`) in its internal structure.
     /// Later events should be sent via the notification channel.
-    #[cfg(feature = "abi-7-11")]
     async fn poll(
         &self,
         req: RequestMeta,

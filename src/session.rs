@@ -72,7 +72,6 @@ pub(crate) struct SessionMeta {
     pub(crate) initialized: AtomicBool,
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: AtomicBool,
-    #[cfg(feature = "abi-7-11")]
     /// Whether this session currently has notification support
     pub(crate) notify: AtomicBool,
     /// Whether this session does heartbeats, if nonzero
@@ -95,7 +94,6 @@ where
     #[cfg(feature = "side-channel")]
     /// Side communication channel to the kernel fuse driver
     pub(crate) ch_side: Channel,
-    #[cfg(feature = "abi-7-11")]
     /// Side communication with the filesystem.
     pub(crate) queues: Queues,
     /// Handle to the mount.  Dropping this unmounts.
@@ -143,8 +141,8 @@ where
         Ok(se.build())
     }
 
-    /// Returns an object that can be used to send notifications to the kernel
-    #[cfg(feature = "abi-7-11")]
+    /// Returns an object that can be used to send notifications to the kernel.
+    /// Legacy method.
     pub fn notifier(&self) -> NotificationHandler {
         #[cfg(not(feature = "side-channel"))]
         let this_ch = self.ch_main.clone();
@@ -154,7 +152,6 @@ where
     }
 
     /// Returns an object that can be used to queue notifications for the Session to process
-    #[cfg(feature = "abi-7-11")]
     pub fn get_notification_sender(&self) -> Notifier {
         // Sync/Async notification method
         self.meta.notify.store(true, Relaxed);
@@ -191,15 +188,6 @@ where
                 panic!("Attempted to use Legacy/Sync method on an Async filesystem.")
             }
         }
-    }
-    /// Returns an object that can be used to send notifications to the kernel.
-    /// Legacy method.
-    pub fn notifier(&self) -> NotificationHandler {
-        #[cfg(not(feature = "side-channel"))]
-        let this_ch = self.ch_main.clone();
-        #[cfg(feature = "side-channel")]
-        let this_ch = self.ch_side.clone();
-        NotificationHandler::new(this_ch)
     }
 }
 
@@ -328,7 +316,7 @@ impl BackgroundSession {
 
     /// Returns an object that can be used to send notifications to the kernel
     pub fn notifier(&self) -> NotificationHandler {
-        NotificationHandler::new(self.notification_sender.clone())
+        NotificationHandler::new(self.sender.clone())
     }
 }
 
@@ -339,10 +327,7 @@ impl fmt::Debug for BackgroundSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         let mut builder = f.debug_struct("BackgroundSession");
         builder.field("main_loop_guard", &self.guard);
-        #[cfg(feature = "abi-7-11")]
-        {
-            builder.field("notification_sender", &self.notification_sender);
-        }
+        builder.field("notification_sender", &self.sender);
         builder.field("_mount", &self._mount);
         builder.finish()
     }
@@ -364,7 +349,6 @@ where
     #[cfg(feature = "side-channel")]
     /// Side communication channel to the kernel fuse driver
     pub(crate) ch_side: Option<Channel>,
-    #[cfg(feature = "abi-7-11")]
     /// Side communication with the filesystem.
     pub(crate) queues: Queues,
     /// Handle to the mount.  Dropping this unmounts.
@@ -386,7 +370,6 @@ where
             ch_main: None,
             #[cfg(feature = "side-channel")]
             ch_side: None,
-            #[cfg(feature = "abi-7-11")]
             queues: Queues::new(),
             mount: Arc::new(Mutex::new(None)),
             meta: SessionMeta {
@@ -396,7 +379,6 @@ where
                 proto_minor: AtomicU32::new(0),
                 initialized: AtomicBool::new(false),
                 destroyed: AtomicBool::new(false),
-                #[cfg(feature = "abi-7-11")]
                 notify: AtomicBool::new(false),
                 heartbeat_interval: Duration::from_secs(0),
             }
@@ -453,7 +435,6 @@ where
     /// Get a Notifier for this Session.
     /// Can be used to send Notifications.
     /// Enables Notifications for this session.
-    #[cfg(feature = "abi-7-11")]
     pub fn get_notification_sender(&mut self) -> Notifier {
         self.meta.notify.store(true, Relaxed);
         // Sync/Async notification method
@@ -505,7 +486,6 @@ where
             ch_side: self.ch_side
                 .expect("No fuse channel! Did you forget to mount?"),
             mount: self.mount,
-            #[cfg(feature = "abi-7-11")]
             queues: self.queues,
             meta: self.meta,
         }
