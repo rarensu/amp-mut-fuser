@@ -22,7 +22,6 @@ const FUSE_DEV_IOC_BACKING_CLOSE: u8 = 2;
 
 #[cfg(feature = "side-channel")]
 // This ioctl is used to acquire additional worker fuse file descriptors
-#[cfg(feature = "abi-7-11")]
 nix::ioctl_read!(
     fuse_dev_ioc_clone,
     FUSE_DEV_IOC_MAGIC,

@@ -72,7 +72,7 @@ impl BackingSender for Channel {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// `BackingHandler` allows the filesystem to open (and close) `BackingId`.
 pub struct BackingHandler {
     /// Mechanism to open and close backing id
@@ -82,7 +82,7 @@ pub struct BackingHandler {
 }
 
 impl BackingHandler {
-    /// Create a reply handler for a specific request identifier
+    /// Create a backing handler for this session
     pub(crate) fn new(sender: Channel, queue: Sender<NotificationKind>) -> BackingHandler {
         BackingHandler {
             sender,

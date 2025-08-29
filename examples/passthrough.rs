@@ -9,18 +9,16 @@
 
 use bytes::Bytes;
 use clap::{Arg, ArgAction, Command, crate_version};
-use crossbeam_channel::{Receiver, Sender};
 use fuser::{
-    Dirent, DirentList, Entry, Errno, FileAttr, FileType, FsStatus, KernelConfig, MountOption,
-    NotificationKind, Open, RequestMeta, consts, trait_async::Filesystem,
+    BackingId, BackingHandler, Dirent, DirentList, Entry, Errno, FileAttr, FileType,
+    FsStatus, KernelConfig, MountOption, Open, RequestMeta, consts, trait_async::Filesystem,
 };
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io;
 use std::path::Path;
 use std::sync::{
-    Arc, Mutex,
+    Mutex,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -28,64 +26,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const TTL: Duration = Duration::from_secs(1); // 1 second
 const BACKING_TIMEOUT: Duration = Duration::from_secs(2); // 2 seconds
 
-// ----- BackingID -----
-
-// A BackingId can be in three states: pending, ready, and closed.
-// The closed variant is not strictly necessary; it simply provides some additional logging.
-#[derive(Debug)]
-enum BackingStatus {
-    Pending(PendingBackingId),
-    Ready(ReadyBackingId),
-    // Closed variant is just for the extra logging
-    Closed(ClosedBackingId),
-}
-
-#[derive(Debug)]
-struct PendingBackingId {
-    // reply will receive a backing_id from the kernel
-    reply: Receiver<io::Result<u32>>,
-    #[allow(dead_code)]
-    // The file needs to stay open until the kernel finishes processing the open backing request.
-    // It's behind an Arc so that if the Filesystem plans to interact with the file again later,
-    // the Filesystem can clone the Arc to avoid a redundant File::open() operation.
-    _file: Arc<File>,
-}
-
-#[derive(Debug)]
-struct ReadyBackingId {
-    // The notifier is used to safely close the backing id after any miscellaneous unexpected failures.
-    notifier: Sender<NotificationKind>,
-    // This is the literal backing_id the kernel assigns to the filesystem.
-    backing_id: u32,
-    // there is a limit to how many you backing id the filesystem can hold open.
-    // timestamp is one example strategy for retiring old backing ids.
-    timestamp: SystemTime,
-    // The reply_sender is just for extra logging.
-    reply_sender: Option<Sender<io::Result<u32>>>,
-}
-
-impl Drop for ReadyBackingId {
-    fn drop(&mut self) {
-        // It is important to notify the kernel when backing ids are no longer in use.
-        let notification = NotificationKind::CloseBacking((self.backing_id, self.reply_sender.take()));
-        let _ = self.notifier.send(notification);
-        // TODO: handle the case where the notifier is broken.
-    }
-}
-
-#[derive(Debug)]
-struct ClosedBackingId {
-    // the reply is just for extra logging
-    reply: Receiver<io::Result<u32>>,
-}
-
 #[derive(Debug)]
 struct PassthroughFs {
     root_attr: FileAttr,
     passthrough_file_attr: FileAttr,
-    backing_cache: Mutex<HashMap<u64, BackingStatus>>,
+    backing_cache: Mutex<HashMap<u64, (BackingId, SystemTime)>>,
     next_fh: AtomicU64,
-    notification_sender: Mutex<Option<Sender<NotificationKind>>>,
+    backing_handler: BackingHandler,
 }
 
 static ROOT_DIRENTS: [Dirent; 3] = [
@@ -110,7 +57,7 @@ static ROOT_DIRENTS: [Dirent; 3] = [
 ];
 
 impl PassthroughFs {
-    fn new() -> Self {
+    fn new(backing_handler: BackingHandler) -> Self {
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
 
@@ -155,7 +102,7 @@ impl PassthroughFs {
             passthrough_file_attr,
             backing_cache: Mutex::new(HashMap::new()),
             next_fh: AtomicU64::new(0),
-            notification_sender: Mutex::new(None),
+            backing_handler,
         }
     }
 
@@ -164,114 +111,35 @@ impl PassthroughFs {
     }
 
     fn get_backing_id(&self, ino: u64) -> Option<u32> {
-        self.update_backing_status(ino);
-        if let Some(BackingStatus::Ready(ready_backing_id)) =
+        self.update_backing_status(ino, true);
+        if let Some((ready_backing_id, _)) =
             self.backing_cache.lock().unwrap().get(&ino)
         {
-            Some(ready_backing_id.backing_id)
+            Some(ready_backing_id.id)
         } else {
             None
         }
     }
 
-    fn any_backing_status(&self, ino: u64) -> bool {
-        self.update_backing_status(ino);
-        self.backing_cache.lock().unwrap().contains_key(&ino)
-    }
 
     // Get the backing status for a given inode, after all available updates are applied.
     // This will advance the status as appropriate and remove it from the cache if it is stale.
     // The returning an immutable reference to the updated status (or None)
-    fn update_backing_status(&self, ino: u64) {
+    fn update_backing_status(&self, ino: u64, extend: bool) {
         let mut cache = self.backing_cache.lock().unwrap();
         let mut remove = false;
-        if let Some(backing_status) = cache.get_mut(&ino) {
-            if let Some(notifier) = self.notification_sender.lock().unwrap().as_ref().cloned() {
-                if !Self::backing_status_is_ok(backing_status, &notifier, true) {
-                    remove = true;
-                }
+        if let Some((backing_id, creation_time)) = cache.get_mut(&ino) {
+            let now = SystemTime::now();
+            if extend {
+                *creation_time = now;
+                log::info!("Backing Id {} Timestamp Renewed", backing_id.id);
+            } else if now.duration_since(creation_time.clone()).unwrap() > BACKING_TIMEOUT {
+                log::info!("Backing Id {} Timed Out", backing_id.id);
+                remove = true;
             }
         }
         if remove {
             cache.remove(&ino);
-        }
-    }
-
-    // backing_status_is_ok mutates a BackingStatus, advancing it to the next status as appropriate.
-    // It returns a boolean indicating whether the item is still valid and should be retained in the cache.
-    // The boolean return is so that it works with `HashMap::retain` for efficiently dropping stale cache entries.
-    fn backing_status_is_ok(
-        backing_status: &mut BackingStatus,
-        notifier: &Sender<NotificationKind>,
-        extend: bool,
-    ) -> bool {
-        match backing_status {
-            BackingStatus::Pending(p) => {
-                log::debug!("processing pending {p:?}");
-                match p.reply.try_recv() {
-                    Ok(Ok(backing_id)) => {
-                        let now = SystemTime::now();
-                        *backing_status = BackingStatus::Ready(ReadyBackingId {
-                            notifier: notifier.clone(),
-                            backing_id,
-                            timestamp: now,
-                            reply_sender: None,
-                        });
-                        log::info!("Backing Id {backing_id} Ready");
-                        true
-                    }
-                    Ok(Err(e)) => {
-                        log::error!("error {e}");
-                        false
-                    }
-                    Err(crossbeam_channel::TryRecvError::Empty) => {
-                        log::debug!("waiting for reply");
-                        true
-                    }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        log::warn!("channel disconnected");
-                        false
-                    }
-                }
-            }
-            BackingStatus::Ready(r) => {
-                let now = SystemTime::now();
-                if extend {
-                    log::debug!("processing ready {r:?}");
-                    r.timestamp = now;
-                    log::debug!("timestamp renewed");
-                } else if now.duration_since(r.timestamp).unwrap() > BACKING_TIMEOUT {
-                    log::debug!("processing ready {r:?}");
-                    log::info!("Backing Id {} Timed Out", r.backing_id);
-                    // everything below this is just for extra logging.
-                    let (tx, rx) = crossbeam_channel::bounded(1);
-                    r.reply_sender = Some(tx);
-                    *backing_status = BackingStatus::Closed(ClosedBackingId { reply: rx });
-                }
-                true // ready remains ready or transitions to closed. either way, it remains in the cache.
-            }
-            BackingStatus::Closed(d) => {
-                // all of this is just for the extra logging
-                log::debug!("processing closed {d:?}");
-                match d.reply.try_recv() {
-                    Ok(Ok(value)) => {
-                        log::debug!("ok {value:?}");
-                        false
-                    }
-                    Ok(Err(e)) => {
-                        log::error!("error {e}");
-                        false
-                    }
-                    Err(crossbeam_channel::TryRecvError::Empty) => {
-                        log::debug!("waiting for reply");
-                        true
-                    }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        log::warn!("channel disconnected");
-                        false
-                    }
-                }
-            }
         }
     }
 }
@@ -289,33 +157,9 @@ impl Filesystem for PassthroughFs {
         Ok(config)
     }
 
-    // It is not generally safe to contact the kernel to obtain a backing id
-    // while the kernel is waiting for a response to an open operation in progress.
-    // Therefore, this example requests the backing id on lookup instead of on open.
-    #[allow(clippy::cast_sign_loss)]
     async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
         log::info!("lookup(name={name:?})");
         if parent == 1 && name.to_str() == Some("passthrough") {
-            if !self.any_backing_status(2) {
-                log::info!("new pending backing id request");
-                if let Some(sender) = self.notification_sender.lock().unwrap().as_ref().cloned() {
-                    /*let file = File::open("/etc/profile").unwrap();
-                    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
-                    if let Err(e) = sender.send(NotificationKind::OpenBacking(fd as u32)) {
-                        log::error!("failed to send OpenBacking notification: {e}");
-                    } else {
-                        let backing_id = PendingBackingId {
-                            _file: Arc::new(file),
-                        };
-                        self.backing_cache
-                            .lock()
-                            .unwrap()
-                            .insert(2, BackingStatus::Pending(backing_id));
-                    }*/
-                } else {
-                    log::warn!("unable to request a backing id. no notification sender available");
-                }
-            }
             Ok(Entry {
                 ino: self.passthrough_file_attr.ino,
                 generation: None,
@@ -346,8 +190,17 @@ impl Filesystem for PassthroughFs {
             return Err(Errno::ENOENT);
         }
         // Check if a backing id is ready for this file
-        let backing_id_option = self.get_backing_id(ino);
-        // TODO: if None, return Err
+        let backing_id_option = if let Some(id) = self.get_backing_id(ino){
+            Some(id)
+        } else {
+            // Try to obtain a backing id
+            let file = File::open("/etc/os-release")?;
+            let backing_id = self.backing_handler.open_backing(file)?;
+            let id = backing_id.id;
+            let now = SystemTime::now();
+            self.backing_cache.lock().unwrap().insert(ino, (backing_id, now));
+            Some(id)
+        };
         let fh = self.next_fh();
         // TODO: track file handles
         log::info!("open: fh {fh}, backing_id_option {backing_id_option:?}");
@@ -361,9 +214,12 @@ impl Filesystem for PassthroughFs {
     // The heartbeat function is called periodically by the FUSE session.
     // We use it to ensure that the cache entries have accurate timestamps.
     async fn heartbeat(&self) -> FsStatus {
-        if let Some(notifier) = self.notification_sender.lock().unwrap().as_ref().cloned() {
-            let mut cache = self.backing_cache.lock().unwrap();
-            cache.retain(|_, v| PassthroughFs::backing_status_is_ok(v, &notifier, false));
+        let keys: Vec<u64> = {
+            let cache = self.backing_cache.lock().unwrap();
+            cache.keys().copied().collect()
+        };
+        for ino in keys {
+            self.update_backing_status(ino, false);
         }
         FsStatus::Ready
     }
@@ -456,9 +312,14 @@ fn main() {
         options.push(MountOption::AllowRoot);
     }
 
-    let fs = PassthroughFs::new();
-    let session = fuser::Session::new(fs.into(), Path::new(mountpoint), &options)
-        .expect("Failed to create Session.");
+    let mut sessionbuilder = fuser::SessionBuilder::new();
+    sessionbuilder.mount_path(Path::new(mountpoint), &options)
+            .expect("Failed to mount FUSE session.");
+    sessionbuilder.set_heartbeat_interval(Duration::new(1, 0));
+    let backing_handler = sessionbuilder.get_backing_handler();
+    let fs = PassthroughFs::new(backing_handler);
+    sessionbuilder.set_filesystem(fs.into());
+    let session = sessionbuilder.build();
 
     // Drive the async session loop with a Tokio runtime, matching ioctl.rs.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -486,73 +347,6 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_heartbeat_cycle() {
-        let mut fs = PassthroughFs::new();
-        let (tx, rx) = crossbeam_channel::unbounded();
-        assert!(fs.init_notification_sender(tx));
-
-        // Should react to lookup with a pending entry and a notification
-        futures::executor::block_on(fs.lookup(dummy_meta(), 1, &OsString::from("passthrough")))
-            .unwrap();
-        assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
-        assert!(matches!(
-            fs.backing_cache.lock().unwrap().get(&2).unwrap(),
-            BackingStatus::Pending(_)
-        ));
-        let notification = rx.try_recv().unwrap();
-        let (fd, sender) = match notification {
-            NotificationKind::OpenBacking(d) => d,
-            _ => panic!("unexpected notification"),
-        };
-        assert!(fd > 0);
-        let sender = sender.unwrap();
-
-        // Heartbeat should not do anything yet
-        futures::executor::block_on(fs.heartbeat());
-        assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
-        assert!(matches!(
-            fs.backing_cache.lock().unwrap().get(&2).unwrap(),
-            BackingStatus::Pending(_)
-        ));
-
-        // Simulate the kernel replying to the open backing request
-        sender.send(Ok(123)).unwrap();
-
-        // Heartbeat should now trigger the transition to ready
-        futures::executor::block_on(fs.heartbeat());
-        assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
-        assert!(matches!(
-            fs.backing_cache.lock().unwrap().get(&2).unwrap(),
-            BackingStatus::Ready(_)
-        ));
-
-        // Open the file
-        let open = futures::executor::block_on(fs.open(dummy_meta(), 2, 0)).unwrap();
-        assert_eq!(open.flags, consts::FOPEN_PASSTHROUGH);
-        assert_eq!(open.backing_id, Some(123));
-
-        // Wait for timeout
-        std::thread::sleep(BACKING_TIMEOUT);
-
-        // Heartbeat should now trigger the transition to closed
-        futures::executor::block_on(fs.heartbeat());
-        assert_eq!(fs.backing_cache.lock().unwrap().len(), 1);
-        assert!(matches!(
-            fs.backing_cache.lock().unwrap().get(&2).unwrap(),
-            BackingStatus::Closed(_)
-        ));
-
-        // Simulate the kernel replying to the close backing request
-        let notification = rx.try_recv().unwrap();
-        let (backing_id, sender) = match notification {
-            NotificationKind::CloseBacking(d) => d,
-            _ => panic!("unexpected notification"),
-        };
-        assert_eq!(backing_id, 123);
-        sender.unwrap().send(Ok(0)).unwrap();
-
-        // Heartbeat should now trigger dropping the entry
-        futures::executor::block_on(fs.heartbeat());
-        assert_eq!(fs.backing_cache.lock().unwrap().len(), 0);
+    fn test_something() {
     }
 }

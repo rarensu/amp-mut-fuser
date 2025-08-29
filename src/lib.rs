@@ -49,7 +49,7 @@ pub use ll::{Errno, TimeOrNow};
 pub use mnt::mount_options::MountOption;
 pub use notify::{NotificationHandler, NotificationKind, Notifier, PollHandler};
 #[cfg(feature = "abi-7-40")]
-pub use passthrough::BackingId;
+pub use passthrough::{BackingId, BackingHandler};
 #[cfg(feature = "abi-7-21")]
 pub use reply::DirentPlusList;
 #[cfg(target_os = "macos")]

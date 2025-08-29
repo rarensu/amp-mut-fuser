@@ -18,7 +18,6 @@ pub mod mount_options;
 #[cfg(any(test, feature = "libfuse"))]
 use fuse2_sys::fuse_args;
 
-#[cfg(any(test, fuser_mount_impl = "pure-rust", fuser_mount_impl = "libfuse2"))]
 use std::io;
 
 #[cfg(any(feature = "libfuse", test))]
