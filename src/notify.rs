@@ -1,5 +1,4 @@
 use std::fmt;
-#[cfg(feature = "abi-7-12")]
 use bytes::Bytes;
 use crossbeam_channel::{Sender, Receiver, unbounded};
 use std::io;
@@ -17,19 +16,14 @@ use crate::channel::Channel;
 #[derive(Debug)]
 pub enum NotificationKind {
     /// A poll event notification (field: ph)
-    #[cfg(feature = "abi-7-11")]
     Poll(u64),
     /// An invalid entry notification (fields: parent, name)
-    #[cfg(feature = "abi-7-12")]
     InvalEntry(u64, Bytes),
     /// An invalid inode notification (fields: ino, offset, len)
-    #[cfg(feature = "abi-7-12")]
     InvalInode(u64, i64, i64),
     /// An inode metadata update notification (fields: ino, offset, data)
-    #[cfg(feature = "abi-7-15")]
     Store(u64, u64, Bytes),
     /// An inode deletion notification (fields: parent, ino, name)
-    #[cfg(feature = "abi-7-18")]
     Delete(u64, u64, Bytes),
     /// A request to close a backing ID (field: id)
     #[cfg(feature = "abi-7-40")]
@@ -42,15 +36,10 @@ impl NotificationKind {
     /// A string the describes a Notification, mainly for logging purposes.
     pub fn label(&self) -> &'static str {
         match self {
-            #[cfg(feature = "abi-7-11")]
             NotificationKind::Poll(_) => "Poll",
-            #[cfg(feature = "abi-7-12")]
             NotificationKind::InvalEntry(..) => "InvalEntry",
-            #[cfg(feature = "abi-7-12")]
             NotificationKind::InvalInode(..) => "InvalInode",
-            #[cfg(feature = "abi-7-15")]
             NotificationKind::Store(..) => "Store",
-            #[cfg(feature = "abi-7-18")]
             NotificationKind::Delete(..) => "Delete",
             #[cfg(feature = "abi-7-40")]
             NotificationKind::CloseBacking(_) => "CloseBacking",
@@ -109,23 +98,18 @@ impl NotificationHandler {
     }
     pub(crate) fn dispatch(self, notification: NotificationKind) -> io::Result<()> {
         match notification {
-            #[cfg(feature = "abi-7-11")]
             NotificationKind::Poll(ph) => {
                 self.poll(ph)
             }
-            #[cfg(feature = "abi-7-12")]
             NotificationKind::InvalEntry(parent, name) => {
                 self.inval_entry(parent, &name)
             }
-            #[cfg(feature = "abi-7-12")]
             NotificationKind::InvalInode(ino, offset, len) => {
                 self.inval_inode(ino, offset, len)
             }
-            #[cfg(feature = "abi-7-15")]
             NotificationKind::Store(ino, offset, data) => {
                 self.store(ino, offset, &data)
             }
-            #[cfg(feature = "abi-7-18")]
             NotificationKind::Delete(parent, ino, name) => {
                 self.delete(parent, ino, &name)
             }
@@ -171,7 +155,6 @@ impl NotificationHandler {
         let notif = Notification::new_delete(parent, child, name).map_err(too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif)
     }
-    #[cfg(feature = "abi-7-12")]
     fn send_inval(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
         match self.channel.notify(code, notification) {
             // ENOENT is harmless for an invalidation (the
@@ -235,33 +218,28 @@ impl Notifier {
 
 impl Notifier {
     /// Notify poll clients of I/O readiness
-    #[cfg(feature = "abi-7-11")]
     pub fn poll(&self, ph: u64) {
         self.queue.send(NotificationKind::Poll(ph)).unwrap();
     }
 
     /// Invalidate the kernel cache for a given directory entry
-    #[cfg(feature = "abi-7-12")]
     pub fn inval_entry(&self, parent: u64, name: Bytes) {
         self.queue.send(NotificationKind::InvalEntry(parent, name)).unwrap();
     }
 
     /// Invalidate the kernel cache for a given inode (metadata and
     /// data in the given range)
-    #[cfg(feature = "abi-7-12")]
     pub fn inval_inode(&self, ino: u64, offset: i64, len: i64) {
         self.queue.send(NotificationKind::InvalInode(ino, offset, len)).unwrap();
     }
 
     /// Update the kernel's cached copy of a given inode's data
-    #[cfg(feature = "abi-7-15")]
     pub fn store(&self, ino: u64, offset: u64, data: Bytes) {
         self.queue.send(NotificationKind::Store(ino, offset, data)).unwrap();
     }
 
     /// Invalidate the kernel cache for a given directory entry and inform
     /// inotify watchers of a file deletion.
-    #[cfg(feature = "abi-7-18")]
     pub fn delete(&self, parent: u64, child: u64, name: Bytes) {
         self.queue.send(NotificationKind::Delete(parent, child, name)).unwrap();
     }
