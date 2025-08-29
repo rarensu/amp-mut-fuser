@@ -7,6 +7,10 @@ pub use dispatch::Request;
 
 mod run;
 
+mod mount;
+#[allow(deprecated)]
+pub use mount::{mount, mount2, spawn_mount, spawn_mount2};
+
 mod callback;
 
 #[cfg(test)]

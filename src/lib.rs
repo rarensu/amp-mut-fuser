@@ -35,7 +35,8 @@ pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 
 // Default trait is the Legacy `Filesystem` trait with `Reply` callbacks
 pub use trait_legacy::{Filesystem, Request};
-
+#[allow(deprecated)]
+pub use trait_legacy::{mount, mount2, spawn_mount, spawn_mount2};
 #[cfg(feature = "abi-7-21")]
 pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
@@ -52,18 +53,13 @@ pub use trait_legacy::{
 use ll::fuse_abi::consts::*;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
-use mnt::mount_options::check_option_conflicts;
-use mnt::mount_options::parse_options_from_args;
 use session::MAX_WRITE_SIZE;
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
 use std::cmp::min;
-use std::ffi::OsStr;
-use std::io;
-use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
-use std::{convert::AsRef, io::ErrorKind};
+
 
 /* ------ FUSE configuration ------ */
 
@@ -260,68 +256,4 @@ impl KernelConfig {
     fn max_pages(&self) -> u16 {
         ((max(self.max_write, self.max_readahead) - 1) / page_size::get() as u32) as u16 + 1
     }
-}
-
-/* ------ Easy mode functions ------ */
-
-/// Mount the given filesystem to the given mountpoint. This function will
-/// not return until the filesystem is unmounted.
-///
-/// Note that you need to lead each option with a separate `"-o"` string.
-#[deprecated(note = "use mount2() instead")]
-pub fn mount<FS: Filesystem, P: AsRef<Path>>(
-    filesystem: FS,
-    mountpoint: P,
-    options: &[&OsStr],
-) -> io::Result<()> {
-    let options = parse_options_from_args(options)?;
-    mount2(filesystem, mountpoint, options.as_ref())
-}
-
-/// Mount the given filesystem to the given mountpoint. This function will
-/// not return until the filesystem is unmounted.
-///
-/// NOTE: This will eventually replace mount(), once the API is stable
-pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
-    filesystem: FS,
-    mountpoint: P,
-    options: &[MountOption],
-) -> io::Result<()> {
-    check_option_conflicts(options)?;
-    Session::new(filesystem, mountpoint.as_ref(), options).and_then(|se| se.run())
-}
-
-/// Mount the given filesystem to the given mountpoint. This function spawns
-/// a background thread to handle filesystem operations while being mounted
-/// and therefore returns immediately. The returned handle should be stored
-/// to reference the mounted filesystem. If it's dropped, the filesystem will
-/// be unmounted.
-#[deprecated(note = "use spawn_mount2() instead")]
-pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
-    filesystem: FS,
-    mountpoint: P,
-    options: &[&OsStr],
-) -> io::Result<BackgroundSession> {
-    let options: Option<Vec<_>> = options
-        .iter()
-        .map(|x| Some(MountOption::from_str(x.to_str()?)))
-        .collect();
-    let options = options.ok_or(ErrorKind::InvalidData)?;
-    Session::new(filesystem, mountpoint.as_ref(), options.as_ref()).and_then(|se| se.spawn())
-}
-
-/// Mount the given filesystem to the given mountpoint. This function spawns
-/// a background thread to handle filesystem operations while being mounted
-/// and therefore returns immediately. The returned handle should be stored
-/// to reference the mounted filesystem. If it's dropped, the filesystem will
-/// be unmounted.
-///
-/// NOTE: This is the corresponding function to mount2.
-pub fn spawn_mount2<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
-    filesystem: FS,
-    mountpoint: P,
-    options: &[MountOption],
-) -> io::Result<BackgroundSession> {
-    check_option_conflicts(options)?;
-    Session::new(filesystem, mountpoint.as_ref(), options).and_then(|se| se.spawn())
 }
