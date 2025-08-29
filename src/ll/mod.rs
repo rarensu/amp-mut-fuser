@@ -2,9 +2,10 @@
 
 mod argument;
 pub mod fuse_abi;
+pub(crate) mod fuse_ioctl;
 pub(crate) mod notify;
 pub(crate) mod reply;
-mod request;
+pub(crate) mod request;
 
 use std::{convert::TryInto, num::NonZeroI32, time::SystemTime};
 
@@ -223,7 +224,7 @@ impl Errno {
     pub const NO_XATTR: Errno = Self::ENODATA;
     #[cfg(not(target_os = "linux"))]
     pub const NO_XATTR: Errno = Self::ENOATTR;
-
+    /// Convert libc-style error codes into `fuser::Errno`
     pub fn from_i32(err: i32) -> Errno {
         err.try_into().ok().map(Errno).unwrap_or(Errno::EIO)
     }

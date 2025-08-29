@@ -40,6 +40,7 @@ default = []
 libfuse = ["pkg-config"]
 serializable = ["serde"]
 macfuse-4-compat = []
+side-channel = []
 abi-7-19 = []
 abi-7-20 = ["abi-7-19"]
 abi-7-21 = ["abi-7-20"]
@@ -70,6 +71,9 @@ name = "notify_inval_inode"
 
 [[example]]
 name = "ioctl"
+
+[[example]]
+name = "ioctl_client"
 
 [[example]]
 name = "passthrough"

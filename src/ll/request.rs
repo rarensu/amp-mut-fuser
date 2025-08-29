@@ -5,7 +5,7 @@
 
 use super::fuse_abi::{InvalidOpcodeError, fuse_in_header, fuse_opcode};
 
-use super::{Errno, Response, fuse_abi as abi};
+use super::fuse_abi as abi;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom, fmt::Display, path::Path};
@@ -226,11 +226,6 @@ pub trait Request: Sized {
 
     /// Returns the PID of the process that triggered this request.
     fn pid(&self) -> u32;
-
-    /// Create an error response for this Request
-    fn reply_err(&self, errno: Errno) -> Response<'_> {
-        Response::new_error(errno)
-    }
 }
 
 macro_rules! impl_request {
@@ -265,12 +260,11 @@ macro_rules! impl_request {
 }
 
 mod op {
-    use crate::ll::Response;
-
     use super::{
         super::{TimeOrNow, argument::ArgumentIterator},
         FilenameInDir, Request,
     };
+    #[allow(clippy::wildcard_imports)]
     use super::{
         FileHandle, INodeNo, Lock, LockOwner, Operation, RequestId, abi::consts::*, abi::*,
     };
@@ -282,7 +276,6 @@ mod op {
         path::Path,
         time::{Duration, SystemTime},
     };
-    use zerocopy::IntoBytes;
 
     /// Look up a directory entry by name and get its attributes.
     ///
@@ -950,7 +943,7 @@ mod op {
         arg: &'a fuse_init_in,
     }
     impl_request!(Init<'a>);
-    impl<'a> Init<'a> {
+    impl Init<'_> {
         pub fn capabilities(&self) -> u64 {
             #[cfg(feature = "abi-7-36")]
             if self.arg.flags & (FUSE_INIT_EXT as u32) != 0 {
@@ -963,42 +956,6 @@ mod op {
         }
         pub fn version(&self) -> super::Version {
             super::Version(self.arg.major, self.arg.minor)
-        }
-
-        pub fn reply(&self, config: &crate::KernelConfig) -> Response<'a> {
-            let flags = self.capabilities() & config.requested; // use requested features and reported as capable
-
-            let init = fuse_init_out {
-                major: FUSE_KERNEL_VERSION,
-                minor: FUSE_KERNEL_MINOR_VERSION,
-                max_readahead: config.max_readahead,
-                #[cfg(not(feature = "abi-7-36"))]
-                flags: flags as u32,
-                #[cfg(feature = "abi-7-36")]
-                flags: (flags | FUSE_INIT_EXT) as u32,
-                max_background: config.max_background,
-                congestion_threshold: config.congestion_threshold(),
-                max_write: config.max_write,
-                #[cfg(feature = "abi-7-23")]
-                time_gran: config.time_gran.as_nanos() as u32,
-                #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
-                reserved: [0; 9],
-                #[cfg(feature = "abi-7-28")]
-                max_pages: config.max_pages(),
-                #[cfg(feature = "abi-7-28")]
-                unused2: 0,
-                #[cfg(all(feature = "abi-7-28", not(feature = "abi-7-36")))]
-                reserved: [0; 8],
-                #[cfg(feature = "abi-7-36")]
-                flags2: (flags >> 32) as u32,
-                #[cfg(all(feature = "abi-7-36", not(feature = "abi-7-40")))]
-                reserved: [0; 7],
-                #[cfg(feature = "abi-7-40")]
-                max_stack_depth: config.max_stack_depth,
-                #[cfg(feature = "abi-7-40")]
-                reserved: [0; 6],
-            };
-            Response::new_data(init.as_bytes())
         }
     }
 
@@ -1280,11 +1237,6 @@ mod op {
         header: &'a fuse_in_header,
     }
     impl_request!(Destroy<'a>);
-    impl<'a> Destroy<'a> {
-        pub fn reply(&self) -> Response<'a> {
-            Response::new_empty()
-        }
-    }
 
     /// Control device
     #[derive(Debug)]
@@ -1372,6 +1324,22 @@ mod op {
         /// TODO: Don't return fuse_forget_one, this should be private
         pub fn nodes(&self) -> &'a [fuse_forget_one] {
             self.nodes
+        }
+    }
+    use crate::request::Forget as ForgetAPI; // to distinguish from op::Forget (above)
+    #[allow(clippy::from_over_into)] // because just a convenience function
+    impl Into<Vec<ForgetAPI>> for BatchForget<'_> {
+        fn into(self) -> Vec<ForgetAPI> {
+            let mut buf = Vec::new();
+            for node in self.nodes {
+                buf.push({
+                    ForgetAPI {
+                        ino: node.nodeid,
+                        nlookup: node.nlookup,
+                    }
+                });
+            }
+            buf
         }
     }
 
@@ -1845,6 +1813,7 @@ mod op {
         })
     }
 }
+#[allow(clippy::wildcard_imports)]
 use op::*;
 
 /// Filesystem operation (and arguments) the kernel driver wants us to perform. The fields of each
@@ -2112,23 +2081,30 @@ impl fmt::Display for Operation<'_> {
 
 /// Low-level request of a filesystem operation the kernel driver wants to perform.
 #[derive(Debug)]
-pub struct AnyRequest<'a> {
-    header: &'a fuse_in_header,
-    data: &'a [u8],
+pub struct AnyRequest {
+    raw: Vec<u8>,
+    header: fuse_in_header,
+    body_start: usize,
+    body_end: usize,
 }
-impl_request!(AnyRequest<'_>);
+impl_request!(AnyRequest);
 
-impl<'a> AnyRequest<'a> {
-    pub fn operation(&self) -> Result<Operation<'a>, RequestError> {
+impl<'a> AnyRequest {
+    pub fn operation(&'a self) -> Result<Operation<'a>, RequestError> {
         // Parse/check opcode
         let opcode = fuse_opcode::try_from(self.header.opcode)
             .map_err(|_: InvalidOpcodeError| RequestError::UnknownOperation(self.header.opcode))?;
         // Parse/check operation arguments
-        op::parse(self.header, &opcode, self.data).ok_or(RequestError::InsufficientData)
+        op::parse(
+            &self.header,
+            &opcode,
+            &self.raw[self.body_start..self.body_end],
+        )
+        .ok_or(RequestError::InsufficientData)
     }
 }
 
-impl fmt::Display for AnyRequest<'_> {
+impl fmt::Display for AnyRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Ok(op) = self.operation() {
             write!(
@@ -2146,14 +2122,14 @@ impl fmt::Display for AnyRequest<'_> {
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for AnyRequest<'a> {
+impl TryFrom<Vec<u8>> for AnyRequest {
     type Error = RequestError;
 
-    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
+    fn try_from(data: Vec<u8>) -> Result<Self, Self::Error> {
         // Parse a raw packet as sent by the kernel driver into typed data. Every request always
         // begins with a `fuse_in_header` struct followed by arguments depending on the opcode.
         let data_len = data.len();
-        let mut arg_iter = ArgumentIterator::new(data);
+        let mut arg_iter = ArgumentIterator::new(&data);
         // Parse header
         let header: &fuse_in_header = arg_iter
             .fetch()
@@ -2162,9 +2138,14 @@ impl<'a> TryFrom<&'a [u8]> for AnyRequest<'a> {
         if data_len < header.len as usize {
             return Err(RequestError::ShortRead(data_len, header.len as usize));
         }
+        let header = header.clone();
+        let body_start = size_of::<fuse_in_header>();
+        let body_end = data_len;
         Ok(Self {
+            raw: data,
             header,
-            data: &data[mem::size_of::<fuse_in_header>()..header.len as usize],
+            body_start,
+            body_end,
         })
     }
 }
@@ -2175,8 +2156,9 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
 
-    #[cfg(target_endian = "big")]
+    #[cfg(all(target_endian = "big", not(feature = "abi-7-36")))]
     const INIT_REQUEST: AlignedData<[u8; 56]> = AlignedData([
+        // decimal 56 == hex 0x38
         0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x1a, // len, opcode
         0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // nodeid
@@ -2186,8 +2168,9 @@ mod tests {
         0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, // max_readahead, flags
     ]);
 
-    #[cfg(target_endian = "little")]
+    #[cfg(all(target_endian = "little", not(feature = "abi-7-36")))]
     const INIT_REQUEST: AlignedData<[u8; 56]> = AlignedData([
+        // decimal 56 == hex 0x38
         0x38, 0x00, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00, // len, opcode
         0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
         0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // nodeid
@@ -2195,6 +2178,40 @@ mod tests {
         0x5e, 0xba, 0xde, 0xc0, 0x00, 0x00, 0x00, 0x00, // pid, padding
         0x07, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // major, minor
         0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // max_readahead, flags
+    ]);
+
+    #[cfg(all(target_endian = "big", feature = "abi-7-36"))]
+    const INIT_REQUEST: AlignedData<[u8; 104]> = AlignedData([
+        // decimal 104 == hex 0x68
+        0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x1a, // len, opcode
+        0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // nodeid
+        0xc0, 0x01, 0xd0, 0x0d, 0xc0, 0x01, 0xca, 0xfe, // uid, gid
+        0xc0, 0xde, 0xba, 0x5e, 0x00, 0x00, 0x00, 0x00, // pid, padding
+        0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x08, // major, minor
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // max_readahead, flags
+        0x00, 0x00, 0x00, 0x00, // flags2 //TODO: nonzero data
+        0x00, 0x00, 0x00, 0x00, // eleven unused fields
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    #[cfg(all(target_endian = "little", feature = "abi-7-36"))]
+    const INIT_REQUEST: AlignedData<[u8; 104]> = AlignedData([
+        // decimal 104 == hex 0x68
+        0x68, 0x00, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00, // len, opcode
+        0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
+        0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // nodeid
+        0x0d, 0xd0, 0x01, 0xc0, 0xfe, 0xca, 0x01, 0xc0, // uid, gid
+        0x5e, 0xba, 0xde, 0xc0, 0x00, 0x00, 0x00, 0x00, // pid, padding
+        0x07, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // major, minor
+        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // max_readahead, flags
+        0x00, 0x00, 0x00, 0x00, // flags2 //TODO: nonzero data
+        0x00, 0x00, 0x00, 0x00, // eleven unused fields
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ]);
 
     #[cfg(target_endian = "big")]
@@ -2222,7 +2239,7 @@ mod tests {
 
     #[test]
     fn short_read_header() {
-        match AnyRequest::try_from(&INIT_REQUEST[..20]) {
+        match AnyRequest::try_from(INIT_REQUEST[..20].to_vec()) {
             Err(RequestError::ShortReadHeader(20)) => (),
             _ => panic!("Unexpected request parsing result"),
         }
@@ -2230,16 +2247,21 @@ mod tests {
 
     #[test]
     fn short_read() {
-        match AnyRequest::try_from(&INIT_REQUEST[..48]) {
+        match AnyRequest::try_from(INIT_REQUEST[..48].to_vec()) {
             Err(RequestError::ShortRead(48, 56)) => (),
+            #[cfg(feature = "abi-7-36")]
+            Err(RequestError::ShortRead(48, 104)) => (),
             _ => panic!("Unexpected request parsing result"),
         }
     }
 
     #[test]
     fn init() {
-        let req = AnyRequest::try_from(&INIT_REQUEST[..]).unwrap();
+        let req = AnyRequest::try_from(INIT_REQUEST[..].to_vec()).unwrap();
+        #[cfg(not(feature = "abi-7-36"))]
         assert_eq!(req.header.len, 56);
+        #[cfg(feature = "abi-7-36")]
+        assert_eq!(req.header.len, 104);
         assert_eq!(req.header.opcode, 26);
         assert_eq!(req.unique(), RequestId(0xdead_beef_baad_f00d));
         assert_eq!(req.nodeid(), INodeNo(0x1122_3344_5566_7788));
@@ -2257,7 +2279,7 @@ mod tests {
 
     #[test]
     fn mknod() {
-        let req = AnyRequest::try_from(&MKNOD_REQUEST[..]).unwrap();
+        let req = AnyRequest::try_from(MKNOD_REQUEST[..].to_vec()).unwrap();
         assert_eq!(req.header.len, 64);
         assert_eq!(req.header.opcode, 8);
         assert_eq!(req.unique(), RequestId(0xdead_beef_baad_f00d));

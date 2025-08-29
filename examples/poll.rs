@@ -293,7 +293,7 @@ impl fuser::Filesystem for FSelFS {
     }
 }
 
-fn producer(data: &Mutex<FSelData>, notifier: &fuser::Notifier) {
+fn producer(data: &Mutex<FSelData>, notifier: &fuser::NotificationHandler) {
     let mut idx: u8 = 0;
     let mut nr = 1;
     loop {

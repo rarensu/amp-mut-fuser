@@ -6,6 +6,8 @@
 #![warn(missing_debug_implementations)]
 #![allow(missing_docs)]
 
+use crate::channel::Channel;
+
 use super::is_mounted;
 use super::mount_options::{MountOption, option_to_string};
 use libc::c_int;
@@ -20,7 +22,6 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::{mem, ptr};
 
 const FUSERMOUNT_BIN: &str = "fusermount";
@@ -31,19 +32,19 @@ const FUSERMOUNT_COMM_ENV: &str = "_FUSE_COMMFD";
 pub struct Mount {
     mountpoint: CString,
     auto_unmount_socket: Option<UnixStream>,
-    fuse_device: Arc<File>,
+    fuse_device: Channel,
 }
 impl Mount {
-    pub fn new(mountpoint: &Path, options: &[MountOption]) -> io::Result<(Arc<File>, Mount)> {
+    pub fn new(mountpoint: &Path, options: &[MountOption]) -> io::Result<(Channel, Mount)> {
         let mountpoint = mountpoint.canonicalize()?;
         let (file, sock) = fuse_mount_pure(mountpoint.as_os_str(), options)?;
-        let file = Arc::new(file);
+        let channel = Channel::new(file);
         Ok((
-            file.clone(),
+            channel.clone(),
             Mount {
                 mountpoint: CString::new(mountpoint.as_os_str().as_bytes())?,
                 auto_unmount_socket: sock,
-                fuse_device: file,
+                fuse_device: channel,
             },
         ))
     }
@@ -52,7 +53,7 @@ impl Mount {
 impl Drop for Mount {
     fn drop(&mut self) {
         use std::io::ErrorKind::PermissionDenied;
-        if !is_mounted(&self.fuse_device) {
+        if !is_mounted(self.fuse_device.raw_fd) {
             // If the filesystem has already been unmounted, avoid unmounting it again.
             // Unmounting it a second time could cause a race with a newly mounted filesystem
             // living at the same mountpoint
