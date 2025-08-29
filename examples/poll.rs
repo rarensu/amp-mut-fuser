@@ -7,37 +7,68 @@
 // Due to the above provenance, unlike the rest of fuser this file is
 // licensed under the terms of the GNU GPLv2.
 
+// Requires feature = "abi-7-11"
+
 use std::{
     convert::TryInto,
-    ffi::OsStr,
-    os::unix::ffi::OsStrExt,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering::SeqCst},
-    },
-    thread,
+    ffi::{OsStr, OsString},
+    os::unix::ffi::{OsStrExt, OsStringExt}, // for converting to and from
     time::{Duration, UNIX_EPOCH},
 };
 
-use libc::{EACCES, EBADF, EBUSY, EINVAL, ENOENT, ENOTDIR};
+mod poll_data;
+use poll_data::PollData;
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use fuser::{
-    FUSE_ROOT_ID, FileAttr, FileType, MountOption, PollHandler, Request,
+    Dirent, DirentList, Entry, Errno, FUSE_ROOT_ID, FileAttr, FileType, FsStatus, MountOption,
+    Open, RequestMeta,
     consts::{FOPEN_DIRECT_IO, FOPEN_NONSEEKABLE, FUSE_POLL_SCHEDULE_NOTIFY},
+    trait_async::Filesystem,
 };
 
 const NUMFILES: u8 = 16;
 const MAXBYTES: u64 = 10;
+const PRODUCER_INTERVAL: Duration = Duration::from_millis(250);
+
+struct ProducerData {
+    next_time: std::time::SystemTime,
+    next_idx: u8,
+    next_nr: u8,
+}
+
+impl ProducerData {
+    fn advance(&mut self) {
+        self.next_idx = (self.next_idx + 1) % NUMFILES;
+        if self.next_idx == 0 {
+            self.next_nr = (self.next_nr % (NUMFILES / 2)) + 1;
+        }
+        self.next_time += PRODUCER_INTERVAL;
+    }
+    fn is_ready(&self) -> bool {
+        std::time::SystemTime::now() >= self.next_time
+    }
+}
 
 struct FSelData {
     bytecnt: [u64; NUMFILES as usize],
-    open_mask: u16,
-    notify_mask: u16,
-    poll_handles: [u64; NUMFILES as usize],
 }
 
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU16, Ordering as AtomicOrdering},
+};
+
 struct FSelFS {
-    data: Arc<Mutex<FSelData>>,
+    // Byte counts for each file
+    data: Mutex<FSelData>,
+    // Helper functions for handling polls
+    poll_handler: Mutex<PollData>,
+    // Helper functions for updating Byte counts
+    producer: Mutex<ProducerData>,
+    // open mask is heavily contended and fits in 16 bits
+    open_mask: AtomicU16,
 }
 
 impl FSelData {
@@ -75,33 +106,66 @@ impl FSelData {
 }
 
 impl FSelFS {
-    fn get_data(&self) -> std::sync::MutexGuard<'_, FSelData> {
-        self.data.lock().unwrap()
+    fn produce_data(&self) {
+        let producer = self.producer.lock().unwrap();
+        let mut data = self.data.lock().unwrap();
+        let mut poll_handler = self.poll_handler.lock().unwrap();
+        let mut t = producer.next_idx;
+        for _ in 0..producer.next_nr {
+            let tidx = t as usize;
+            if data.bytecnt[tidx] < MAXBYTES {
+                data.bytecnt[tidx] += 1;
+                log::info!(
+                    "PRODUCER: Increased bytecnt for file {:X} to {}",
+                    t,
+                    data.bytecnt[tidx]
+                );
+                poll_handler.mark_inode_ready(FSelData::idx_to_ino(t), libc::POLLIN as u32);
+            }
+            t = (t + NUMFILES / producer.next_nr) % NUMFILES;
+        }
     }
 }
 
-impl fuser::Filesystem for FSelFS {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: fuser::ReplyEntry) {
-        if parent != FUSE_ROOT_ID || name.len() != 1 {
-            reply.error(ENOENT);
-            return;
+#[async_trait]
+impl Filesystem for FSelFS {
+    async fn heartbeat(&self) -> FsStatus {
+        if self.producer.lock().unwrap().is_ready() {
+            self.produce_data();
+            self.producer.lock().unwrap().advance();
         }
-
-        let name = name.as_bytes();
-
-        let idx = match name[0] {
-            b'0'..=b'9' => name[0] - b'0',
-            b'A'..=b'F' => name[0] - b'A' + 10,
-            _ => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        reply.entry(&Duration::ZERO, &self.get_data().filestat(idx), 0);
+        FsStatus::Ready
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: fuser::ReplyAttr) {
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
+        if parent != FUSE_ROOT_ID || name.len() != 1 {
+            return Err(Errno::ENOENT);
+        }
+
+        let name_bytes = name.as_bytes();
+
+        let idx = match name_bytes[0] {
+            b'0'..=b'9' => name_bytes[0] - b'0',
+            b'A'..=b'F' => name_bytes[0] - b'A' + 10,
+            _ => {
+                return Err(Errno::ENOENT);
+            }
+        };
+        Ok(Entry {
+            ino: FSelData::idx_to_ino(idx),
+            generation: None,
+            file_ttl: Duration::ZERO,
+            attr: self.data.lock().unwrap().filestat(idx),
+            attr_ttl: Duration::ZERO,
+        })
+    }
+
+    async fn getattr(
+        &self,
+        _req: RequestMeta,
+        ino: u64,
+        _fh: Option<u64>,
+    ) -> Result<(FileAttr, Duration), Errno> {
         if ino == FUSE_ROOT_ID {
             let a = FileAttr {
                 ino: FUSE_ROOT_ID,
@@ -120,225 +184,417 @@ impl fuser::Filesystem for FSelFS {
                 flags: 0,
                 blksize: 0,
             };
-            reply.attr(&Duration::ZERO, &a);
-            return;
+            return Ok((a, Duration::ZERO));
         }
         let idx = FSelData::ino_to_idx(ino);
         if idx < NUMFILES {
-            reply.attr(&Duration::ZERO, &self.get_data().filestat(idx));
+            Ok((self.data.lock().unwrap().filestat(idx), Duration::ZERO))
         } else {
-            reply.error(ENOENT);
+            Err(Errno::ENOENT)
         }
     }
 
-    fn readdir(
-        &mut self,
-        _req: &Request,
+    async fn readdir(
+        &self,
+        _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: fuser::ReplyDirectory,
-    ) {
+        _max_bytes: u32,
+    ) -> Result<DirentList, Errno> {
         if ino != FUSE_ROOT_ID {
-            reply.error(ENOTDIR);
-            return;
+            return Err(Errno::ENOTDIR);
         }
 
-        let Ok(offset): Result<u8, _> = offset.try_into() else {
-            reply.error(EINVAL);
-            return;
+        let Ok(start_offset): Result<u8, _> = offset.try_into() else {
+            return Err(Errno::EINVAL);
         };
 
-        for idx in offset..NUMFILES {
-            let ascii = match idx {
-                0..=9 => [b'0' + idx],
-                10..=16 => [b'A' + idx - 10],
-                _ => panic!(),
+        let mut entries = Vec::new();
+        for idx in start_offset..NUMFILES {
+            let ascii_char_val = match idx {
+                0..=9 => b'0' + idx,
+                10..=15 => b'A' + idx - 10, // Corrected range to 15 for NUMFILES = 16
+                _ => panic!("idx out of range for NUMFILES"),
             };
-            let name = OsStr::from_bytes(&ascii);
-            if reply.add(
-                FSelData::idx_to_ino(idx),
-                (idx + 1).into(),
-                FileType::RegularFile,
-                name,
-            ) {
-                break;
-            }
+            // Create OsString from the single byte character
+            let name_os_string = OsString::from_vec(vec![ascii_char_val]);
+            let entry_data = Dirent {
+                ino: FSelData::idx_to_ino(idx),
+                offset: (idx + 1).into(),
+                kind: FileType::RegularFile,
+                // Convert the OsString back into an owned vector,
+                // and then into an appropriate Bytes variant, in one step,
+                // using the From trait.
+                name: Bytes::from_owner(name_os_string.into_vec()),
+            };
+            entries.push(entry_data);
+            // Fuser library will ensure that max_bytes is respected.
         }
-
-        reply.ok();
+        // convert the vector of entries into an appropriate DirentList variant,
+        // using the Into trait
+        Ok(entries.into())
     }
 
-    fn open(&mut self, _req: &Request, ino: u64, flags: i32, reply: fuser::ReplyOpen) {
+    async fn open(&self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
         let idx = FSelData::ino_to_idx(ino);
         if idx >= NUMFILES {
-            reply.error(ENOENT);
-            return;
+            return Err(Errno::ENOENT);
         }
 
         if (flags & libc::O_ACCMODE) != libc::O_RDONLY {
-            reply.error(EACCES);
-            return;
+            return Err(Errno::EACCES);
         }
 
-        {
-            let mut d = self.get_data();
-
-            if d.open_mask & (1 << idx) != 0 {
-                reply.error(EBUSY);
-                return;
-            }
-
-            d.open_mask |= 1 << idx;
+        // atomically set bit, detect if already set
+        let bit: u16 = 1 << idx;
+        let prev = self.open_mask.fetch_or(bit, AtomicOrdering::AcqRel);
+        if prev & bit != 0 {
+            return Err(Errno::EBUSY);
         }
 
-        reply.opened(idx.into(), FOPEN_DIRECT_IO | FOPEN_NONSEEKABLE);
+        Ok(Open {
+            fh: idx.into(), // Using idx as file handle
+            flags: FOPEN_DIRECT_IO | FOPEN_NONSEEKABLE,
+            backing_id: None,
+        })
     }
 
-    fn release(
-        &mut self,
-        _req: &Request,
+    async fn release(
+        &self,
+        _req: RequestMeta,
         _ino: u64,
         fh: u64,
         _flags: i32,
         _lock_owner: Option<u64>,
         _flush: bool,
-        reply: fuser::ReplyEmpty,
-    ) {
-        let idx = fh;
+    ) -> Result<(), Errno> {
+        let idx = fh; // fh is the idx from open()
         if idx >= NUMFILES.into() {
-            reply.error(EBADF);
-            return;
+            return Err(Errno::EBADF);
         }
-        self.get_data().open_mask &= !(1 << idx);
-        reply.ok();
+        let bit: u16 = 1 << (idx as u8);
+        self.open_mask.fetch_and(!bit, AtomicOrdering::AcqRel);
+        Ok(())
     }
 
-    fn read(
-        &mut self,
-        _req: &Request,
+    async fn read(
+        &self,
+        _req: RequestMeta,
         _ino: u64,
         fh: u64,
-        _offset: i64,
-        size: u32,
+        _offset: i64, // offset is ignored due to FOPEN_NONSEEKABLE
+        max_size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-        reply: fuser::ReplyData,
-    ) {
+    ) -> Result<Bytes, Errno> {
         let Ok(idx): Result<u8, _> = fh.try_into() else {
-            reply.error(EINVAL);
-            return;
+            return Err(Errno::EINVAL);
         };
         if idx >= NUMFILES {
-            reply.error(EBADF);
-            return;
+            return Err(Errno::EBADF);
         }
-        let cnt = &mut self.get_data().bytecnt[idx as usize];
-        let size = (*cnt).min(size.into());
+        let mut data = self.data.lock().unwrap();
+        let cnt = &mut data.bytecnt[idx as usize];
+        let size = (*cnt).min(max_size.into());
         println!("READ   {:X} transferred={} cnt={}", idx, size, *cnt);
         *cnt -= size;
+        // if cnt is now equal to zero, mark the node as not ready.
+        if *cnt == 0 {
+            // Mark the inode as no longer ready for POLLIN events specifically
+            self.poll_handler
+                .lock()
+                .unwrap()
+                .mark_inode_not_ready(FSelData::idx_to_ino(idx), libc::POLLIN as u32);
+        }
         let elt = match idx {
             0..=9 => b'0' + idx,
-            10..=16 => b'A' + idx - 10,
-            _ => panic!(),
+            10..=15 => b'A' + idx - 10, // Corrected range
+            _ => panic!("idx out of range for NUMFILES"),
         };
         let data = vec![elt; size.try_into().unwrap()];
-        reply.data(data.as_slice());
+        // example of converting to an explicit Owned Bytes variant
+        Ok(Bytes::from_owner(data))
     }
+
     #[cfg(feature = "abi-7-11")]
-    fn poll(
-        &mut self,
-        _req: &Request,
+    async fn poll(
+        &self,
+        _req: RequestMeta,
         _ino: u64,
         fh: u64,
-        ph: PollHandler,
-        _events: u32,
+        ph: u64,
+        events: u32,
         flags: u32,
-        reply: fuser::ReplyPoll,
-    ) {
-        static POLLED_ZERO: AtomicU64 = AtomicU64::new(0);
+    ) -> Result<u32, Errno> {
+        log::info!("poll() called: fh={fh}, ph={ph}, events={events}, flags={flags}");
+        if flags & FUSE_POLL_SCHEDULE_NOTIFY == 0 {
+            // TODO: handle this unexpected case.
+        }
         let Ok(idx): Result<u8, _> = fh.try_into() else {
-            reply.error(EINVAL);
-            return;
+            return Err(Errno::EINVAL);
         };
         if idx >= NUMFILES {
-            reply.error(EBADF);
-            return;
+            return Err(Errno::EBADF);
         }
-
-        let revents = {
-            let mut d = self.get_data();
-
-            if flags & FUSE_POLL_SCHEDULE_NOTIFY != 0 {
-                d.notify_mask |= 1 << idx;
-                d.poll_handles[idx as usize] = ph.into();
-            }
-
-            let nbytes = d.bytecnt[idx as usize];
-            if nbytes != 0 {
-                println!(
-                    "POLL   {:X} cnt={} polled_zero={}",
-                    idx,
-                    nbytes,
-                    POLLED_ZERO.swap(0, SeqCst)
-                );
-                libc::POLLIN.try_into().unwrap()
-            } else {
-                POLLED_ZERO.fetch_add(1, SeqCst);
-                0
-            }
-        };
-
-        reply.poll(revents);
-    }
-}
-
-fn producer(data: &Mutex<FSelData>, notifier: &fuser::NotificationHandler) {
-    let mut idx: u8 = 0;
-    let mut nr = 1;
-    loop {
+        let ino = FSelData::idx_to_ino(idx);
+        if let Some(initial_events) = self
+            .poll_handler
+            .lock()
+            .unwrap()
+            .register_poll_handle(ph, ino, events)
         {
-            let mut d = data.lock().unwrap();
-            let mut t = idx;
-
-            for _ in 0..nr {
-                let tidx = t as usize;
-                if d.bytecnt[tidx] != MAXBYTES {
-                    d.bytecnt[tidx] += 1;
-                    if d.notify_mask & (1 << t) != 0 {
-                        println!("NOTIFY {:X}", t);
-                        if let Err(e) = notifier.poll(d.poll_handles[tidx]) {
-                            eprintln!("poll notification failed: {}", e);
-                        }
-                        d.notify_mask &= !(1 << t);
-                    }
-                }
-
-                t = (t + NUMFILES / nr) % NUMFILES;
-            }
-
-            idx = (idx + 1) % NUMFILES;
-            if idx == 0 {
-                nr = (nr * 2) % 7;
-            }
+            log::debug!(
+                "poll(): Registered poll handle {ph} for ino {ino}, initial_events={initial_events}"
+            );
+            Ok(initial_events)
+        } else {
+            log::debug!("poll(): Registered poll handle {ph} for ino {ino}, no initial events");
+            Ok(0)
         }
-        thread::sleep(Duration::from_millis(250));
     }
 }
 
 fn main() {
     let options = vec![MountOption::RO, MountOption::FSName("fsel".to_string())];
-    let data = Arc::new(Mutex::new(FSelData {
+    env_logger::init();
+    log::info!("Starting fsel example with poll support.");
+    // Get notifier from SessionBuilder
+    let mut sessionbuilder = fuser::SessionBuilder::new();
+    sessionbuilder.set_heartbeat_interval(Duration::from_millis(100));
+    let notifier = sessionbuilder.get_notification_sender();
+    // Assemble Filesystem
+    let data = FSelData {
         bytecnt: [0; NUMFILES as usize],
-        open_mask: 0,
-        notify_mask: 0,
-        poll_handles: [0; NUMFILES as usize],
-    }));
-    let fs = FSelFS { data: data.clone() };
+    };
+    let poll_handler = PollData::new(notifier);
+    let producer = ProducerData {
+        next_time: std::time::SystemTime::now() + Duration::from_millis(1000),
+        next_idx: 0,
+        next_nr: 1,
+    };
+    let fs = FSelFS {
+        data: Mutex::new(data),
+        poll_handler: Mutex::new(poll_handler),
+        producer: Mutex::new(producer),
+        open_mask: AtomicU16::new(0),
+    };
+    // Finish assembling Session
+    sessionbuilder.set_filesystem(fs.into());
+    let mntpt = std::env::args()
+        .nth(1)
+        .expect("Expected mountpoint argument");
+    sessionbuilder.mount_path(&mntpt, &options)
+        .expect("Failed to mount FUSE session.");
+    let session = sessionbuilder.build();
+    println!("FUSE filesystem 'fsel_chan' mounted on {mntpt}. Press Ctrl-C to unmount.");
 
-    let mntpt = std::env::args().nth(1).unwrap();
-    let session = fuser::Session::new(fs, mntpt, &options).unwrap();
-    let bg = session.spawn().unwrap();
+    // Drive the async session loop with a Tokio runtime.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    match rt.block_on(session.run_async()) {
+        Ok(()) => log::info!("Session ended safely"),
+        Err(e) => log::info!("Session ended with error: {e:?}"),
+    }
+}
 
-    producer(&data, &bg.notifier());
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crossbeam_channel::{Sender, Receiver, unbounded};
+    use fuser::{Notifier, NotificationKind};
+
+    // Helper to create FSelFS and a channel pair for its PollData for tests
+    fn setup_test_fs_with_channel() -> (FSelFS, Sender<NotificationKind>, Receiver<NotificationKind>) {
+        log::debug!("Setting up test FS with poll channel");
+        let (tx, rx) = unbounded();
+        let data = FSelData {
+            bytecnt: [0; NUMFILES as usize],
+        };
+        // PollData with sender.
+        let poll_handler = PollData::new(Notifier::new(tx.clone()));
+        let fs = FSelFS {
+            data: Mutex::new(data),
+            poll_handler: Mutex::new(poll_handler),
+            producer: Mutex::new(ProducerData {
+                next_time: UNIX_EPOCH,
+                next_idx: 0,
+                next_nr: 1,
+            }),
+            open_mask: AtomicU16::new(0),
+        };
+        (fs, tx, rx)
+    }
+
+    #[test]
+    fn test_fs_poll_registers_handle_no_initial_event() {
+        log::info!("test_fs_poll_registers_handle_no_initial_event: starting");
+        let (fs, _tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
+
+        let req = RequestMeta {
+            unique: 0,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+        };
+        let idx: u8 = 0;
+        let fh = idx as u64;
+        let ino = FSelData::idx_to_ino(idx);
+        let ph: u64 = 12345;
+        let events = libc::POLLIN as u32;
+
+        fs.data.lock().unwrap().bytecnt[idx as usize] = 0;
+        fs.poll_handler
+            .lock()
+            .unwrap()
+            .mark_inode_not_ready(ino, libc::POLLIN as u32); // Ensure PollData also knows it's not ready
+
+        let result = futures::executor::block_on(fs.poll(
+            req,
+            ino,
+            fh,
+            ph,
+            events,
+            FUSE_POLL_SCHEDULE_NOTIFY,
+        ));
+        log::debug!(
+            "test_fs_poll_registers_handle_no_initial_event: poll result = {:?}",
+            result
+        );
+        assert!(result.is_ok(), "FS poll method should succeed");
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "Should return 0 as no initial event is expected"
+        );
+
+        assert!(
+            fs.poll_handler
+                .lock()
+                .unwrap()
+                .registered_poll_handles
+                .contains_key(&ph)
+        );
+        assert_eq!(
+            fs.poll_handler
+                .lock()
+                .unwrap()
+                .registered_poll_handles
+                .get(&ph),
+            Some(&(ino, events))
+        );
+        assert!(
+            fs.poll_handler
+                .lock()
+                .unwrap()
+                .inode_poll_handles
+                .get(&ino)
+                .unwrap()
+                .contains(&ph)
+        );
+
+        assert!(rx_from_fs.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_fs_poll_registers_handle_with_initial_event() {
+        log::info!("test_fs_poll_registers_handle_with_initial_event: starting");
+        let (fs, _tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
+
+        let req = RequestMeta {
+            unique: 0,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+        };
+        let idx: u8 = 1;
+        let fh = idx as u64;
+        let ino = FSelData::idx_to_ino(idx);
+        let ph: u64 = 54321;
+        let events = libc::POLLIN as u32;
+
+        fs.poll_handler
+            .lock()
+            .unwrap()
+            .mark_inode_ready(ino, libc::POLLIN as u32);
+        // Clear the channel from the mark_inode_ready call if any (no handle registered yet, so it shouldn't send)
+        while rx_from_fs.try_recv().is_ok() {}
+
+        let result = futures::executor::block_on(fs.poll(
+            req,
+            ino,
+            fh,
+            ph,
+            events,
+            FUSE_POLL_SCHEDULE_NOTIFY,
+        ));
+        log::debug!(
+            "test_fs_poll_registers_handle_with_initial_event: poll result = {:?}",
+            result
+        );
+        assert!(result.is_ok(), "FS poll method should succeed");
+        assert_eq!(
+            result.unwrap(),
+            libc::POLLIN as u32,
+            "Should return POLLIN as an initial event"
+        );
+
+        assert!(
+            !fs.poll_handler
+                .lock()
+                .unwrap()
+                .registered_poll_handles
+                .contains_key(&ph)
+        );
+
+        assert!(rx_from_fs.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_producer_marks_inode_ready_triggers_event() {
+        log::info!("test_producer_marks_inode_ready_triggers_event: starting");
+        // For this test, we need an Arc<Mutex<FSelFS>> because producer runs in a separate thread.
+        let (fs_instance, _tx_to_fs, rx_from_fs) = setup_test_fs_with_channel();
+
+        let idx_to_test: u8 = 2;
+        let ino_to_test = FSelData::idx_to_ino(idx_to_test);
+        let ph_to_test: u64 = 67890;
+        let events_to_test = libc::POLLIN as u32;
+
+        // Simulate a poll request being registered by directly accessing PollData via the Arc
+        fs_instance
+            .poll_handler
+            .lock()
+            .unwrap()
+            .register_poll_handle(ph_to_test, ino_to_test, events_to_test);
+        while rx_from_fs.try_recv().is_ok() {} // Clear channel
+
+        // Manually simulate one iteration of the producer logic for a specific file
+        fs_instance.data.lock().unwrap().bytecnt[idx_to_test as usize] = 1;
+        fs_instance
+            .poll_handler
+            .lock()
+            .unwrap()
+            .mark_inode_ready(ino_to_test, libc::POLLIN as u32);
+        log::debug!("test_producer_marks_inode_ready_triggers_event: marked inode ready");
+
+        match rx_from_fs.try_recv() {
+            Ok(NotificationKind::Poll(poll)) => {
+                assert_eq!(poll, ph_to_test);
+            }
+            _ => {
+                panic!("Producer marking inode ready should have triggered an event on the channel")
+            }
+        }
+        assert!(
+            !fs_instance
+                .poll_handler
+                .lock()
+                .unwrap()
+                .registered_poll_handles
+                .contains_key(&ph_to_test)
+        );
+    }
 }

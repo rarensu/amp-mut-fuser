@@ -15,6 +15,16 @@ FUSE-Rust does not just provide bindings, it is a rewrite of the original FUSE C
 This library was originally forked from the [`fuse` crate](https://github.com/zargony/fuse-rs) with the intention
 of continuing development. In particular adding features from ABIs after 7.19
 
+## Available APIs
+
+This crate offers three different `Filesystem` traits variants that can be implemented to create a FUSE filesystem. They offer different trade-offs between ease of use, performance, and control.
+
+*   **`trait_sync::Filesystem`**: A synchronous API that handles events in serial while blocking a single thread, which can be a background thread. This is the **recommended trait for most new filesystems**, because it is the easiest to use. The API is currently considered experimental.
+*   **`trait_async::Filesystem`**: An `async/await`-based API for integration with asynchronous runtimes like Tokio. It supports single-threaded and multi-threaded applications. Although the API supports concurrent Filesystem operations, this approach is very tricky; a wrong implementetion deadlocks itself and the conditions are not well-documented. The API is currently considered experimental.
+*   **`trait_legacy::Filesystem`**: The original, callback-based API. It is on track to become deprecated and removed in a future release. It should not be used for new projects.
+
+Additionally, adapters to convert from one `Filesystem` trait variant to another are available in a external crate (TODO: link here).
+
 ## Documentation
 
 [FUSE-Rust reference][Documentation]
@@ -23,9 +33,9 @@ of continuing development. In particular adding features from ABIs after 7.19
 
 A working FUSE filesystem consists of three parts:
 
-1. The **kernel driver** that registers as a filesystem and forwards operations into a communication channel to a userspace process that handles them.
-1. The **userspace library** (libfuse) that helps the userspace process to establish and run communication with the kernel driver.
-1. The **userspace implementation** that actually processes the filesystem operations.
+1. The **kernel driver** (part of the operating system) that registers as a filesystem and forwards operations into a communication channel to a userspace process that handles them.
+1. The **userspace library** (e.g., `fuser` and/or `libfuse`) that helps the userspace process to establish and run communication with the kernel driver.
+1. The **userspace implementation** (your code here) that actually processes the filesystem operations.
 
 The kernel driver is provided by the FUSE project, the userspace implementation needs to be provided by the developer. FUSE-Rust provides a replacement for the libfuse userspace library between these two. This way, a developer can fully take advantage of the Rust type interface and runtime features when building a FUSE filesystem in Rust.
 
@@ -61,10 +71,11 @@ sudo apt-get install libfuse-dev pkg-config
 sudo yum install fuse-devel pkgconfig
 ```
 
-### macOS (untested)
+### macOS
 
 Install [FUSE for macOS], which can be obtained from their website or installed using the Homebrew or Nix package managers. macOS version 10.9 or later is required. If you are using a Mac with Apple Silicon, you must also [enable support for third party kernel extensions][enable kext].
 
+Note: Testing on macOS is only done infrequently. If you experience difficulties, please create an issue. 
 
 #### To install using Homebrew
 
@@ -105,7 +116,69 @@ or put this in your `Cargo.toml`:
 fuser = "0.15"
 ```
 
-To create a new filesystem, implement the trait `fuser::Filesystem`. See the [documentation] for details or the `examples` directory for some basic examples.
+To create a new filesystem, we recommend implementing the `fuser::trait_sync::Filesystem` trait. See the [documentation] for details. The `examples` directory contains several basic filesystems, including at least one example of each trait type. Whichever trait you choose, you must convert your struct with that specific trait into the matching generic AnyFS enum variant, which is how `fuser` functions accept Filesystems of any type.
+
+A minimal `sync` filesystem looks like this:
+
+```rust
+use fuser::trait_sync::Filesystem;
+
+struct MyFS;
+
+impl Filesystem for MyFS {
+    // implement methods here
+}
+
+fn main() {
+    let fs = MyFS;
+    let dir = "/tmp/mnt";
+    let opts = &[];
+    // The `into()` method automatically converts `MyFS` in a matching `AnyFS` enum value.
+    fuser::mount2(fs.into(), dir, opts).unwrap();
+}
+```
+
+The `mount2` function is a simple "easy button" that handles all the details of setting up and running the FUSE session. For more advanced use cases, you can use all the tools in the toolbox by creating a `Session` object directly. This gives you more control, for example, to run the filesystem in a background thread using your own async runtime.
+
+Here is a non-minimal example for an `async` filesystem using `tokio`:
+
+```rust
+use fuser::trait_async::Filesystem;
+
+struct MyAsyncFS;
+
+impl Filesystem for MyFS {
+    // implement methods here
+}
+fn main() {
+    let fs = MyAsyncFS;
+    let mountpoint = "/tmp/mnt";
+    let options = Vec::new();
+    // The `into()` method automatically converts `MyFS` in a matching `AnyFS` enum value.
+    let se = fuser::Session::new_mounted(
+        fs.into(),
+        mountpoint,
+        &options
+    ).unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    rt.block_on(
+        se.run_async()
+    ).unwrap();
+}
+```
+
+Session objects have additional, alternative methods for more fine-grained control over the execution model.
+
+### Feature Gates
+
+The crate uses feature gates to manage optional functionality and dependencies. Some key features include:
+*   **`abi-7-x`**: A set of features to select the FUSE protocol version. Recommended to select the highest version.
+*   **`threaded`**: Enable support for multithreaded applications and threaded i/o (default).
+*   **`tokio`**: Enable support for tokio asynchronous runtime. Integrates with fuser's internal threaded i/o.
+*   **`no-rc`**: Disable support for non-thread-safe structs `Rc`/`RefCell` (default).
+*   **`locking`**: Enable support for locking structs `Mutex`/`RwLock`/`RefCell`.
+*   **`libfuse`**: Use libfuse bindings for some very low-level operations. An older alternative to the newer Rust-native implementations.
+*   **`serializable`**: Enable conversion between `fuser` data structures and raw bytes, for saving to disk or transmission over a network.
 
 ## To Do
 
@@ -113,15 +186,36 @@ Most features of libfuse up to 3.10.3 are implemented. Feel free to contribute. 
 
 ## Compatibility
 
-Developed and tested on Linux. Tested under [Linux][FUSE for Linux] and [FreeBSD][FUSE for FreeBSD] using stable [Rust] (see CI for details).
+Developed and automatically tested on Linux. Tested under [Linux][FUSE for Linux] and [FreeBSD][FUSE for FreeBSD] using stable [Rust] (see CI for details). Infrequently, manually tested for MacFUSE on MacOS.
 
 ## License
 
 Licensed under [MIT License](LICENSE.md), except for those files in `examples/` that explicitly contain a different license.
 
-## Contribution
+## Contributing
 
 Fork, hack, submit pull request. Make sure to make it useful for the target audience, keep the project's philosophy and Rust coding standards in mind. For larger or essential changes, you may want to open an issue for discussion first. Also remember to update the [Changelog] if your changes are relevant to the users.
+
+### Concepts
+
+A brief overview of Fuser concepts for new contributors.
+
+* **`Session`**: The core struct which saves configuration options. Its provides methods to start and end event handling loops.
+* **`RequestHandler`** and **`ReplyHandler`**: These structures represents one FUSE operation initiated by the Kernel. The RequestHandler methods handle unpacks this message, and directs it to the filesystem. The `ReplyHandler` passes the response back to the kernel.
+* **`Notification`**: This struct represents one FUSE operation initiated by the User application (i.e., not in response to a `Request`).
+* **`Filesystem`**: User application code, which implements one specific Filesystem trait.
+* **`AnyFS`**: A simple `enum` which enables the `Session` struct to natively accept any of the three `Filesystem` trait variants, always using the matching `dispatch` method at run-time.
+
+### Subdirectories
+
+A bried overview of repository organization for new contributors. 
+
+*   **`src/trait_*/`**: These three modules (`trait_legacy`, `trait_sync`, `trait_async`) contain the definitions for the three `Filesystem` traits, trait-specific `Session` methods, and the `dispatch()` method that directs a `Request` to the appropriate `Filesystem` method.
+*   **`src/container/`**: Custom data structures that are generic over their storage, including borrowed (`'static`), owned, and shared types, (similar to the `bytes::Bytes` struct) to encourage no-copy solutions. It is currently used for the `DirentList` and `DirentPlusList` types which return `readdir()` and `readdirplus()`.
+*   **`src/mnt/`**: Code for establishing communication with the fuse device, which is called mounting.
+*   **`src/ll/`**: The low-level FUSE message interface. This module contains the raw FUSE ABI definitions and is responsible for the translating between Rust-based data structures and byte-based fuse kernel messages. It is not recommended for applications to use this code directly.
+
+The `Session` object's methods are defined in multiple locations. Generic methods that work with any `Filesystem` variant are defined in `src/session.rs`. Methods that provide fine-grained control over the execution model are tied to specific `Filesystem` traits and can be found in the `run.rs` file within each `trait_*` subdirectory (e.g., `src/trait_async/run.rs`).
 
 [Rust]: https://rust-lang.org
 [Homebrew]: https://brew.sh

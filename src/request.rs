@@ -11,8 +11,11 @@ use std::convert::Into;
 
 use crate::channel::Channel;
 use crate::ll::{AnyRequest, Request as RequestTrait};
-use crate::notify::NotificationHandler;
 use crate::reply::ReplyHandler;
+#[cfg(feature = "abi-7-11")]
+use crate::notify::NotificationKind;
+#[cfg(feature = "abi-7-11")]
+use crossbeam_channel::Sender;
 
 /// Request data structure
 #[derive(Debug)]
@@ -24,10 +27,15 @@ pub(crate) struct RequestHandler {
     /// Closure-like object to guarantee a response is sent
     pub replyhandler: ReplyHandler,
     #[cfg(feature = "abi-7-40")]
-    /// Closure-like object to enable opening and closing of Backing Id.
+    /// A copy of the main channel
     pub ch_main: Channel,
-    /// Closure-like object to enable sending of notifications.
-    pub notificationhandler: NotificationHandler,
+    /*
+    /// A copy of the side channel
+    #[cfg(feature = "side_channel")]
+    pub ch_side: Channel, //currently, not needed
+     */
+    /// A copy of the internal channel
+    pub queue: Sender<NotificationKind>,
 }
 
 /// Request metadata structure
@@ -56,7 +64,15 @@ pub struct Forget {
 
 impl RequestHandler {
     /// Create a new request from the given data, and a Channel to receive the reply
-    pub(crate) fn new(ch_main: Channel, data: Vec<u8>) -> Option<RequestHandler> {
+    pub(crate) fn new(
+        ch_main: Channel,
+        /*
+        #[cfg(feature = "side_channel")]
+        ch_side: Channel,
+        */
+        queue: Sender<NotificationKind>,
+        data: Vec<u8>
+    ) -> Option<RequestHandler> {
         let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
@@ -70,7 +86,6 @@ impl RequestHandler {
             gid: request.gid(),
             pid: request.pid(),
         };
-        let notificationhandler = NotificationHandler::new(ch_main.clone());
         #[cfg(feature = "abi-7-40")]
         let ch_main_clone = ch_main.clone();
         let replyhandler = ReplyHandler::new(request.unique().into(), ch_main);
@@ -80,7 +95,7 @@ impl RequestHandler {
             replyhandler,
             #[cfg(feature = "abi-7-40")]
             ch_main: ch_main_clone,
-            notificationhandler,
+            queue,
         })
     }
 }
@@ -88,7 +103,7 @@ impl RequestHandler {
 #[cfg(feature = "abi-7-40")]
 macro_rules! get_backing_handler {
     ($me:ident) => {
-        crate::passthrough::BackingHandler::new($me.ch_main)
+        crate::passthrough::BackingHandler::new($me.ch_main, $me.queue)
     };
 }
 #[cfg(feature = "abi-7-40")]

@@ -3,39 +3,33 @@
 //! This is an improved rewrite of the FUSE userspace library (lowlevel interface) to fully take
 //! advantage of Rust's architecture. The only thing we rely on in the real libfuse are mount
 //! and unmount calls which are needed to establish a fd to talk to the kernel driver.
-
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 /* ------ Modules ------ */
 
+mod any;
 mod channel;
+mod container;
 mod ll;
 mod mnt;
 mod notify;
-#[cfg(feature = "abi-7-40")]
-mod passthrough;
 mod reply;
 mod request;
 mod session;
+#[cfg(feature = "abi-7-40")]
+mod passthrough;
+
+/// Asynchronous Filesystem trait
+pub mod trait_async;
 /// Legacy Filesystem trait with callbacks
 pub mod trait_legacy;
+/// Synchronous Filesystem trait
+pub mod trait_sync;
 
 /* ------ Public Exports ------ */
 
-pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
-pub use crate::ll::{Errno, TimeOrNow, fuse_abi::consts};
-pub use ll::fuse_abi::fuse_forget_one;
-pub use mnt::mount_options::MountOption;
-pub use notify::PollHandler;
-#[cfg(feature = "abi-7-40")]
-pub use passthrough::BackingId;
-pub use reply::{FileAttr, FileType};
-pub use request::RequestMeta;
-pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
-
 // Default trait is the Legacy `Filesystem` trait with `Reply` callbacks
 pub use trait_legacy::{Filesystem, Request};
-
 #[cfg(feature = "abi-7-21")]
 pub use trait_legacy::ReplyDirectoryPlus;
 #[cfg(feature = "abi-7-24")]
@@ -47,8 +41,31 @@ pub use trait_legacy::{
     ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
 
+/// Sync, Async, and general-purpose stucts
+pub use any::AnyFS;
+pub use container::{Container, SafeBorrow};
+pub use ll::fuse_abi::{FUSE_ROOT_ID, consts};
+pub use ll::{Errno, TimeOrNow};
+pub use mnt::mount_options::MountOption;
+pub use notify::{NotificationHandler, NotificationKind, Notifier, PollHandler};
+#[cfg(feature = "abi-7-40")]
+pub use passthrough::BackingId;
+#[cfg(feature = "abi-7-21")]
+pub use reply::DirentPlusList;
+#[cfg(target_os = "macos")]
+pub use reply::XTimes;
+pub use reply::{Dirent, DirentList, Entry, FileAttr, FileType, Ioctl, Lock, Open, Statfs, Xattr};
+pub use request::{Forget, RequestMeta};
+#[cfg(feature = "threaded")]
+pub use session::BackgroundSession;
+pub use session::{Session, SessionBuilder, SessionACL, SessionUnmounter};
+
 /* ------ Imports for use in this file ------ */
 
+use crate::trait_async::Filesystem as AsyncFS;
+use crate::trait_legacy::Filesystem as LegacyFS;
+use crate::trait_sync::Filesystem as SyncFS;
+#[allow(clippy::wildcard_imports)] // wildcard is used here to avoid duplicating feature gates
 use ll::fuse_abi::consts::*;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -63,7 +80,7 @@ use std::io;
 use std::path::Path;
 #[cfg(feature = "abi-7-23")]
 use std::time::Duration;
-use std::{convert::AsRef, io::ErrorKind};
+use std::convert::AsRef;
 
 /* ------ FUSE configuration ------ */
 
@@ -96,7 +113,7 @@ const fn default_init_flags(capabilities: u64) -> u64 {
 }
 
 /// Configuration of the fuse kernel module connection
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct KernelConfig {
     capabilities: u64,
     requested: u64,
@@ -135,12 +152,12 @@ impl KernelConfig {
     /// This has to be at least 1 to support passthrough to backing files.  Setting this to 0 (the
     /// default) effectively disables support for passthrough.
     ///
-    /// With max_stack_depth > 1, the backing files can be on a stacked fs (e.g. overlayfs)
-    /// themselves and with max_stack_depth == 1, this FUSE filesystem can be stacked as the
+    /// With `max_stack_depth` > 1, the backing files can be on a stacked fs (e.g. overlayfs)
+    /// themselves and with `max_stack_depth` == 1, this FUSE filesystem can be stacked as the
     /// underlying fs of a stacked fs (e.g. overlayfs).
     ///
     /// The kernel currently has a hard maximum value of 2.  Anything higher won't work.
-    ///
+    /// # Errors
     /// On success, returns the previous value.  On error, returns the nearest value which will succeed.
     #[cfg(feature = "abi-7-40")]
     pub fn set_max_stack_depth(&mut self, value: u32) -> Result<u32, u32> {
@@ -159,8 +176,8 @@ impl KernelConfig {
     /// Set the timestamp granularity
     ///
     /// Must be a power of 10 nanoseconds. i.e. 1s, 0.1s, 0.01s, 1ms, 0.1ms...etc
-    ///
-    /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// On success returns the previous value. On error returns the nearest value which will succeed.
     #[cfg(feature = "abi-7-23")]
     pub fn set_time_granularity(&mut self, value: Duration) -> Result<Duration, Duration> {
         if value.as_nanos() == 0 {
@@ -183,8 +200,8 @@ impl KernelConfig {
     }
 
     /// Set the maximum write size for a single request
-    ///
-    /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// On success returns the previous value. On error returns the nearest value which will succeed.
     pub fn set_max_write(&mut self, value: u32) -> Result<u32, u32> {
         if value == 0 {
             return Err(1);
@@ -198,8 +215,8 @@ impl KernelConfig {
     }
 
     /// Set the maximum readahead size
-    ///
-    /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// On success returns the previous value. On error returns the nearest value which will succeed.
     pub fn set_max_readahead(&mut self, value: u32) -> Result<u32, u32> {
         if value == 0 {
             return Err(1);
@@ -213,8 +230,8 @@ impl KernelConfig {
     }
 
     /// Add a set of capabilities.
-    ///
-    /// On success returns Ok, else return bits of capabilities not supported when capabilities you provided are not all supported by kernel.
+    /// # Errors
+    /// On success returns Ok. On error, returns the bits of capabilities not supported by kernel.
     pub fn add_capabilities(&mut self, capabilities_to_add: u64) -> Result<(), u64> {
         if capabilities_to_add & self.capabilities != capabilities_to_add {
             return Err(capabilities_to_add - (capabilities_to_add & self.capabilities));
@@ -224,7 +241,7 @@ impl KernelConfig {
     }
 
     /// Set the maximum number of pending background requests. Such as readahead requests.
-    ///
+    /// # Errors
     /// On success returns the previous value. On error returns the nearest value which will succeed
     pub fn set_max_background(&mut self, value: u16) -> Result<u16, u16> {
         if value == 0 {
@@ -237,8 +254,8 @@ impl KernelConfig {
 
     /// Set the threshold of background requests at which the kernel will consider the filesystem
     /// request queue congested. (it may then switch to sleeping instead of spin-waiting, for example)
-    ///
-    /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// On success returns the previous value. On error returns the nearest value which will succeed.
     pub fn set_congestion_threshold(&mut self, value: u16) -> Result<u16, u16> {
         if value == 0 {
             return Err(1);
@@ -251,77 +268,169 @@ impl KernelConfig {
     fn congestion_threshold(&self) -> u16 {
         match self.congestion_threshold {
             // Default to a threshold of 3/4 of the max background threads
-            None => (self.max_background as u32 * 3 / 4) as u16,
+            None => (u32::from(self.max_background) * 3 / 4) as u16,
             Some(value) => min(value, self.max_background),
         }
     }
 
     #[cfg(feature = "abi-7-28")]
+    #[allow(clippy::cast_possible_truncation)] // truncation is a feature of this computation
     fn max_pages(&self) -> u16 {
         ((max(self.max_write, self.max_readahead) - 1) / page_size::get() as u32) as u16 + 1
     }
+
+    /// Transfer the contents of this KernelConfig into another.
+    pub fn move_into(self, config: &mut KernelConfig) {
+        config.capabilities = self.capabilities;
+        config.requested = self.requested;
+        config.max_readahead = self.max_readahead;
+        config.max_max_readahead = self.max_max_readahead;
+        #[cfg(feature = "abi-7-13")]
+        {
+            config.max_background = self.max_background;
+            config.congestion_threshold = self.congestion_threshold;
+        }
+        config.max_write = self.max_write;
+        #[cfg(feature = "abi-7-23")]
+        {
+            config.time_gran = self.time_gran;
+        }
+        #[cfg(feature = "abi-7-40")]
+        {
+            config.max_stack_depth = self.max_stack_depth;
+        }
+    }
+}
+
+#[derive(Copy, Clone, Default, PartialEq, Debug)]
+/// This enum is an optional way for the Filesystem to report its status to a Session thread.
+pub enum FsStatus {
+    /// Default may be used when the Filesystem does not implement a status
+    #[default]
+    Default,
+    /// Ready indicates the Filesystem has no actions in progress
+    Ready,
+    /// Busy indicates the Filesytem has one or more actions in progress
+    Busy,
+    /// Stopped indicates that the Filesystem will not accept new requests
+    Stopped, // This list is a work in progress and I'm still trying to figure out what values would be useful
 }
 
 /* ------ Easy mode functions ------ */
 
 /// Mount the given filesystem to the given mountpoint. This function will
-/// not return until the filesystem is unmounted.
+/// block until the filesystem is unmounted.
 ///
-/// Note that you need to lead each option with a separate `"-o"` string.
-#[deprecated(note = "use mount2() instead")]
-pub fn mount<FS: Filesystem, P: AsRef<Path>>(
-    filesystem: FS,
+/// `filesystem`: The filesystem implementation.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of mount options. Each option needs to be a separate string,
+/// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
+/// # Errors
+/// Error if the mount does not succeed.
+#[deprecated(
+    note = "Use `mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity."
+)]
+pub fn mount<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
     mountpoint: P,
     options: &[&OsStr],
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS + 'static,
+    P: AsRef<Path>,
+{
     let options = parse_options_from_args(options)?;
     mount2(filesystem, mountpoint, options.as_ref())
 }
 
 /// Mount the given filesystem to the given mountpoint. This function will
-/// not return until the filesystem is unmounted.
+/// block until the filesystem is unmounted.
 ///
-/// NOTE: This will eventually replace mount(), once the API is stable
-pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
-    filesystem: FS,
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant).
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of `MountOption` enums specifying mount options.
+///
+/// This is the recommended way to mount a FUSE filesystem.
+/// # Errors
+/// Error if the mount does not succeed.
+pub fn mount2<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
     mountpoint: P,
     options: &[MountOption],
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS + 'static,
+    P: AsRef<Path>,
+{
     check_option_conflicts(options)?;
     Session::new(filesystem, mountpoint.as_ref(), options).and_then(|se| se.run())
 }
 
-/// Mount the given filesystem to the given mountpoint. This function spawns
-/// a background thread to handle filesystem operations while being mounted
-/// and therefore returns immediately. The returned handle should be stored
-/// to reference the mounted filesystem. If it's dropped, the filesystem will
+/// Mount the given filesystem to the given mountpoint in a background thread.
+/// This function spawns a new thread to handle filesystem operations and returns
+/// immediately. The returned `BackgroundSession` handle should be stored to
+/// keep the filesystem mounted. When the handle is dropped, the filesystem will
 /// be unmounted.
-#[deprecated(note = "use spawn_mount2() instead")]
-pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
-    filesystem: FS,
+///
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant). Must be `Send + 'static`.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of mount options. Each option needs to be a separate string,
+/// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
+/// # Errors
+/// Error if the session is not started.
+#[cfg(feature = "threaded")]
+#[deprecated(
+    note = "Use `spawn_mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity."
+)]
+pub fn spawn_mount<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
     mountpoint: P,
     options: &[&OsStr],
-) -> io::Result<BackgroundSession> {
+) -> io::Result<BackgroundSession>
+where
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + 'static,
+    P: AsRef<Path>,
+{
     let options: Option<Vec<_>> = options
         .iter()
         .map(|x| Some(MountOption::from_str(x.to_str()?)))
         .collect();
-    let options = options.ok_or(ErrorKind::InvalidData)?;
-    Session::new(filesystem, mountpoint.as_ref(), options.as_ref()).and_then(|se| se.spawn())
+    let options = options.ok_or(io::ErrorKind::InvalidData)?;
+    let se = Session::new(filesystem, mountpoint.as_ref(), options.as_ref())?;
+    se.spawn()
 }
 
-/// Mount the given filesystem to the given mountpoint. This function spawns
-/// a background thread to handle filesystem operations while being mounted
-/// and therefore returns immediately. The returned handle should be stored
-/// to reference the mounted filesystem. If it's dropped, the filesystem will
+/// Mount the given filesystem to the given mountpoint in a background thread.
+/// This function spawns a new thread to handle filesystem operations and returns
+/// immediately. The returned `BackgroundSession` handle should be stored to
+/// keep the filesystem mounted. When the handle is dropped, the filesystem will
 /// be unmounted.
 ///
-/// NOTE: This is the corresponding function to mount2.
-pub fn spawn_mount2<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
-    filesystem: FS,
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant). Must be `Send + 'static`.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of `MountOption` enums specifying mount options.
+///
+/// This is the recommended way to mount a FUSE filesystem in the background.
+/// # Errors
+/// Error if the session is not started.
+#[cfg(feature = "threaded")]
+pub fn spawn_mount2<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
     mountpoint: P,
     options: &[MountOption],
-) -> io::Result<BackgroundSession> {
+) -> io::Result<BackgroundSession>
+where
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + 'static,
+    P: AsRef<Path>,
+{
     check_option_conflicts(options)?;
-    Session::new(filesystem, mountpoint.as_ref(), options).and_then(|se| se.spawn())
+    Session::new(filesystem, mountpoint.as_ref(), options).and_then(session::Session::spawn)
 }

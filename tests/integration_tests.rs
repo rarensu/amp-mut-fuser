@@ -1,11 +1,13 @@
-use fuser::{Filesystem, Session};
-use std::rc::Rc;
-use std::thread;
-use std::time::Duration;
-use tempfile::TempDir;
-
 #[test]
+#[cfg(not(feature = "no-rc"))]
 fn unmount_no_send() {
+    use fuser::Session;
+    use fuser::trait_sync::Filesystem;
+    use std::rc::Rc;
+    use std::thread;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
     struct NoSendFS(
         // Rc to make this !Send
         #[allow(dead_code)] Rc<()>,
@@ -14,7 +16,8 @@ fn unmount_no_send() {
     impl Filesystem for NoSendFS {}
 
     let tmpdir: TempDir = tempfile::tempdir().unwrap();
-    let mut session = Session::new(NoSendFS(Rc::new(())), tmpdir.path(), &[]).unwrap();
+    let mut session =
+        Session::new_mounted(NoSendFS(Rc::new(())).into(), tmpdir.path(), &[]).unwrap();
     let mut unmounter = session.unmount_callable();
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(1));

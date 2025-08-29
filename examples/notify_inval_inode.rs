@@ -13,22 +13,24 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering::SeqCst},
     },
-    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use libc::{EACCES, EINVAL, EISDIR, ENOBUFS, ENOENT, ENOTDIR};
-
+use async_trait::async_trait;
+use bytes::Bytes;
 use clap::Parser;
-
 use fuser::{
-    FUSE_ROOT_ID, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
-    ReplyDirectory, ReplyEntry, ReplyOpen, Request, consts,
+    Dirent, DirentList, Entry, Errno, FUSE_ROOT_ID, FileAttr, FileType, Forget, FsStatus,
+    MountOption, Notifier, Open, RequestMeta, consts,
+    trait_async::Filesystem,
 };
 
 struct ClockFS<'a> {
     file_contents: Arc<Mutex<String>>,
     lookup_cnt: &'a AtomicU64,
+    notifier: Notifier,
+    opts: Arc<Options>,
+    last_update: Mutex<SystemTime>,
 }
 
 impl ClockFS<'_> {
@@ -66,102 +68,165 @@ impl ClockFS<'_> {
     }
 }
 
+#[async_trait]
 impl Filesystem for ClockFS<'_> {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        if parent != FUSE_ROOT_ID || name != AsRef::<OsStr>::as_ref(&Self::FILE_NAME) {
-            reply.error(ENOENT);
-            return;
+    async fn heartbeat(&self) -> FsStatus {
+        let mut last_update_guard = self.last_update.lock().unwrap();
+        let now = SystemTime::now();
+        if now.duration_since(*last_update_guard).unwrap_or_default()
+            >= Duration::from_secs_f32(self.opts.update_interval)
+        {
+            let mut s = self.file_contents.lock().unwrap();
+            let olddata = std::mem::replace(&mut *s, now_string());
+            drop(s); // Release lock on file_contents
+
+            if !self.opts.no_notify && self.lookup_cnt.load(SeqCst) != 0 {
+                if self.opts.notify_store {
+                    self.notifier.store(
+                        Self::FILE_INO,
+                        0,
+                        self
+                            .file_contents
+                            .lock()
+                            .unwrap()
+                            .as_bytes()
+                            .to_vec()
+                            .into()
+                    );
+                } else {
+                    self.notifier.inval_inode(
+                            Self::FILE_INO,
+                            0,
+                            olddata.len().try_into().unwrap_or(-1)
+                    );
+                }
+            }
+            *last_update_guard = now;
+        }
+        FsStatus::Ready
+    }
+
+    async fn lookup(&self, _req: RequestMeta, parent: u64, name: &OsStr) -> Result<Entry, Errno> {
+        if parent != FUSE_ROOT_ID || name != OsStr::new(Self::FILE_NAME) {
+            return Err(Errno::ENOENT);
         }
 
         self.lookup_cnt.fetch_add(1, SeqCst);
-        reply.entry(&Duration::MAX, &self.stat(ClockFS::FILE_INO).unwrap(), 0);
+        match self.stat(ClockFS::FILE_INO) {
+            Some(attr) => Ok(Entry {
+                ino: attr.ino,
+                generation: None,
+                file_ttl: Duration::MAX,
+                attr,
+                attr_ttl: Duration::MAX,
+            }),
+            None => Err(Errno::EIO), // Should not happen
+        }
     }
 
-    fn forget(&mut self, _req: &Request, ino: u64, nlookup: u64) {
-        if ino == ClockFS::FILE_INO {
-            let prev = self.lookup_cnt.fetch_sub(nlookup, SeqCst);
-            assert!(prev >= nlookup);
+    async fn forget(&self, _req: RequestMeta, target: Forget) {
+        if target.ino == ClockFS::FILE_INO {
+            let prev = self.lookup_cnt.fetch_sub(target.nlookup, SeqCst);
+            assert!(prev >= target.nlookup);
         } else {
-            assert!(ino == FUSE_ROOT_ID);
+            assert!(target.ino == FUSE_ROOT_ID);
         }
     }
 
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    async fn getattr(
+        &self,
+        _req: RequestMeta,
+        ino: u64,
+        _fh: Option<u64>,
+    ) -> Result<(FileAttr, Duration), Errno> {
         match self.stat(ino) {
-            Some(a) => reply.attr(&Duration::MAX, &a),
-            None => reply.error(ENOENT),
+            Some(attr) => Ok((attr, Duration::MAX)),
+            None => Err(Errno::ENOENT),
         }
     }
 
-    fn readdir(
-        &mut self,
-        _req: &Request,
+    async fn readdir(
+        &self,
+        _req: RequestMeta,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
-    ) {
+        _max_bytes: u32,
+    ) -> Result<DirentList, Errno> {
         if ino != FUSE_ROOT_ID {
-            reply.error(ENOTDIR);
-            return;
+            return Err(Errno::ENOTDIR);
         }
-
-        if offset == 0
-            && reply.add(
-                ClockFS::FILE_INO,
-                offset + 1,
-                FileType::RegularFile,
-                Self::FILE_NAME,
-            )
-        {
-            reply.error(ENOBUFS);
-        } else {
-            reply.ok();
+        // In this example, construct and return an owned vector,
+        // containing a reference to borrowed ('static) bytes.
+        let mut entries: Vec<Dirent> = Vec::new();
+        if offset == 0 {
+            let entry_data = Dirent {
+                ino: ClockFS::FILE_INO,
+                offset: 1, // This entry's cookie
+                kind: FileType::RegularFile,
+                name: Bytes::from_static(Self::FILE_NAME.as_bytes()),
+            };
+            entries.push(entry_data);
         }
+        // If offset is > 0, we've already returned the single entry during a previous request,
+        // so just return the empty vector.
+        Ok(entries.into())
     }
 
-    fn open(&mut self, _req: &Request, ino: u64, flags: i32, reply: ReplyOpen) {
+    async fn open(&self, _req: RequestMeta, ino: u64, flags: i32) -> Result<Open, Errno> {
         if ino == FUSE_ROOT_ID {
-            reply.error(EISDIR);
+            Err(Errno::EISDIR)
         } else if flags & libc::O_ACCMODE != libc::O_RDONLY {
-            reply.error(EACCES);
+            Err(Errno::EACCES)
         } else if ino != Self::FILE_INO {
-            eprintln!("Got open for nonexistent inode {}", ino);
-            reply.error(ENOENT);
+            eprintln!("Got open for nonexistent inode {ino}");
+            Err(Errno::ENOENT)
         } else {
-            reply.opened(ino, consts::FOPEN_KEEP_CACHE);
+            Ok(Open {
+                fh: ino, // Using ino as fh, as it's unique for the file
+                flags: consts::FOPEN_KEEP_CACHE,
+                backing_id: None,
+            })
         }
     }
 
-    fn read(
-        &mut self,
-        _req: &Request,
+    async fn read(
+        &self,
+        _req: RequestMeta,
         ino: u64,
-        _fh: u64,
+        _fh: u64, // fh is ino in this implementation as set in open()
         offset: i64,
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
-        reply: ReplyData,
-    ) {
+    ) -> Result<Bytes, Errno> {
         assert!(ino == Self::FILE_INO);
         if offset < 0 {
-            reply.error(EINVAL);
-            return;
+            return Err(Errno::EINVAL);
         }
-        let file = self.file_contents.lock().unwrap();
-        let filedata = file.as_bytes();
-        let dlen = filedata.len().try_into().unwrap();
-        let Ok(start) = offset.min(dlen).try_into() else {
-            reply.error(EINVAL);
-            return;
+        let file_guard = self.file_contents.lock().unwrap();
+        let filedata = file_guard.as_bytes();
+        let dlen: i64 = filedata.len().try_into().map_err(|_| Errno::EIO)?; // EIO if size doesn't fit i64
+
+        let start_index: usize = offset.try_into().map_err(|_| Errno::EINVAL)?;
+
+        let data_to_return = if start_index > filedata.len() {
+            Vec::new() // Read past EOF
+        } else {
+            let end_index: usize = (offset + i64::from(size))
+                .min(dlen) // cap at file length
+                .try_into()
+                .map_err(|_| Errno::EINVAL)?; // Should not fail if dlen fits usize
+            let stop_index = std::cmp::min(end_index, filedata.len());
+            filedata[start_index..stop_index].to_vec()
         };
-        let Ok(end) = (offset + size as i64).min(dlen).try_into() else {
-            reply.error(EINVAL);
-            return;
-        };
-        eprintln!("read returning {} bytes at offset {}", end - start, offset);
-        reply.data(&filedata[start..end]);
+
+        eprintln!(
+            "read returning {} bytes at offset {}",
+            data_to_return.len(),
+            offset
+        );
+        Ok(Bytes::from(data_to_return))
     }
 }
 
@@ -172,7 +237,7 @@ fn now_string() -> String {
     format!("The current time is {}\n", d.as_secs())
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug, Clone)]
 struct Options {
     /// Mount demo filesystem at given path
     mount_point: String,
@@ -185,42 +250,67 @@ struct Options {
     #[clap(short, long)]
     no_notify: bool,
 
-    /// Use notify_store() instead of notify_inval_inode()
+    /// Use `notify_store()` instead of `notify_inval_inode()`
     #[clap(short = 's', long)]
     notify_store: bool,
 }
 
 fn main() {
-    let opts = Options::parse();
-    let options = vec![MountOption::RO, MountOption::FSName("clock".to_string())];
+    let opts = Arc::new(Options::parse());
+    let mount_options = vec![
+        MountOption::RO,
+        MountOption::FSName("clock_inode".to_string()),
+    ];
     let fdata = Arc::new(Mutex::new(now_string()));
-    let lookup_cnt = Box::leak(Box::new(AtomicU64::new(0)));
+    let lookup_cnt = Box::leak(Box::new(AtomicU64::new(0))); // Keep as is for simplicity, though not ideal
+
+    env_logger::init();
+
+    let mut sessionbuilder = fuser::SessionBuilder::new();
+    sessionbuilder.set_heartbeat_interval(Duration::from_secs_f32(opts.update_interval));
+    let notifier = sessionbuilder.get_notification_sender();
     let fs = ClockFS {
         file_contents: fdata.clone(),
         lookup_cnt,
+        notifier,
+        opts: opts.clone(),
+        last_update: Mutex::new(SystemTime::now()),
     };
+    sessionbuilder.set_filesystem_async(fs);
+    // The main thread will run the FUSE session loop.
+    // No separate thread for notification logic is needed anymore.
+    // No direct use of session.notifier() from main.
+    // No thread::sleep in main's loop.
+    // Ctrl-C will be handled by the FUSE session ending, or manually if needed.
+    // For now, relying on unmount or external Ctrl-C to stop.
 
-    let session = fuser::Session::new(fs, opts.mount_point, &options).unwrap();
-    let notifier = session.notifier();
-    let _bg = session.spawn().unwrap();
+    eprintln!(
+        "Mounting ClockFS (inode invalidation) at {}",
+        opts.mount_point
+    );
+    eprintln!("Press Ctrl-C to unmount and exit.");
 
-    loop {
-        let mut s = fdata.lock().unwrap();
-        let olddata = std::mem::replace(&mut *s, now_string());
-        drop(s);
-        if !opts.no_notify && lookup_cnt.load(SeqCst) != 0 {
-            if opts.notify_store {
-                if let Err(e) =
-                    notifier.store(ClockFS::FILE_INO, 0, fdata.lock().unwrap().as_bytes())
-                {
-                    eprintln!("Warning: failed to update kernel cache: {}", e);
-                }
-            } else if let Err(e) =
-                notifier.inval_inode(ClockFS::FILE_INO, 0, olddata.len().try_into().unwrap())
-            {
-                eprintln!("Warning: failed to invalidate inode: {}", e);
-            }
-        }
-        thread::sleep(Duration::from_secs_f32(opts.update_interval));
+    // Setup Ctrl-C handler to gracefully unmount (optional but good practice)
+    // This part is a bit tricky as Session takes ownership or runs in its own thread.
+    // For a direct run like `run_with_notifications`, we might need to handle Ctrl-C
+    // to signal the FS to stop or rely on the unmount to terminate.
+    // The simplest for now is to let the user unmount the FS to stop.
+    // Or, if the session itself handles Ctrl-C, that's also fine.
+
+    sessionbuilder.mount_path(&opts.mount_point, &mount_options)
+        .expect("Failed to create FUSE session.");
+    let session = sessionbuilder.build();
+
+    // Drive the async session loop with a Tokio runtime, matching ioctl.rs style.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .unwrap();
+    match rt.block_on(session.run_notifications_concurrently()) {
+        Ok(()) => log::info!("Session ended safely"),
+        Err(e) => log::info!("Session ended with error: {e:?}"),
     }
+
+    eprintln!("ClockFS (inode invalidation) unmounted and exited.");
 }

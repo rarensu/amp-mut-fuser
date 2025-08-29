@@ -249,13 +249,15 @@ impl<'a> Response<'a> {
 
     #[cfg(feature = "abi-7-11")]
     // TODO: Are you allowed to send data while result != 0?
+    // TODO: This used to be IoSlice -- does that have any additional utility here?
+    #[cfg(feature = "abi-7-11")]
     pub(crate) fn new_ioctl(result: i32, data: &[IoSlice<'_>]) -> Self {
         let r = abi::fuse_ioctl_out {
             result,
             // these fields are only needed for unrestricted ioctls
             flags: 0,
             in_iovs: 1,
-            out_iovs: if !data.is_empty() { 1 } else { 0 },
+            out_iovs: if data.is_empty() { 0 } else { 1 },
         };
         // TODO: Don't copy this data
         let mut v: ResponseBuf = ResponseBuf::from_slice(r.as_bytes());
@@ -321,7 +323,7 @@ pub(crate) fn mode_from_kind_and_perm(kind: FileType, perm: u16) -> u32 {
     }) as u32
         | u32::from(perm)
 }
-/// Returns a fuse_attr from FileAttr
+/// Returns a `fuse_attr` from `FileAttr`
 pub(crate) fn fuse_attr_from_attr(attr: &crate::FileAttr) -> abi::fuse_attr {
     let (atime_secs, atime_nanos) = time_from_system_time(&attr.atime);
     let (mtime_secs, mtime_nanos) = time_from_system_time(&attr.mtime);
@@ -376,12 +378,13 @@ impl From<crate::FileAttr> for Attr {
 }
 
 #[derive(Debug)]
+/// A generic data buffer
 pub(crate) struct EntListBuf {
     max_size: usize,
     buf: ResponseBuf,
 }
 impl EntListBuf {
-    pub(crate) fn new(max_size: usize) -> Self {
+    pub fn new(max_size: usize) -> Self {
         Self {
             max_size,
             buf: ResponseBuf::new(),
@@ -392,7 +395,7 @@ impl EntListBuf {
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
     #[must_use]
-    pub(crate) fn push(&mut self, ent: [&[u8]; 2]) -> bool {
+    pub fn push(&mut self, ent: [&[u8]; 2]) -> bool {
         let entlen = ent[0].len() + ent[1].len();
         let entsize = (entlen + size_of::<u64>() - 1) & !(size_of::<u64>() - 1); // 64bit align
         if self.buf.len() + entsize > self.max_size {
@@ -417,10 +420,9 @@ impl From<DirEntOffset> for i64 {
 }
 */
 
-/* Note: the Legacy Callback module has its own implementation of this feature. This one is for future Sync/Asycn filesystems
-/// Used to respond to [ReadDir] requests.
+/// Data buffer used to respond to [`Readdir`] requests.
 #[derive(Debug)]
-pub struct DirentBuf(EntListBuf);
+pub(crate) struct DirentBuf(EntListBuf);
 impl From<DirentBuf> for Response<'_> {
     fn from(l: DirentBuf) -> Self {
         assert!(l.0.buf.len() <= l.0.max_size);
@@ -437,6 +439,13 @@ impl DirentBuf {
     /// value to request the next entries in further readdir calls
     #[must_use]
     pub fn push(&mut self, ent: &crate::reply::Dirent) -> bool {
+        let header = abi::fuse_dirent {
+            ino: ent.ino.into(),
+            off: ent.offset,
+            namelen: ent.name.len().try_into().expect("Name too long"),
+            typ: mode_from_kind_and_perm(ent.kind, 0) >> 12,
+        };
+        self.0.push([header.as_bytes(), &ent.name])
     }
 }
 
@@ -463,19 +472,46 @@ impl DirentPlusBuf {
     /// value to request the next entries in further readdir calls
     pub fn push(
         &mut self,
-        x: &crate::reply::Dirent,
-        y: &crate::reply::Entry,
+        x: &crate::Dirent,
+        y: &crate::Entry,
         attr_ttl_override: bool,
     ) -> bool {
+        let header = abi::fuse_direntplus {
+            entry_out: abi::fuse_entry_out {
+                nodeid: y.ino,
+                generation: y.generation.unwrap_or(1),
+                entry_valid: y.file_ttl.as_secs(),
+                attr_valid: if attr_ttl_override {
+                    0
+                } else {
+                    y.attr_ttl.as_secs()
+                },
+                entry_valid_nsec: y.file_ttl.subsec_nanos(),
+                attr_valid_nsec: if attr_ttl_override {
+                    0
+                } else {
+                    y.attr_ttl.subsec_nanos()
+                },
+                attr: fuse_attr_from_attr(&y.attr),
+            },
+            dirent: abi::fuse_dirent {
+                ino: x.ino,
+                off: x.offset,
+                namelen: x.name.len().try_into().expect("Name too long"),
+                typ: mode_from_kind_and_perm(x.kind, 0) >> 12,
+            },
+        };
+        self.0.push([header.as_bytes(), &x.name])
     }
 }
-*/
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_truncation)] // these byte literals are not in danger of being truncated
 mod test {
     use std::num::NonZeroI32;
 
     use super::super::test::ioslice_to_vec;
+    #[allow(clippy::wildcard_imports)]
     use super::*;
 
     #[test]
@@ -825,5 +861,36 @@ mod test {
     }
 
     #[test]
-    fn reply_directory() {}
+    fn reply_directory() {
+        let expected = vec![
+            0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
+            0x00, 0x00, 0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65,
+            0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00,
+            0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
+        ];
+        let mut buf = DirentBuf::new(4096);
+        assert!(
+            !buf.push(&crate::reply::Dirent {
+                ino: 0xaabb,
+                offset: 1,
+                kind: FileType::Directory,
+                name: "hello".into()
+            })
+        );
+        assert!(
+            !buf.push(&crate::reply::Dirent {
+                ino: 0xccdd,
+                offset: 2,
+                kind: FileType::RegularFile,
+                name: "world.rs".into()
+            })
+        );
+        let r: Response<'_> = buf.into();
+        assert_eq!(
+            r.with_iovec(RequestId(0xdeadbeef), ioslice_to_vec),
+            expected
+        );
+    }
 }

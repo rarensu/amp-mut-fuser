@@ -1,7 +1,10 @@
-use std::fmt;
 use std::io;
-use std::os::fd::AsRawFd;
+use std::fmt;
+use std::os::fd::{AsRawFd};
+use crossbeam_channel::{Sender};
 
+use crate::notify::NotificationKind;
+use crate::channel::Channel;
 use crate::ll::fuse_ioctl::{ioctl_close_backing, ioctl_open_backing};
 
 /// A reference to a previously opened fd intended to be used for passthrough
@@ -18,12 +21,13 @@ use crate::ll::fuse_ioctl::{ioctl_close_backing, ioctl_open_backing};
 /// This is implemented as a safe wrapper around the backing_id field of the fuse_backing_map
 /// struct used by the ioctls involved in fd passthrough.  It is created by performing a
 /// FUSE_DEV_IOC_BACKING_OPEN ioctl on an fd and has a Drop trait impl which makes a matching
-/// FUSE_DEV_IOC_BACKING_CLOSE call.  It holds a reference on the fuse channel to allow it to
+/// FUSE_DEV_IOC_BACKING_CLOSE call.  It holds a reference to a backing sender to allow it to
 /// make that call.
 pub struct BackingId {
-    /// The original file descriptor of the Backing File. Currently unused.
+    /// The original file descriptor of the Backing File. Unused.
     _fd: u32,
-    closer: crate::channel::Channel,
+    /// The notification queue used to alert the kernel after the Backing is no longer needed.
+    queue: Sender<NotificationKind>,
     /// The backing_id field passed to and from the kernel
     pub id: u32,
 }
@@ -35,8 +39,22 @@ impl fmt::Debug for BackingId {
 impl Drop for BackingId {
     fn drop(&mut self) {
         if self.id > 0 {
-            let _ = ioctl_close_backing(self.closer.raw_fd, self.id);
+            let _ = self.queue.send(NotificationKind::CloseBacking(self.id)).unwrap();
+            self.id = 0;
         }
+    }
+}
+impl BackingId {
+    /// Send a message to the kernel that this Backing id is no longer needed.
+    pub fn close(&mut self) {
+        if self.id > 0 {
+            let _ = self.queue.send(NotificationKind::CloseBacking(self.id)).unwrap();
+            self.id = 0;
+        }
+    }
+    /// Whether the `close()` message has been sent for this Backing id.
+    pub fn is_open(&self) -> bool {
+        self.id > 0
     }
 }
 
@@ -45,13 +63,7 @@ pub trait BackingSender: Send + Sync + Unpin + 'static {
     fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
 
-impl fmt::Debug for Box<dyn BackingSender> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Box<BackingSender>")
-    }
-}
-
-impl BackingSender for crate::channel::Channel {
+impl BackingSender for Channel {
     fn open_backing(&self, fd: u32) -> io::Result<u32> {
         ioctl_open_backing(self.raw_fd, fd)
     }
@@ -63,14 +75,19 @@ impl BackingSender for crate::channel::Channel {
 #[derive(Debug)]
 /// `BackingHandler` allows the filesystem to open (and close) `BackingId`.
 pub struct BackingHandler {
-    /// Closure to call for requesting a backing id
-    pub sender: crate::channel::Channel,
+    /// Mechanism to open and close backing id
+    sender: Channel,
+    /// Mechanism to queue close requests as notifications
+    queue: Sender<NotificationKind>,
 }
 
 impl BackingHandler {
-    /// Create a handler for backing id operations
-    pub fn new(sender: crate::channel::Channel) -> BackingHandler {
-        BackingHandler { sender }
+    /// Create a reply handler for a specific request identifier
+    pub(crate) fn new(sender: Channel, queue: Sender<NotificationKind>) -> BackingHandler {
+        BackingHandler {
+            sender,
+            queue
+        }
     }
 }
 
@@ -84,7 +101,7 @@ impl BackingHandler {
         let id = self.sender.open_backing(fd)?;
         Ok(BackingId {
             _fd: fd,
-            closer: self.sender.clone(),
+            queue: self.queue.clone(),
             id,
         })
     }

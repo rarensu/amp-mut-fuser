@@ -319,7 +319,7 @@ impl CallbackOpen for OpenHandler {
     }
     #[cfg(feature = "abi-7-40")]
     fn open_backing(&self, fd: i32) -> io::Result<BackingId> {
-        // Note: although BackingHandler supports generic `<F: AsRawFd>`,
+        // Note: although BackingHandler supports generic `<F: AsRawFd>`, 
         // CallbackOpen requires a fixed type for this call.
         // `i32` is a valid concrete type for `AsRawFd`
         self.backer.open_backing(fd)
@@ -356,7 +356,7 @@ impl ReplyOpen {
     #[cfg(feature = "abi-7-40")]
     pub fn open_backing<F: AsRawFd>(&self, file: F) -> io::Result<BackingId> {
         let fd = file.as_raw_fd();
-        // If the user passes in an single-owner `File`, this function must retain it long enough
+        // If the user passes in an single-owner `File`, this function must retain it long enough 
         // to obtain a backing id. It can be dropped (closed) afterwards.
         self.handler.open_backing(fd)
     }
