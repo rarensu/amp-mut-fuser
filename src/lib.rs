@@ -12,7 +12,6 @@ mod channel;
 mod container;
 mod ll;
 mod mnt;
-#[cfg(feature = "abi-7-11")]
 mod notify;
 mod reply;
 mod request;
@@ -29,7 +28,7 @@ pub mod trait_sync;
 
 /* ------ Public Exports ------ */
 
-/// Legacy Filesystem trait with callbacks
+// Default trait is the Legacy `Filesystem` trait with `Reply` callbacks
 pub use trait_legacy::{Filesystem, Request};
 #[cfg(feature = "abi-7-21")]
 pub use trait_legacy::ReplyDirectoryPlus;
@@ -39,10 +38,8 @@ pub use trait_legacy::ReplyLseek;
 pub use trait_legacy::ReplyXTimes;
 pub use trait_legacy::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
-    ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+    ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
-#[cfg(feature = "abi-7-11")]
-pub use trait_legacy::{ReplyIoctl, ReplyPoll};
 
 /// Sync, Async, and general-purpose stucts
 pub use any::AnyFS;
@@ -50,17 +47,14 @@ pub use container::{Container, SafeBorrow};
 pub use ll::fuse_abi::{FUSE_ROOT_ID, consts};
 pub use ll::{Errno, TimeOrNow};
 pub use mnt::mount_options::MountOption;
-#[cfg(feature = "abi-7-11")]
 pub use notify::{NotificationHandler, NotificationKind, Notifier, PollHandler};
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
 #[cfg(feature = "abi-7-21")]
 pub use reply::DirentPlusList;
-#[cfg(feature = "abi-7-11")]
-pub use reply::Ioctl;
 #[cfg(target_os = "macos")]
 pub use reply::XTimes;
-pub use reply::{Dirent, DirentList, Entry, FileAttr, FileType, Lock, Open, Statfs, Xattr};
+pub use reply::{Dirent, DirentList, Entry, FileAttr, FileType, Ioctl, Lock, Open, Statfs, Xattr};
 pub use request::{Forget, RequestMeta};
 #[cfg(feature = "threaded")]
 pub use session::BackgroundSession;
@@ -80,7 +74,6 @@ use mnt::mount_options::parse_options_from_args;
 use session::MAX_WRITE_SIZE;
 #[cfg(feature = "abi-7-28")]
 use std::cmp::max;
-#[cfg(feature = "abi-7-13")]
 use std::cmp::min;
 use std::ffi::OsStr;
 use std::io;
@@ -92,9 +85,7 @@ use std::convert::AsRef;
 /* ------ FUSE configuration ------ */
 
 /// We generally support async reads
-#[cfg(all(not(target_os = "macos"), not(feature = "abi-7-10")))]
-const INIT_FLAGS: u64 = FUSE_ASYNC_READ;
-#[cfg(all(not(target_os = "macos"), feature = "abi-7-10"))]
+#[cfg(not(target_os = "macos"))]
 const INIT_FLAGS: u64 = FUSE_ASYNC_READ | FUSE_BIG_WRITES;
 // TODO: Add FUSE_EXPORT_SUPPORT
 
@@ -128,9 +119,7 @@ pub struct KernelConfig {
     requested: u64,
     max_readahead: u32,
     max_max_readahead: u32,
-    #[cfg(feature = "abi-7-13")]
     max_background: u16,
-    #[cfg(feature = "abi-7-13")]
     congestion_threshold: Option<u16>,
     max_write: u32,
     #[cfg(feature = "abi-7-23")]
@@ -146,9 +135,7 @@ impl KernelConfig {
             requested: default_init_flags(capabilities),
             max_readahead,
             max_max_readahead: max_readahead,
-            #[cfg(feature = "abi-7-13")]
             max_background: 16,
-            #[cfg(feature = "abi-7-13")]
             congestion_threshold: None,
             // use a max write size that fits into the session's buffer
             max_write: MAX_WRITE_SIZE as u32,
@@ -256,7 +243,6 @@ impl KernelConfig {
     /// Set the maximum number of pending background requests. Such as readahead requests.
     /// # Errors
     /// On success returns the previous value. On error returns the nearest value which will succeed
-    #[cfg(feature = "abi-7-13")]
     pub fn set_max_background(&mut self, value: u16) -> Result<u16, u16> {
         if value == 0 {
             return Err(1);
@@ -270,7 +256,6 @@ impl KernelConfig {
     /// request queue congested. (it may then switch to sleeping instead of spin-waiting, for example)
     /// # Errors
     /// On success returns the previous value. On error returns the nearest value which will succeed.
-    #[cfg(feature = "abi-7-13")]
     pub fn set_congestion_threshold(&mut self, value: u16) -> Result<u16, u16> {
         if value == 0 {
             return Err(1);
@@ -280,7 +265,6 @@ impl KernelConfig {
         Ok(previous)
     }
 
-    #[cfg(feature = "abi-7-13")]
     fn congestion_threshold(&self) -> u16 {
         match self.congestion_threshold {
             // Default to a threshold of 3/4 of the max background threads

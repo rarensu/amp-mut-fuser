@@ -34,7 +34,6 @@ pub(crate) struct RequestHandler {
     #[cfg(feature = "side_channel")]
     pub ch_side: Channel, //currently, not needed
      */
-    #[cfg(feature = "abi-7-11")]
     /// A copy of the internal channel
     pub queue: Sender<NotificationKind>,
 }
@@ -71,7 +70,6 @@ impl RequestHandler {
         #[cfg(feature = "side_channel")]
         ch_side: Channel,
         */
-        #[cfg(feature = "abi-7-11")]
         queue: Sender<NotificationKind>,
         data: Vec<u8>
     ) -> Option<RequestHandler> {
@@ -97,7 +95,6 @@ impl RequestHandler {
             replyhandler,
             #[cfg(feature = "abi-7-40")]
             ch_main: ch_main_clone,
-            #[cfg(feature = "abi-7-11")]
             queue,
         })
     }

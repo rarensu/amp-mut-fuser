@@ -267,7 +267,6 @@ impl<'a> Response<'a> {
         Self::Data(v)
     }
 
-    #[cfg(feature = "abi-7-11")]
     pub(crate) fn new_poll(revents: u32) -> Self {
         let r = abi::fuse_poll_out {
             revents,
@@ -353,9 +352,7 @@ pub(crate) fn fuse_attr_from_attr(attr: &crate::FileAttr) -> abi::fuse_attr {
         rdev: attr.rdev,
         #[cfg(target_os = "macos")]
         flags: attr.flags,
-        #[cfg(feature = "abi-7-9")]
         blksize: attr.blksize,
-        #[cfg(feature = "abi-7-9")]
         padding: 0,
     }
 }
@@ -584,9 +581,7 @@ mod test {
             ]
         };
 
-        if cfg!(feature = "abi-7-9") {
-            expected.extend(vec![0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        }
+        expected.extend(vec![0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         expected[0] = (expected.len()) as u8;
 
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
@@ -643,9 +638,7 @@ mod test {
             ]
         };
 
-        if cfg!(feature = "abi-7-9") {
-            expected.extend_from_slice(&[0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        }
+        expected.extend_from_slice(&[0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         expected[0] = expected.len() as u8;
 
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
@@ -768,13 +761,11 @@ mod test {
             ]
         };
 
-        if cfg!(feature = "abi-7-9") {
-            let insert_at = expected.len() - 16;
-            expected.splice(
-                insert_at..insert_at,
-                vec![0xdd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            );
-        }
+        let insert_at = expected.len() - 16;
+        expected.splice(
+            insert_at..insert_at,
+            vec![0xdd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        );
         expected[0] = (expected.len()) as u8;
 
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);

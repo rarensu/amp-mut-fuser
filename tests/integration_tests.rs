@@ -1,8 +1,5 @@
-// No integration tests for non-Linux targets, so turn off the module for now.
-#![cfg(target_os = "linux")]
-
 #[test]
-#[cfg(all(target_os = "linux", not(feature = "no-rc")))]
+#[cfg(not(feature = "no-rc"))]
 fn unmount_no_send() {
     use fuser::Session;
     use fuser::trait_sync::Filesystem;

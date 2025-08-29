@@ -610,6 +610,16 @@ impl Filesystem for SimpleFS {
 
         if let Some(mode) = mode_option {
             debug!("chmod() called with {inode:?}, {mode:o}");
+            #[cfg(target_os = "freebsd")]
+            {
+                // FreeBSD: sticky bit only valid on directories; otherwise EFTYPE
+                if req.uid() != 0
+                    && (mode as u16 & libc::S_ISVTX as u16) != 0
+                    && attrs.kind != FileKind::Directory
+                {
+                    return Err(Errno::EFTYPE);
+                }
+            }
             if req.uid != 0 && req.uid != attrs.uid {
                 return Err(Errno::EPERM);
             }
@@ -830,6 +840,19 @@ impl Filesystem for SimpleFS {
         } else {
             mode
         };
+
+        #[cfg(target_os = "freebsd")]
+        {
+            let kind = as_file_kind(mode);
+            // FreeBSD: sticky bit only valid on directories; otherwise EFTYPE
+            if req.uid() != 0
+                && (mode as u16 & libc::S_ISVTX as u16) != 0
+                && kind != FileKind::Directory
+            {
+                reply.error(libc::EFTYPE);
+                return;
+            }
+        }
 
         let inode = self.allocate_next_inode();
         let attrs = InodeAttributes {
@@ -1793,6 +1816,19 @@ impl Filesystem for SimpleFS {
             mode &= !(libc::S_ISUID | libc::S_ISGID) as u32;
         }
 
+        #[cfg(target_os = "freebsd")]
+        {
+            let kind = as_file_kind(mode);
+            // FreeBSD: sticky bit only valid on directories; otherwise EFTYPE
+            if req.uid() != 0
+                && (mode as u16 & libc::S_ISVTX as u16) != 0
+                && kind != FileKind::Directory
+            {
+                reply.error(libc::EFTYPE);
+                return;
+            }
+        }
+
         let inode = self.allocate_next_inode();
         let attrs = InodeAttributes {
             inode,
@@ -1980,7 +2016,7 @@ fn as_file_kind(mut mode: u32) -> FileKind {
 }
 
 fn get_groups(pid: u32) -> Vec<u32> {
-    if cfg!(not(target_os = "macos")) {
+    if cfg!(target_os = "linux") {
         let path = format!("/proc/{pid}/task/{pid}/status");
         let file = File::open(path).unwrap();
         for line in BufReader::new(file).lines() {
@@ -2034,6 +2070,12 @@ fn main() {
                 .help("Mount FUSE with direct IO"),
         )
         .arg(
+            Arg::new("auto-unmount")
+                .long("auto-unmount")
+                .action(ArgAction::SetTrue)
+                .help("Automatically unmount FUSE when process exits"),
+        )
+        .arg(
             Arg::new("fsck")
                 .long("fsck")
                 .action(ArgAction::SetTrue)
@@ -2074,26 +2116,19 @@ fn main() {
 
     let mut options = vec![MountOption::FSName("fuser".to_string())];
 
-    if !matches.get_flag("user") {
-        #[cfg(feature = "abi-7-26")]
-        {
-            if matches.get_flag("suid") {
-                info!("setuid bit support enabled");
-                options.push(MountOption::Suid);
-            } else {
-                options.push(MountOption::AutoUnmount);
-            }
+    #[cfg(feature = "abi-7-26")]
+    {
+        if matches.get_flag("suid") {
+            info!("setuid bit support enabled");
+            options.push(MountOption::Suid);
         }
-        #[cfg(not(feature = "abi-7-26"))]
-        {
-            options.push(MountOption::AutoUnmount);
-        }
-        if let Ok(enabled) = fuse_allow_other_enabled() {
-            if enabled {
-                options.push(MountOption::AllowOther);
-            }
-        } else {
-            eprintln!("Unable to read /etc/fuse.conf");
+    }
+    if matches.get_flag("auto-unmount") {
+        options.push(MountOption::AutoUnmount);
+    }
+    if let Ok(enabled) = fuse_allow_other_enabled() {
+        if enabled {
+            options.push(MountOption::AllowOther);
         }
     }
 
