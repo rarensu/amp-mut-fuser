@@ -13,7 +13,7 @@ pub struct fuse_backing_map_out {
 }
 #[cfg(any(feature = "abi-7-40", feature = "side-channel"))]
 const FUSE_DEV_IOC_MAGIC: u8 = 229;
-#[cfg(any(feature = "abi-7-40", feature = "side-channel"))]
+#[cfg(feature = "side-channel")]
 const FUSE_DEV_IOC_CLONE: u8 = 0;
 #[cfg(feature = "abi-7-40")]
 const FUSE_DEV_IOC_BACKING_OPEN: u8 = 1;
