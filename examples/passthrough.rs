@@ -194,7 +194,7 @@ impl Filesystem for PassthroughFs {
             Some(id)
         } else {
             // Try to obtain a backing id
-            let file = File::open("/etc/os-release")?;
+            let file = File::open("/etc/profile")?;
             let backing_id = self.backing_handler.open_backing(file)?;
             let id = backing_id.id;
             let now = SystemTime::now();
