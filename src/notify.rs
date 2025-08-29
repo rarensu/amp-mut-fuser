@@ -262,13 +262,13 @@ impl Notifier {
 
 /// A handle to a pending poll() request. Can be saved and used to notify the
 /// kernel when a poll is ready.
-pub struct PollHandler {
+pub struct PollHandle {
     /// The unique kernel-assigned identifier of this poll operation
     pub handle: u64,
     queue: Sender<NotificationKind>,
 }
 
-impl PollHandler {
+impl PollHandle {
     pub(crate) fn new(queue: Sender<NotificationKind>, ph: u64) -> Self {
         Self {
             handle: ph,
@@ -282,14 +282,14 @@ impl PollHandler {
     }
 }
 
-impl From<PollHandler> for u64 {
-    fn from(value: PollHandler) -> Self {
+impl From<PollHandle> for u64 {
+    fn from(value: PollHandle) -> Self {
         value.handle
     }
 }
 
-impl std::fmt::Debug for PollHandler {
+impl std::fmt::Debug for PollHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("PollHandler").field(&self.handle).finish()
+        f.debug_tuple("PollHandle").field(&self.handle).finish()
     }
 }

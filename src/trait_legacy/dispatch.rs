@@ -18,10 +18,9 @@ use super::{
     Filesystem, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyIoctl, ReplyLock, ReplyOpen,  ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
-use super::PollHandler;
+use super::PollHandle;
 #[cfg(feature = "abi-7-21")]
 use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
-
 
 #[derive(Debug)]
 /// Userspace metadata for a given request
@@ -574,7 +573,7 @@ impl RequestHandler {
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
-                    PollHandler::new(
+                    PollHandle::new(
                         self.queue,
                         x.kernel_handle(),
                     ),

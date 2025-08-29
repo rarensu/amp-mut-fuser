@@ -7,6 +7,10 @@ pub use dispatch::Request;
 
 mod run;
 
+mod mount;
+#[allow(deprecated)]
+pub use mount::{mount, mount2, spawn_mount, spawn_mount2};
+
 mod callback;
 
 #[cfg(test)]
@@ -38,7 +42,7 @@ pub use callback::{
 
 /* ------ Additional imports for convenience ------ */
 
-use crate::notify::PollHandler;
+use crate::notify::PollHandle;
 
 #[cfg(feature = "abi-7-40")]
 use crate::passthrough::{BackingHandler, BackingId};

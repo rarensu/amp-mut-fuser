@@ -329,7 +329,7 @@ mod op {
 
     impl GetAttr<'_> {
         pub fn file_handle(&self) -> Option<FileHandle> {
-            if self.arg.getattr_flags & crate::FUSE_GETATTR_FH != 0 {
+            if self.arg.getattr_flags & crate::consts::FUSE_GETATTR_FH != 0 {
                 Some(FileHandle(self.arg.fh))
             } else {
                 None
@@ -1335,8 +1335,8 @@ mod op {
             self.nodes
         }
     }
-    use crate::request::Forget as ForgetAPI; // to distinguish from op::Forget (above)
-    #[allow(clippy::from_over_into)] // because just a convenience function
+    use crate::data::Forget as ForgetAPI; // to distinguish from op::Forget (above)
+    #[allow(clippy::from_over_into)] // because it's just a convenience function
     impl Into<Vec<ForgetAPI>> for BatchForget<'_> {
         fn into(self) -> Vec<ForgetAPI> {
             let mut buf = Vec::new();

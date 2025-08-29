@@ -9,19 +9,24 @@
 use log::{debug, error, info, warn};
 use nix::unistd::geteuid;
 use core::panic;
+use std::convert::AsRef;
+use std::ffi::OsStr;
 #[cfg(feature = "threaded")]
 use std::fmt;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{
     AtomicBool, AtomicU32,
     Ordering::{Acquire, Relaxed},
 };
-use std::sync::{Arc, Mutex};
 #[cfg(feature = "threaded")]
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use crate::mnt::mount_options::check_option_conflicts;
+use crate::mnt::mount_options::parse_options_from_args;
+
 
 use crate::any::{_Nl, _Ns, _Na};
 use crate::{AnyFS, MountOption};
@@ -180,7 +185,7 @@ where
     /// This function starts the main Session loop of a Legacy or Sync Filesystem in the current thread.
     /// # Panics
     /// Panics if the filesystem is Async. Hint: try `run_blocking()` or `run_async()`
-    pub fn run(self) -> io::Result<()> {
+    pub fn run(mut self) -> io::Result<()> {
         match &self.filesystem {
             AnyFS::Legacy(_) => self.run_legacy(),
             AnyFS::Sync(_) => self.run_sync(),
@@ -198,7 +203,7 @@ where
     A: AsyncFS + Send + Sync + 'static,
 {
     /// This function starts the main Session loop of Any Filesystem, blocking the current thread.
-    pub fn run_blocking(self) -> io::Result<()> {
+    pub fn run_blocking(mut self) -> io::Result<()> {
         match &self.filesystem {
             AnyFS::Legacy(_) => self.run_legacy(),
             AnyFS::Sync(_) => self.run_sync(),
@@ -226,9 +231,9 @@ impl SessionUnmounter {
 #[cfg(feature = "threaded")]
 impl<L, S, A> Session<L, S, A>
 where
-    L: LegacyFS + Send + Sync + 'static,
-    S: SyncFS + Send + Sync + 'static,
-    A: AsyncFS + Send + Sync + 'static,
+    L: LegacyFS + Send + 'static,
+    S: SyncFS + Send + 'static,
+    A: AsyncFS + Send + 'static,
 {
     /// Run the session loop in a background thread
     pub fn spawn(self) -> io::Result<BackgroundSession> {
@@ -276,9 +281,9 @@ impl BackgroundSession {
     /// the filesystem is unmounted and the given session ends.
     pub fn new<L, S, A>(se: Session<L, S, A>) -> io::Result<BackgroundSession>
     where
-        L: LegacyFS + Send + Sync + 'static,
-        S: SyncFS + Send + Sync + 'static,
-        A: AsyncFS + Send + Sync + 'static,
+        L: LegacyFS + Send + 'static,
+        S: SyncFS + Send + 'static,
+        A: AsyncFS + Send + 'static,
     {
         #[cfg(not(feature = "side-channel"))]
         let sender = se.ch_main.clone();
@@ -521,4 +526,121 @@ where
         let any = AnyFS::<_Nl, _Ns, A>::Async(fs);
         self.filesystem = Some(any);
     }
+}
+
+/// Mount the given filesystem to the given mountpoint. This function will
+/// block until the filesystem is unmounted.
+///
+/// `filesystem`: The filesystem implementation.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of mount options. Each option needs to be a separate string,
+/// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
+/// # Errors
+/// Error if the mount does not succeed.
+#[deprecated(
+    note = "Use `mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity."
+)]
+pub fn mount<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
+    mountpoint: P,
+    options: &[&OsStr],
+) -> io::Result<()>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS + 'static,
+    P: AsRef<Path>,
+{
+    let options = parse_options_from_args(options)?;
+    mount2(filesystem, mountpoint, options.as_ref())
+}
+
+/// Mount the given filesystem to the given mountpoint. This function will
+/// block until the filesystem is unmounted.
+///
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant).
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of `MountOption` enums specifying mount options.
+///
+/// This is the recommended way to mount a FUSE filesystem.
+/// # Errors
+/// Error if the mount does not succeed.
+pub fn mount2<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
+    mountpoint: P,
+    options: &[MountOption],
+) -> io::Result<()>
+where
+    L: LegacyFS,
+    S: SyncFS,
+    A: AsyncFS + 'static,
+    P: AsRef<Path>,
+{
+    check_option_conflicts(options)?;
+    Session::new(filesystem, mountpoint.as_ref(), options).and_then(|se| se.run())
+}
+
+/// Mount the given filesystem to the given mountpoint in a background thread.
+/// This function spawns a new thread to handle filesystem operations and returns
+/// immediately. The returned `BackgroundSession` handle should be stored to
+/// keep the filesystem mounted. When the handle is dropped, the filesystem will
+/// be unmounted.
+///
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant). Must be `Send + 'static`.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of mount options. Each option needs to be a separate string,
+/// typically starting with `"-o"`. For example: `&[OsStr::new("-o"), OsStr::new("auto_unmount")]`.
+/// # Errors
+/// Error if the session is not started.
+#[cfg(feature = "threaded")]
+#[deprecated(
+    note = "Use `spawn_mount2` instead, which takes a slice of `MountOption` enums for better type safety and clarity."
+)]
+pub fn spawn_mount<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
+    mountpoint: P,
+    options: &[&OsStr],
+) -> io::Result<BackgroundSession>
+where
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + 'static,
+    P: AsRef<Path>,
+{
+    let options: Option<Vec<_>> = options
+        .iter()
+        .map(|x| Some(MountOption::from_str(x.to_str()?)))
+        .collect();
+    let options = options.ok_or(io::ErrorKind::InvalidData)?;
+    let se = Session::new(filesystem, mountpoint.as_ref(), options.as_ref())?;
+    se.spawn()
+}
+
+/// Mount the given filesystem to the given mountpoint in a background thread.
+/// This function spawns a new thread to handle filesystem operations and returns
+/// immediately. The returned `BackgroundSession` handle should be stored to
+/// keep the filesystem mounted. When the handle is dropped, the filesystem will
+/// be unmounted.
+///
+/// `filesystem`: The filesystem implementation (as an AnyFS enum variant). Must be `Send + 'static`.
+/// `mountpoint`: The path to the mountpoint.
+/// `options`: A slice of `MountOption` enums specifying mount options.
+///
+/// This is the recommended way to mount a FUSE filesystem in the background.
+/// # Errors
+/// Error if the session is not started.
+#[cfg(feature = "threaded")]
+pub fn spawn_mount2<L, S, A, P>(
+    filesystem: AnyFS<L, S, A>,
+    mountpoint: P,
+    options: &[MountOption],
+) -> io::Result<BackgroundSession>
+where
+    L: LegacyFS + Send + Sync + 'static,
+    S: SyncFS + Send + Sync + 'static,
+    A: AsyncFS + 'static,
+    P: AsRef<Path>,
+{
+    check_option_conflicts(options)?;
+    Session::new(filesystem, mountpoint.as_ref(), options).and_then(Session::spawn)
 }

@@ -77,7 +77,7 @@ impl<'a> Response<'a> {
     pub(crate) fn new_entry(
         ino: INodeNo,
         generation: Generation,
-        entry_ttl: Duration,
+        file_ttl: Duration,
         attr: &crate::FileAttr,
         attr_ttl: Duration,
         attr_ttl_override: bool,
@@ -85,13 +85,13 @@ impl<'a> Response<'a> {
         let d = abi::fuse_entry_out {
             nodeid: ino.into(),
             generation: generation.into(),
-            entry_valid: entry_ttl.as_secs(),
+            entry_valid: file_ttl.as_secs(),
             attr_valid: if attr_ttl_override {
                 0
             } else {
                 attr_ttl.as_secs()
             },
-            entry_valid_nsec: entry_ttl.subsec_nanos(),
+            entry_valid_nsec: file_ttl.subsec_nanos(),
             attr_valid_nsec: if attr_ttl_override {
                 0
             } else {
@@ -381,7 +381,7 @@ pub(crate) struct EntListBuf {
     buf: ResponseBuf,
 }
 impl EntListBuf {
-    pub fn new(max_size: usize) -> Self {
+    pub(crate) fn new(max_size: usize) -> Self {
         Self {
             max_size,
             buf: ResponseBuf::new(),
@@ -392,7 +392,7 @@ impl EntListBuf {
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
     #[must_use]
-    pub fn push(&mut self, ent: [&[u8]; 2]) -> bool {
+    pub(crate) fn push(&mut self, ent: [&[u8]; 2]) -> bool {
         let entlen = ent[0].len() + ent[1].len();
         let entsize = (entlen + size_of::<u64>() - 1) & !(size_of::<u64>() - 1); // 64bit align
         if self.buf.len() + entsize > self.max_size {
@@ -435,7 +435,7 @@ impl DirentBuf {
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
     #[must_use]
-    pub fn push(&mut self, ent: &crate::reply::Dirent) -> bool {
+    pub fn push(&mut self, ent: &crate::data::Dirent) -> bool {
         let header = abi::fuse_dirent {
             ino: ent.ino.into(),
             off: ent.offset,
@@ -499,6 +499,36 @@ impl DirentPlusBuf {
             },
         };
         self.0.push([header.as_bytes(), &x.name])
+    }
+}
+
+/// Data buffer used to respond to [`ReaddirPlus`] requests.
+#[cfg(feature = "abi-7-21")]
+#[derive(Debug)]
+pub(crate) struct DirentPlusBuf(EntListBuf);
+
+#[cfg(feature = "abi-7-21")]
+impl From<DirentPlusBuf> for Response<'_> {
+    fn from(l: DirentPlusBuf) -> Self {
+        assert!(l.0.buf.len() <= l.0.max_size);
+        Response::new_directory(l.0)
+    }
+}
+
+#[cfg(feature = "abi-7-21")]
+impl DirentPlusBuf {
+    pub(crate) fn new(max_size: usize) -> Self {
+        Self(EntListBuf::new(max_size))
+    }
+    /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
+    /// A transparent offset value can be provided for each entry. The kernel uses these
+    /// value to request the next entries in further readdir calls
+    pub fn push(
+        &mut self,
+        x: &crate::data::Dirent,
+        y: &crate::data::Entry,
+        attr_ttl_override: bool,
+    ) -> bool {
     }
 }
 
@@ -869,7 +899,7 @@ mod test {
         ];
         let mut buf = DirentBuf::new(4096);
         assert!(
-            !buf.push(&crate::reply::Dirent {
+            !buf.push(&crate::data::Dirent {
                 ino: 0xaabb,
                 offset: 1,
                 kind: FileType::Directory,
@@ -877,7 +907,7 @@ mod test {
             })
         );
         assert!(
-            !buf.push(&crate::reply::Dirent {
+            !buf.push(&crate::data::Dirent {
                 ino: 0xccdd,
                 offset: 2,
                 kind: FileType::RegularFile,

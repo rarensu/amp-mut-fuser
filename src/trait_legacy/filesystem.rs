@@ -15,7 +15,7 @@ use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
 use super::Request;
-use super::PollHandler;
+use super::PollHandle;
 use super::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
@@ -645,7 +645,7 @@ pub trait Filesystem {
         req: &Request<'_>,
         ino: u64,
         fh: u64,
-        ph: PollHandler,
+        ph: PollHandle,
         events: u32,
         flags: u32,
         reply: ReplyPoll,

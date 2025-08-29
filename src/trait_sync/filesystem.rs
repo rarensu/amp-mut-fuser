@@ -15,11 +15,11 @@ use serde::de::value::F64Deserializer;
 use serde::{Deserialize, Serialize};
 */
 #[cfg(feature = "abi-7-21")]
-use crate::reply::DirentPlusList;
+use crate::data::DirentPlusList;
 #[cfg(target_os = "macos")]
-use crate::reply::XTimes;
-use crate::reply::{DirentList, Entry, FileAttr, Ioctl, Lock, Open, Statfs, Xattr};
-use crate::request::{Forget, RequestMeta};
+use crate::data::XTimes;
+use crate::data::{DirentList, Entry, FileAttr, Forget, Ioctl, Lock, Open, Statfs, Xattr};
+use crate::request::RequestMeta;
 use crate::{Errno, FsStatus, KernelConfig, TimeOrNow};
 use bytes::Bytes;
 use std::ffi::OsStr;

@@ -1,4 +1,4 @@
-use std::{fs::File, io, os::unix::prelude::AsRawFd, sync::Arc};
+use std::{fs::File, io, os::{unix::prelude::AsRawFd, fd::{AsFd, BorrowedFd}}, sync::Arc};
 
 use libc::{c_int, c_void, size_t};
 
@@ -27,7 +27,6 @@ pub(crate) struct Channel {
     is_main: bool,
 }
 
-use std::os::fd::{AsFd, BorrowedFd};
 impl AsFd for Channel {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.owned_fd.as_fd()
