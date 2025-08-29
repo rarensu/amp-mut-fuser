@@ -255,11 +255,7 @@ impl ReplyHandler {
             flags: flags as u32,
             #[cfg(feature = "abi-7-36")]
             flags: (flags | ll::fuse_abi::consts::FUSE_INIT_EXT) as u32,
-            #[cfg(not(feature = "abi-7-13"))]
-            unused: 0,
-            #[cfg(feature = "abi-7-13")]
             max_background: config.max_background,
-            #[cfg(feature = "abi-7-13")]
             congestion_threshold: config.congestion_threshold(),
             max_write: config.max_write,
             #[cfg(feature = "abi-7-23")]
@@ -602,7 +598,6 @@ mod test {
                 // macos flags
                 0x99, 0x00, 0x00, 0x00,
             ]);
-            #[cfg(feature = "abi-7-9")]
             expected.extend_from_slice(&[
                 // block size
                 0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

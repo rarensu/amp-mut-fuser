@@ -247,7 +247,6 @@ impl<'a> Response<'a> {
         Self::from_struct(&r)
     }
 
-    #[cfg(feature = "abi-7-11")]
     // TODO: Are you allowed to send data while result != 0?
     pub(crate) fn new_ioctl(result: i32, data: &[IoSlice<'_>]) -> Self {
         let r = abi::fuse_ioctl_out {

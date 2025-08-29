@@ -1,6 +1,5 @@
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-#[cfg(feature = "abi-7-16")]
 use super::fuse_forget_one;
 use crate::{KernelConfig, TimeOrNow};
 use libc::{ENOSYS, EPERM, c_int};
@@ -16,11 +15,10 @@ use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
 use super::Request;
-#[cfg(feature = "abi-7-11")]
-use super::{PollHandler, ReplyIoctl, ReplyPoll};
+use super::PollHandler;
 use super::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
-    ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+    ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
 
 /// Filesystem trait.
@@ -64,7 +62,6 @@ pub trait Filesystem {
 
     /// Like forget, but take multiple forget requests at once for performance. The default
     /// implementation will fallback to forget.
-    #[cfg(feature = "abi-7-16")]
     fn batch_forget(&mut self, req: &Request<'_>, nodes: &[fuse_forget_one]) {
         for node in nodes {
             self.forget(req, node.nodeid, node.nlookup);
@@ -618,7 +615,6 @@ pub trait Filesystem {
     }
 
     /// Control device
-    #[cfg(feature = "abi-7-11")]
     fn ioctl(
         &mut self,
         req: &Request<'_>,
@@ -644,7 +640,6 @@ pub trait Filesystem {
     }
 
     /// Poll for events
-    #[cfg(feature = "abi-7-11")]
     fn poll(
         &mut self,
         req: &Request<'_>,

@@ -26,7 +26,7 @@ pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
 pub use crate::ll::{Errno, TimeOrNow, fuse_abi::consts};
 pub use ll::fuse_abi::fuse_forget_one;
 pub use mnt::mount_options::MountOption;
-pub use notify::PollHandler;
+pub use notify::{PollHandler, NotificationHandler};
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
 pub use reply::{FileAttr, FileType};

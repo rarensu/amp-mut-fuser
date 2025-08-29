@@ -38,11 +38,12 @@ pub(crate) fn too_big_err(tfie: std::num::TryFromIntError) -> io::Error {
 }
 
 #[derive(Debug)]
+/// An object which translates Notifications to a lower-level representation and sends them to the kernel
 pub struct NotificationHandler {
     channel: Channel,
 }
 impl NotificationHandler {
-    /// Create a reply handler for a specific request identifier
+    /// Create a notification handler from a fuse channel
     pub(crate) fn new(channel: Channel) -> NotificationHandler {
         NotificationHandler { channel }
     }
