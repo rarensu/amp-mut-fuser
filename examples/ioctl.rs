@@ -131,7 +131,6 @@ impl Filesystem for FiocFS {
         }
         reply.ok();
     }
-    #[cfg(feature = "abi-7-11")]
     fn ioctl(
         &mut self,
         _req: &Request<'_>,
