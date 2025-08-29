@@ -4,15 +4,16 @@
 //! Either the request logic will call the one of the reply handler's self-destructive methods,
 //! or, if the reply handler goes out of scope before that happens, the drop trait will send an error response.
 
+use crate::data::{Entry, Lock, Open, Statfs};
 use crate::ll; // too many structs to list
-use crate::{Errno, KernelConfig};
+use crate::{Errno, FileAttr, KernelConfig};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::IoSlice;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use zerocopy::IntoBytes;
 
 /// Generic method to send Filesystem replies
@@ -93,136 +94,6 @@ impl Drop for ReplyHandler {
     }
 }
 
-/// File types
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-pub enum FileType {
-    /// Named pipe (`S_IFIFO`)
-    NamedPipe,
-    /// Character device (`S_IFCHR`)
-    CharDevice,
-    /// Block device (`S_IFBLK`)
-    BlockDevice,
-    /// Directory (`S_IFDIR`)
-    Directory,
-    /// Regular file (`S_IFREG`)
-    RegularFile,
-    /// Symbolic link (`S_IFLNK`)
-    Symlink,
-    /// Unix domain socket (`S_IFSOCK`)
-    Socket,
-}
-
-/// File attributes
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-pub struct FileAttr {
-    /// Unique number for this file
-    pub ino: u64,
-    /// Size in bytes
-    pub size: u64,
-    /// Size in blocks
-    pub blocks: u64,
-    /// Time of last access
-    pub atime: SystemTime,
-    /// Time of last modification
-    pub mtime: SystemTime,
-    /// Time of last change
-    pub ctime: SystemTime,
-    /// Time of creation (macOS only)
-    pub crtime: SystemTime,
-    /// Kind of file (directory, file, pipe, etc)
-    pub kind: FileType,
-    /// Permissions
-    pub perm: u16,
-    /// Number of hard links
-    pub nlink: u32,
-    /// User id
-    pub uid: u32,
-    /// Group id
-    pub gid: u32,
-    /// Rdev
-    pub rdev: u32,
-    /// Block size
-    pub blksize: u32,
-    /// Flags (macOS only, see chflags(2))
-    pub flags: u32,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-/// An entry in the kernel's file cache
-pub struct Entry {
-    /// file inode number
-    pub ino: u64,
-    /// file generation number
-    pub generation: Option<u64>,
-    /// duration to cache file identity
-    pub file_ttl: Duration,
-    /// file attributes
-    pub attr: FileAttr,
-    /// duration to cache file attributes
-    pub attr_ttl: Duration,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-#[cfg_attr(feature = "serializable", derive(Serialize, Deserialize))]
-/// Open file handle response data
-pub struct Open {
-    /// File handle for the opened file
-    pub fh: u64,
-    /// Flags for the opened file
-    pub flags: u32,
-    /// Optional backing id for passthrough
-    pub backing_id: Option<u32>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Copy, Clone, PartialEq, Debug)]
-/// Xtimes response data
-pub struct XTimes {
-    /// Backup time
-    pub bkuptime: SystemTime,
-    /// Creation time
-    pub crtime: SystemTime,
-}
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-/// Statfs response data
-pub struct Statfs {
-    /// Total blocks (in units of frsize)
-    pub blocks: u64,
-    /// Free blocks
-    pub bfree: u64,
-    /// Free blocks for unprivileged users
-    pub bavail: u64,
-    /// Total inodes
-    pub files: u64,
-    /// Free inodes
-    pub ffree: u64,
-    /// Filesystem block size
-    pub bsize: u32,
-    /// Maximum filename length
-    pub namelen: u32,
-    /// Fundamental file system block size
-    pub frsize: u32,
-}
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-/// File lock response data
-pub struct Lock {
-    /// start of locked byte range
-    pub start: u64,
-    /// end of locked byte range
-    pub end: u64,
-    // NOTE: lock field is defined as u32 in fuse_kernel.h in libfuse. However, it is treated as signed
-    // TODO enum {F_RDLCK, F_WRLCK, F_UNLCK}
-    /// kind of lock (read and/or write)
-    pub typ: i32,
-    /// PID of process blocking our lock
-    pub pid: u32,
-}
-
 //
 // Methods to reply to a request for each kind of data
 //
@@ -245,39 +116,9 @@ impl ReplyHandler {
 
     // Reply to an init request with available features
     pub fn config(self, capabilities: u64, config: KernelConfig) {
-        let flags = capabilities & config.requested; // use features requested by fs and reported as capable by kernel
-
-        let init = ll::fuse_abi::fuse_init_out {
-            major: ll::fuse_abi::FUSE_KERNEL_VERSION,
-            minor: ll::fuse_abi::FUSE_KERNEL_MINOR_VERSION,
-            max_readahead: config.max_readahead,
-            #[cfg(not(feature = "abi-7-36"))]
-            flags: flags as u32,
-            #[cfg(feature = "abi-7-36")]
-            flags: (flags | ll::fuse_abi::consts::FUSE_INIT_EXT) as u32,
-            max_background: config.max_background,
-            congestion_threshold: config.congestion_threshold(),
-            max_write: config.max_write,
-            #[cfg(feature = "abi-7-23")]
-            time_gran: config.time_gran.as_nanos() as u32,
-            #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
-            reserved: [0; 9],
-            #[cfg(feature = "abi-7-28")]
-            max_pages: config.max_pages(),
-            #[cfg(feature = "abi-7-28")]
-            unused2: 0,
-            #[cfg(all(feature = "abi-7-28", not(feature = "abi-7-36")))]
-            reserved: [0; 8],
-            #[cfg(feature = "abi-7-36")]
-            flags2: (flags >> 32) as u32,
-            #[cfg(all(feature = "abi-7-36", not(feature = "abi-7-40")))]
-            reserved: [0; 7],
-            #[cfg(feature = "abi-7-40")]
-            max_stack_depth: config.max_stack_depth,
-            #[cfg(feature = "abi-7-40")]
-            reserved: [0; 6],
-        };
-        self.send_ll(&ll::Response::new_data(init.as_bytes()));
+        let flags = capabilities & config.requested(); // use features requested by fs and reported as capable by kernel
+        let init_out = config.into_fuse_init_out(flags);
+        self.send_ll(&ll::Response::new_data(init_out.as_bytes()));
     }
 
     /// Reply to a request with a file entry

@@ -10,12 +10,12 @@ use crate::XTimes;
 #[cfg(feature = "abi-7-21")]
 use crate::ll::reply::fuse_attr_from_attr;
 use crate::{
-    FileAttr, FileType,
+    data::{Entry, Lock, Open, FileAttr, FileType, Statfs},
     ll::{
         Errno,
         reply::{EntListBuf, Response, mode_from_kind_and_perm},
     },
-    reply::{Entry, Lock, Open, ReplyHandler, Statfs},
+    reply::ReplyHandler,
 };
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
