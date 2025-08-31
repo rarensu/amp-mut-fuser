@@ -117,7 +117,7 @@ impl Channel {
     /// Can be awaited: blocks on a dedicated thread.
     /// Populates data into the buffer starting from the point of alignment
     #[allow(unused)] // this stub is a placeholder for future low-level non-tokio async i/o
-    pub async fn receive_async(&self, mut _buffer: Vec<u8>) -> (io::Result<Vec<u8>>, Vec<u8>) {
+    pub async fn receive_async(&self, mut _buffer: AlignedBuffer) -> (io::Result<usize>, AlignedBuffer) {
         let _thread_ch = self.clone();
         /*
         ??.spawn_blocking(move || {
@@ -132,7 +132,7 @@ impl Channel {
     /// Receives data up to the capacity of the given buffer.
     /// Can be awaited: blocks on a dedicated thread.
     /// Populates data into the buffer starting from the point of alignment
-    pub async fn receive_async(&self, mut buffer: Vec<u8>) -> (io::Result<Vec<u8>>, Vec<u8>) {
+    pub async fn receive_async(&self, mut buffer: AlignedBuffer) -> (io::Result<usize>, AlignedBuffer) {
         let thread_ch = self.clone();
         tokio::task::spawn_blocking(move || {
             let res = thread_ch.receive(&mut buffer);
@@ -202,8 +202,8 @@ impl Channel {
     #[allow(unreachable_code, dead_code, unused_variables)] // The non-tokio portion of this function is a TODO item.
     pub async fn try_receive_async(
         &self,
-        buffer: Vec<u8>,
-    ) -> (io::Result<Option<Vec<u8>>>, Vec<u8>) {
+        buffer: AlignedBuffer,
+    ) -> (io::Result<Option<usize>>, AlignedBuffer) {
         if match self.poll_read() {
             Err(e) => {
                 return (Err(e), buffer);
@@ -212,7 +212,7 @@ impl Channel {
         } {
             // TODO: non-tokio implementation
             #[cfg(not(feature = "tokio"))]
-            let (res, new_buffer) = (Ok(vec![]), buffer);
+            let (res, new_buffer) = (Ok(0), buffer);
             #[cfg(not(feature = "tokio"))]
             unimplemented!("low-level non-tokio async i/o not implemented");
             // Tokio implementation
