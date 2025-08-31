@@ -17,6 +17,7 @@ impl<FS: Filesystem> Session<FS> {
     pub fn run_legacy(&mut self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
+        // The kernel may send up to MAX_WRITE_SIZE bytes in a write request.
         let mut buffer = AlignedBuffer::new(MAX_WRITE_SIZE);
         loop {
             // Read the next request from the given channel to kernel driver

@@ -3,8 +3,10 @@ use std::io;
 #[allow(unused)]
 use std::{convert::TryInto, ffi::OsStr};
 
-use crate::channel::Channel;
-use crate::ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification};
+use crate::{
+    channel::Channel,
+    ll::{fuse_abi::fuse_notify_code as notify_code, notify::Notification},
+};
 
 /* ------ Kernel Communication ------ */
 

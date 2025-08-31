@@ -49,7 +49,7 @@ impl<'a> RequestHandler<'a> {
         let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
-                error!("{err}");
+                error!("{}", err);
                 return None;
             }
         };
