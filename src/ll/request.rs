@@ -2090,15 +2090,15 @@ impl fmt::Display for Operation<'_> {
 
 /// Low-level request of a filesystem operation the kernel driver wants to perform.
 #[derive(Debug)]
-pub struct AnyRequest {
-    raw: Vec<u8>,
+pub struct AnyRequest<'a> {
+    raw: &'a [u8],
     header: fuse_in_header,
     body_start: usize,
     body_end: usize,
 }
-impl_request!(AnyRequest);
+impl_request!(AnyRequest<'_>);
 
-impl<'a> AnyRequest {
+impl<'a> AnyRequest<'a> {
     pub fn operation(&'a self) -> Result<Operation<'a>, RequestError> {
         // Parse/check opcode
         let opcode = fuse_opcode::try_from(self.header.opcode)
@@ -2113,7 +2113,7 @@ impl<'a> AnyRequest {
     }
 }
 
-impl fmt::Display for AnyRequest {
+impl fmt::Display for AnyRequest<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Ok(op) = self.operation() {
             write!(
@@ -2131,10 +2131,10 @@ impl fmt::Display for AnyRequest {
     }
 }
 
-impl TryFrom<Vec<u8>> for AnyRequest {
+impl<'a> TryFrom<&'a [u8]> for AnyRequest<'a> {
     type Error = RequestError;
 
-    fn try_from(data: Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
         // Parse a raw packet as sent by the kernel driver into typed data. Every request always
         // begins with a `fuse_in_header` struct followed by arguments depending on the opcode.
         let data_len = data.len();
@@ -2248,7 +2248,7 @@ mod tests {
 
     #[test]
     fn short_read_header() {
-        match AnyRequest::try_from(INIT_REQUEST[..20].to_vec()) {
+        match AnyRequest::try_from(&INIT_REQUEST[..20]) {
             Err(RequestError::ShortReadHeader(20)) => (),
             _ => panic!("Unexpected request parsing result"),
         }
@@ -2256,7 +2256,7 @@ mod tests {
 
     #[test]
     fn short_read() {
-        match AnyRequest::try_from(INIT_REQUEST[..48].to_vec()) {
+        match AnyRequest::try_from(&INIT_REQUEST[..48]) {
             #[cfg(not(feature = "abi-7-36"))]
             Err(RequestError::ShortRead(48, 56)) => (),
             #[cfg(feature = "abi-7-36")]
@@ -2267,7 +2267,7 @@ mod tests {
 
     #[test]
     fn init() {
-        let req = AnyRequest::try_from(INIT_REQUEST[..].to_vec()).unwrap();
+        let req = AnyRequest::try_from(&INIT_REQUEST[..]).unwrap();
         #[cfg(not(feature = "abi-7-36"))]
         assert_eq!(req.header.len, 56);
         #[cfg(feature = "abi-7-36")]
@@ -2289,7 +2289,7 @@ mod tests {
 
     #[test]
     fn mknod() {
-        let req = AnyRequest::try_from(MKNOD_REQUEST[..].to_vec()).unwrap();
+        let req = AnyRequest::try_from(&MKNOD_REQUEST[..]).unwrap();
         assert_eq!(req.header.len, 64);
         assert_eq!(req.header.opcode, 8);
         assert_eq!(req.unique(), RequestId(0xdead_beef_baad_f00d));

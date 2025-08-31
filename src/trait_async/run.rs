@@ -15,7 +15,8 @@ use crate::notify::{Notification, Notifier};
 use crossbeam_channel::{RecvError, TryRecvError};
 use crate::notify::{NotificationHandler, NotificationKind};
 use crate::request::RequestHandler;
-use crate::session::{BUFFER_SIZE, SYNC_SLEEP_INTERVAL, Session};
+use crate::session::{MAX_WRITE_SIZE, SYNC_SLEEP_INTERVAL, Session};
+use crate::channel::AlignedBuffer;
 use crate::trait_async::Filesystem as AsyncFS;
 use crate::trait_legacy::Filesystem as LegacyFS;
 use crate::trait_sync::Filesystem as SyncFS;
@@ -74,7 +75,7 @@ where
     pub async fn do_requests_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
-        let mut buffer = vec![0; BUFFER_SIZE];
+        let mut buffer = AlignedBuffer::new(MAX_WRITE_SIZE);
 
         info!("Starting request loop");
         loop {
@@ -96,8 +97,8 @@ where
                 break;
             }
             match result {
-                Ok(data) => {
-                    if !Session::handle_one_request_async(&se, data).await {
+                Ok(_) => {
+                    if !Session::handle_one_request_async(&se, &buffer).await {
                         // false means invalid data; stop the loop
                         break;
                     }
@@ -123,7 +124,7 @@ where
 
     async fn handle_one_request_async(
         se: &Arc<Session<L, S, A>>,
-        data: Vec<u8>,
+        data: &[u8],
     ) -> bool {
         // Parse data
         match RequestHandler::new(
@@ -267,7 +268,7 @@ where
     /// This variant executes sleep() to prevent busy loops.
     pub async fn do_all_events_async(se: Arc<Session<L, S, A>>) -> io::Result<()> {
         // Buffer for receiving requests from the kernel
-        let mut buffer = vec![0; BUFFER_SIZE];
+        let mut buffer = AlignedBuffer::new(MAX_WRITE_SIZE);
         let mut t_since_last_heartbeat = Duration::ZERO;
         info!("Starting full task loop");
         loop {
@@ -322,9 +323,9 @@ where
                         return Err(err);
                     }
                 }
-                Ok(Some(data)) => {
+                Ok(Some(_)) => {
                     // Parse data
-                    if Session::handle_one_request_async(&se, data).await {
+                    if Session::handle_one_request_async(&se, &buffer).await {
                         // Skip the heartbeat to prioritize processing other pending requests
                         continue;
                     } else {

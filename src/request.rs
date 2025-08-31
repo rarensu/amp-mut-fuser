@@ -17,9 +17,9 @@ use crossbeam_channel::Sender;
 
 /// Request data structure
 #[derive(Debug)]
-pub(crate) struct RequestHandler {
+pub(crate) struct RequestHandler<'a> {
     /// Parsed request
-    pub request: AnyRequest,
+    pub request: AnyRequest<'a>,
     /// Request metadata
     pub meta: RequestMeta,
     /// Closure-like object to guarantee a response is sent
@@ -49,7 +49,7 @@ pub struct RequestMeta {
     pub pid: u32,
 }
 
-impl RequestHandler {
+impl<'a> RequestHandler<'a> {
     /// Create a new request from the given data, and a Channel to receive the reply
     pub(crate) fn new(
         ch_main: Channel,
@@ -58,8 +58,8 @@ impl RequestHandler {
         ch_side: Channel,
         */
         queue: Sender<NotificationKind>,
-        data: Vec<u8>
-    ) -> Option<RequestHandler> {
+        data: &'a [u8]
+    ) -> Option<RequestHandler<'a>> {
         let request = match AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {

@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use super::Filesystem;
 
-impl RequestHandler {
+impl RequestHandler<'_> {
     /// Dispatch request to the given filesystem.
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
