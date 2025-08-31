@@ -4,7 +4,8 @@ use log::{debug, error, info, warn};
 use std::io;
 
 use crate::request::RequestHandler;
-use crate::session::{BUFFER_SIZE, Session};
+use crate::session::{MAX_WRITE_SIZE, Session};
+use crate::channel::AlignedBuffer;
 
 use crate::trait_legacy::Filesystem;
 
@@ -16,13 +17,13 @@ impl<FS: Filesystem> Session<FS> {
     pub fn run_legacy(&mut self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
-        let mut buffer = vec![0; BUFFER_SIZE];
+        let mut buffer = AlignedBuffer::new(MAX_WRITE_SIZE);
         loop {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
             match self.ch_main.receive(&mut buffer) {
-                Ok(data) => {
-                    match RequestHandler::new(self.ch_main.clone(), data) {
+                Ok(_) => {
+                    match RequestHandler::new(self.ch_main.clone(), &buffer) {
                         // Dispatch request
                         Some(req) => req.dispatch_legacy(&mut self.filesystem, &self.meta),
                         // Quit loop on illegal request

@@ -29,10 +29,6 @@ use crate::{channel::Channel, mnt::Mount};
 /// and 128k on other systems.
 pub const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
 
-/// Size of the buffer for reading a request from the kernel. Since the kernel may send
-/// up to MAX_WRITE_SIZE bytes in a write request, we use that value plus some extra space.
-pub const BUFFER_SIZE: usize = MAX_WRITE_SIZE + 4096;
-
 #[derive(Default, Debug, Eq, PartialEq)]
 /// How requests should be filtered based on the calling UID.
 pub enum SessionACL {
