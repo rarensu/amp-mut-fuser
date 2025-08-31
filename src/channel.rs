@@ -1,50 +1,16 @@
-use std::{fs::File, io, ops::{Deref, DerefMut}, os::{fd::{AsFd, BorrowedFd}, unix::prelude::AsRawFd}, sync::Arc};
+use std::{
+    fs::File,
+    io,
+    ops::{Deref, DerefMut},
+    os::{fd::{AsFd, BorrowedFd},
+    unix::prelude::AsRawFd},
+    sync::Arc
+};
 
 use libc::{c_int, c_void, size_t};
 
-use crate::ll::fuse_abi;
 #[cfg(feature = "side-channel")]
 use crate::ll::fuse_ioctl::ioctl_clone_fuse_fd;
-
-pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<fuse_abi::fuse_in_header>();
-
-pub(crate) struct AlignedBuffer {
-    buf: Vec<u8>,
-    offset: usize,
-    data_len: usize,
-    data_max: usize,
-}
-
-impl AlignedBuffer {
-    pub(crate) fn new(capacity: usize) -> Self {
-        // Add some extra capacity to account for the alignment offset
-        let buf = vec![0; capacity + 4096];
-        let offset = FUSE_HEADER_ALIGNMENT - (buf.as_ptr() as usize) % FUSE_HEADER_ALIGNMENT;
-        let data_max = capacity + 4096 - offset;
-        AlignedBuffer {
-            buf,
-            offset,
-            data_len: 0,
-            data_max,
-        }
-    }
-}
-
-impl Deref for AlignedBuffer {
-    type Target = [u8];
-    fn deref(&self) -> &Self::Target {
-        let start = self.offset;
-        let end = self.offset + self.data_len;
-        &self.buf[start..end]
-    }
-}
-impl DerefMut for AlignedBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        let start = self.offset;
-        let end = self.offset + self.data_len;
-        &mut self.buf[start..end] 
-    }
-}
 
 /// A raw communication channel to the FUSE kernel driver.
 /// May be cloned and sent to other threads.
@@ -151,5 +117,45 @@ impl Channel {
             raw_fd,
             is_main: false,
         })
+    }
+}
+
+pub const FUSE_HEADER_ALIGNMENT: usize = std::mem::align_of::<crate::ll::fuse_abi::fuse_in_header>();
+
+pub(crate) struct AlignedBuffer {
+    buf: Vec<u8>,
+    offset: usize,
+    data_len: usize,
+    data_max: usize,
+}
+
+impl AlignedBuffer {
+    pub(crate) fn new(capacity: usize) -> Self {
+        // Add some extra capacity to account for the alignment offset
+        let buf = vec![0; capacity + 4096];
+        let offset = FUSE_HEADER_ALIGNMENT - (buf.as_ptr() as usize) % FUSE_HEADER_ALIGNMENT;
+        let data_max = capacity + 4096 - offset;
+        AlignedBuffer {
+            buf,
+            offset,
+            data_len: 0,
+            data_max,
+        }
+    }
+}
+
+impl Deref for AlignedBuffer {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        let start = self.offset;
+        let end = self.offset + self.data_len;
+        &self.buf[start..end]
+    }
+}
+impl DerefMut for AlignedBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let start = self.offset;
+        let end = self.offset + self.data_len;
+        &mut self.buf[start..end] 
     }
 }
