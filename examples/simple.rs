@@ -26,7 +26,7 @@ use std::cmp::min;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::raw::c_int;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
@@ -2139,7 +2139,7 @@ fn main() {
         .unwrap()
         .to_string();
 
-    let result = fuser::trait_async::mount2(
+    let session = fuser::Session::new(
         SimpleFS::new(
             data_dir,
             matches.get_flag("direct-io"),
@@ -2149,14 +2149,10 @@ fn main() {
         .into(),
         mountpoint,
         &options,
-    );
-    if let Err(e) = result {
-        // Return a special error code for permission denied, which usually indicates that
-        // "user_allow_other" is missing from /etc/fuse.conf
-        if e.kind() == ErrorKind::PermissionDenied {
-            error!("{e}");
-            std::process::exit(2);
-        }
+    ).expect("unable to mount filesystem");
+    match session.run_blocking() {
+        Ok(()) => log::info!("Session ended safely"),
+        Err(e) => log::info!("Session ended with error: {e:?}"),
     }
 }
 

@@ -30,7 +30,7 @@ pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
     options: &[MountOption],
 ) -> io::Result<()> {
     check_option_conflicts(options)?;
-    Session::new(filesystem.into(), mountpoint.as_ref(), options).and_then(|se| se.run())
+    Session::new(filesystem.into(), mountpoint.as_ref(), options).and_then(|mut se| se.run())
 }
 
 /// Mount the given filesystem to the given mountpoint. This function spawns

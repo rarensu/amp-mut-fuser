@@ -28,7 +28,7 @@ where
 {
     /// Run the session in a single thread. TODO: multithreaded.
     /// Handles requests, and also sends notifications and/or heartbeats (if enabled).
-    pub fn run_sync(mut self) -> io::Result<()> {
+    pub fn run_sync(&mut self) -> io::Result<()> {
         let init_fs_status = match &mut self.filesystem {
             AnyFS::Sync(fs) => fs.heartbeat(),
             _ => FsStatus::Default,

@@ -185,7 +185,7 @@ where
     /// This function starts the main Session loop of a Legacy or Sync Filesystem in the current thread.
     /// # Panics
     /// Panics if the filesystem is Async. Hint: try `run_blocking()` or `run_async()`
-    pub fn run(mut self) -> io::Result<()> {
+    pub fn run(&mut self) -> io::Result<()> {
         match &self.filesystem {
             AnyFS::Legacy(_) => self.run_legacy(),
             AnyFS::Sync(_) => self.run_sync(),
@@ -233,7 +233,7 @@ impl<L, S, A> Session<L, S, A>
 where
     L: LegacyFS + Send + 'static,
     S: SyncFS + Send + 'static,
-    A: AsyncFS + Send + 'static,
+    A: AsyncFS + 'static,
 {
     /// Run the session loop in a background thread
     pub fn spawn(self) -> io::Result<BackgroundSession> {
@@ -283,7 +283,7 @@ impl BackgroundSession {
     where
         L: LegacyFS + Send + 'static,
         S: SyncFS + Send + 'static,
-        A: AsyncFS + Send + 'static,
+        A: AsyncFS + 'static, //implies Send + Sync
     {
         #[cfg(not(feature = "side-channel"))]
         let sender = se.ch_main.clone();
@@ -293,7 +293,7 @@ impl BackgroundSession {
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         // The main session (se) is moved into this thread.
         let guard = thread::spawn(move || {
-            //let mut se = se;
+            let mut se = se;
             se.run()
         });
         Ok(BackgroundSession {
@@ -577,7 +577,7 @@ where
     P: AsRef<Path>,
 {
     check_option_conflicts(options)?;
-    Session::new(filesystem, mountpoint.as_ref(), options).and_then(|se| se.run())
+    Session::new(filesystem, mountpoint.as_ref(), options).and_then(|mut se| se.run())
 }
 
 /// Mount the given filesystem to the given mountpoint in a background thread.
@@ -602,8 +602,8 @@ pub fn spawn_mount<L, S, A, P>(
     options: &[&OsStr],
 ) -> io::Result<BackgroundSession>
 where
-    L: LegacyFS + Send + Sync + 'static,
-    S: SyncFS + Send + Sync + 'static,
+    L: LegacyFS + Send + 'static,
+    S: SyncFS + Send + 'static,
     A: AsyncFS + 'static,
     P: AsRef<Path>,
 {
@@ -636,8 +636,8 @@ pub fn spawn_mount2<L, S, A, P>(
     options: &[MountOption],
 ) -> io::Result<BackgroundSession>
 where
-    L: LegacyFS + Send + Sync + 'static,
-    S: SyncFS + Send + Sync + 'static,
+    L: LegacyFS + Send + 'static,
+    S: SyncFS + Send + 'static,
     A: AsyncFS + 'static,
     P: AsRef<Path>,
 {
