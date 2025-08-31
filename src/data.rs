@@ -238,7 +238,7 @@ impl KernelConfig {
             #[cfg(not(feature = "abi-7-36"))]
             flags: flags as u32,
             #[cfg(feature = "abi-7-36")]
-            flags: (self.flags | FUSE_INIT_EXT) as u32,
+            flags: (flags | FUSE_INIT_EXT) as u32,
             max_background: self.max_background,
             congestion_threshold: self.congestion_threshold(),
             max_write: self.max_write,
@@ -247,7 +247,7 @@ impl KernelConfig {
             #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
             reserved: [0; 9],
             #[cfg(feature = "abi-7-28")]
-            max_pages: config.max_pages(),
+            max_pages: self.max_pages(),
             #[cfg(feature = "abi-7-28")]
             unused2: 0,
             #[cfg(all(feature = "abi-7-28", not(feature = "abi-7-36")))]
@@ -257,7 +257,7 @@ impl KernelConfig {
             #[cfg(all(feature = "abi-7-36", not(feature = "abi-7-40")))]
             reserved: [0; 7],
             #[cfg(feature = "abi-7-40")]
-            max_stack_depth: config.max_stack_depth,
+            max_stack_depth: self.max_stack_depth,
             #[cfg(feature = "abi-7-40")]
             reserved: [0; 6],
         }

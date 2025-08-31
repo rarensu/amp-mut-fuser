@@ -44,7 +44,7 @@ pub use notify::{PollHandle, NotificationHandler, NotificationKind, Notifier};
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::{BackingId, BackingHandler};
 pub use request::RequestMeta;
-pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
+pub use session::{BackgroundSession, Session, SessionACL, SessionBuilder, SessionUnmounter};
 
 // Default trait is the Legacy `Filesystem` trait with `Reply` callbacks
 pub use trait_legacy::{Filesystem, Request, fuse_forget_one};

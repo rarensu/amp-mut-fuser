@@ -502,36 +502,6 @@ impl DirentPlusBuf {
     }
 }
 
-/// Data buffer used to respond to [`ReaddirPlus`] requests.
-#[cfg(feature = "abi-7-21")]
-#[derive(Debug)]
-pub(crate) struct DirentPlusBuf(EntListBuf);
-
-#[cfg(feature = "abi-7-21")]
-impl From<DirentPlusBuf> for Response<'_> {
-    fn from(l: DirentPlusBuf) -> Self {
-        assert!(l.0.buf.len() <= l.0.max_size);
-        Response::new_directory(l.0)
-    }
-}
-
-#[cfg(feature = "abi-7-21")]
-impl DirentPlusBuf {
-    pub(crate) fn new(max_size: usize) -> Self {
-        Self(EntListBuf::new(max_size))
-    }
-    /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
-    /// A transparent offset value can be provided for each entry. The kernel uses these
-    /// value to request the next entries in further readdir calls
-    pub fn push(
-        &mut self,
-        x: &crate::data::Dirent,
-        y: &crate::data::Entry,
-        attr_ttl_override: bool,
-    ) -> bool {
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::cast_possible_truncation)] // these byte literals are not in danger of being truncated
 mod test {

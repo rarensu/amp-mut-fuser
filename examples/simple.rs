@@ -2139,7 +2139,7 @@ fn main() {
         .unwrap()
         .to_string();
 
-    let result = fuser::mount2(
+    let result = fuser::trait_async::mount2(
         SimpleFS::new(
             data_dir,
             matches.get_flag("direct-io"),

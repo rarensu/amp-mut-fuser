@@ -225,7 +225,7 @@ fn main() {
         options.push(MountOption::AllowRoot);
     }
     let hellofs = HelloFS::new();
-    fuser::mount2(hellofs.into(), mountpoint, &options).unwrap();
+    fuser::trait_sync::mount2(hellofs.into(), mountpoint, &options).unwrap();
 }
 
 #[cfg(test)]
