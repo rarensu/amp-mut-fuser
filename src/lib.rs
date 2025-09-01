@@ -29,7 +29,6 @@ pub use mnt::mount_options::MountOption;
 pub use notify::{Notifier, PollHandle};
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
-pub use reply::Reply;
 pub use request::Request;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 

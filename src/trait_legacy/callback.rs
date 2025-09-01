@@ -7,6 +7,15 @@ use zerocopy::IntoBytes;
 
 use crate::{FileAttr, FileType};
 
+macro_rules! default_error {
+    () => {
+        /// Reply to a request with the given error code
+        pub fn error(mut self, err: c_int) {
+            self.reply.error(err)
+        }
+    };
+}
+
 ///
 /// Empty reply
 ///
@@ -15,24 +24,18 @@ pub struct ReplyEmpty {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyEmpty {
+impl ReplyEmpty {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyEmpty {
         ReplyEmpty {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyEmpty {
     /// Reply to a request with nothing
     pub fn ok(self) {
         self.reply.send_ll(&ll::Response::new_empty());
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -43,24 +46,18 @@ pub struct ReplyData {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyData {
+impl ReplyData {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyData {
         ReplyData {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyData {
     /// Reply to a request with the given data
     pub fn data(self, data: &[u8]) {
         self.reply.send_ll(&ll::Response::new_slice(data));
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -71,15 +68,13 @@ pub struct ReplyEntry {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyEntry {
+impl ReplyEntry {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyEntry {
         ReplyEntry {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyEntry {
     /// Reply to a request with the given entry
     pub fn entry(self, ttl: &Duration, attr: &FileAttr, generation: u64) {
         self.reply.send_ll(&ll::Response::new_entry(
@@ -90,11 +85,7 @@ impl ReplyEntry {
             *ttl,
         ));
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -105,25 +96,19 @@ pub struct ReplyAttr {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyAttr {
+impl ReplyAttr {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyAttr {
         ReplyAttr {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyAttr {
     /// Reply to a request with the given attribute
     pub fn attr(self, ttl: &Duration, attr: &FileAttr) {
         self.reply
             .send_ll(&ll::Response::new_attr(ttl, &attr.into()));
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -136,26 +121,19 @@ pub struct ReplyXTimes {
 }
 
 #[cfg(target_os = "macos")]
-impl Reply for ReplyXTimes {
+impl ReplyXTimes {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyXTimes {
         ReplyXTimes {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-#[cfg(target_os = "macos")]
-impl ReplyXTimes {
     /// Reply to a request with the given xtimes
     pub fn xtimes(self, bkuptime: SystemTime, crtime: SystemTime) {
         self.reply
             .send_ll(&ll::Response::new_xtimes(bkuptime, crtime))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -166,15 +144,13 @@ pub struct ReplyOpen {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyOpen {
+impl ReplyOpen {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyOpen {
         ReplyOpen {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyOpen {
     /// Reply to a request with the given open result
     pub fn opened(self, fh: u64, flags: u32) {
         #[cfg(feature = "abi-7-40")]
@@ -202,11 +178,7 @@ impl ReplyOpen {
             backing_id.backing_id,
         ))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -217,24 +189,18 @@ pub struct ReplyWrite {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyWrite {
+impl ReplyWrite {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyWrite {
         ReplyWrite {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyWrite {
     /// Reply to a request with the given open result
     pub fn written(self, size: u32) {
         self.reply.send_ll(&ll::Response::new_write(size))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -245,15 +211,13 @@ pub struct ReplyStatfs {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyStatfs {
+impl ReplyStatfs {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyStatfs {
         ReplyStatfs {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyStatfs {
     /// Reply to a request with the given open result
     #[allow(clippy::too_many_arguments)]
     pub fn statfs(
@@ -271,11 +235,7 @@ impl ReplyStatfs {
             blocks, bfree, bavail, files, ffree, bsize, namelen, frsize,
         ))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -286,15 +246,13 @@ pub struct ReplyCreate {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyCreate {
+impl ReplyCreate {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyCreate {
         ReplyCreate {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyCreate {
     /// Reply to a request with the given entry
     pub fn created(self, ttl: &Duration, attr: &FileAttr, generation: u64, fh: u64, flags: u32) {
         #[cfg(feature = "abi-7-40")]
@@ -308,11 +266,7 @@ impl ReplyCreate {
             0,
         ))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -323,15 +277,13 @@ pub struct ReplyLock {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyLock {
+impl ReplyLock {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyLock {
         ReplyLock {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyLock {
     /// Reply to a request with the given open result
     pub fn locked(self, start: u64, end: u64, typ: i32, pid: u32) {
         self.reply.send_ll(&ll::Response::new_lock(&ll::Lock {
@@ -340,11 +292,7 @@ impl ReplyLock {
             pid,
         }))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -355,24 +303,18 @@ pub struct ReplyBmap {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyBmap {
+impl ReplyBmap {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyBmap {
         ReplyBmap {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyBmap {
     /// Reply to a request with the given open result
     pub fn bmap(self, block: u64) {
         self.reply.send_ll(&ll::Response::new_bmap(block))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -383,25 +325,19 @@ pub struct ReplyIoctl {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyIoctl {
+impl ReplyIoctl {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyIoctl {
         ReplyIoctl {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyIoctl {
     /// Reply to a request with the given open result
     pub fn ioctl(self, result: i32, data: &[u8]) {
         self.reply
             .send_ll(&ll::Response::new_ioctl(result, &[IoSlice::new(data)]));
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -412,24 +348,18 @@ pub struct ReplyPoll {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyPoll {
+impl ReplyPoll {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyPoll {
         ReplyPoll {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyPoll {
     /// Reply to a request with the given poll result
     pub fn poll(self, revents: u32) {
         self.reply.send_ll(&ll::Response::new_poll(revents))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -468,11 +398,7 @@ impl ReplyDirectory {
     pub fn ok(self) {
         self.reply.send_ll(&self.data.into());
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -521,11 +447,7 @@ impl ReplyDirectoryPlus {
     pub fn ok(self) {
         self.reply.send_ll(&self.buf.into());
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -536,15 +458,13 @@ pub struct ReplyXattr {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyXattr {
+impl ReplyXattr {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyXattr {
         ReplyXattr {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyXattr {
     /// Reply to a request with the size of the xattr.
     pub fn size(self, size: u32) {
         self.reply.send_ll(&ll::Response::new_xattr_size(size))
@@ -554,11 +474,7 @@ impl ReplyXattr {
     pub fn data(self, data: &[u8]) {
         self.reply.send_ll(&ll::Response::new_slice(data))
     }
-
-    /// Reply to a request with the given error code.
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }
 
 ///
@@ -569,22 +485,16 @@ pub struct ReplyLseek {
     reply: ReplyRaw,
 }
 
-impl Reply for ReplyLseek {
+impl ReplyLseek {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyLseek {
         ReplyLseek {
             reply: Reply::new(unique, sender),
         }
     }
-}
 
-impl ReplyLseek {
     /// Reply to a request with seeked offset
     pub fn offset(self, offset: i64) {
         self.reply.send_ll(&ll::Response::new_lseek(offset))
     }
-
-    /// Reply to a request with the given error code
-    pub fn error(self, err: c_int) {
-        self.reply.error(err);
-    }
+    default_error!();
 }

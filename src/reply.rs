@@ -46,12 +46,6 @@ impl fmt::Debug for Box<dyn ReplySender> {
     }
 }
 
-/// Generic reply trait
-pub trait Reply {
-    /// Create a new reply for the given request
-    fn new<S: ReplySender>(unique: u64, sender: S) -> Self;
-}
-
 ///
 /// Raw reply
 ///
@@ -63,7 +57,7 @@ pub(crate) struct ReplyRaw {
     sender: Option<Box<dyn ReplySender>>,
 }
 
-impl Reply for ReplyRaw {
+impl ReplyRaw {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyRaw {
         let sender = Box::new(sender);
         ReplyRaw {
@@ -71,9 +65,7 @@ impl Reply for ReplyRaw {
             sender: Some(sender),
         }
     }
-}
 
-impl ReplyRaw {
     /// Reply to a request with the given error code and data. Must be called
     /// only once (the `ok` and `error` methods ensure this by consuming `self`)
     fn send_ll_mut(&mut self, response: &ll::Response<'_>) {

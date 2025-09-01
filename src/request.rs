@@ -12,7 +12,7 @@ use std::convert::TryInto;
 
 use crate::channel::ChannelSender;
 use crate::ll::Request as _;
-use crate::reply::Reply;
+use crate::reply::ReplyRaw;
 use crate::ll;
 
 /// Request data structure
@@ -43,8 +43,8 @@ impl<'a> Request<'a> {
 
     /// Create a reply object for this request that can be passed to the filesystem
     /// implementation and makes sure that a request is replied exactly once
-    fn reply<T: Reply>(&self) -> T {
-        Reply::new(self.request.unique().into(), self.ch.clone())
+    fn reply(&self) -> ReplyRaw {
+        ReplyRaw::new(self.request.unique().into(), self.ch.clone())
     }
 
     /// Returns the unique identifier of this request
