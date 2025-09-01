@@ -25,11 +25,12 @@ use std::io::IoSlice;
 #[cfg(feature = "abi-7-40")]
 use std::os::fd::BorrowedFd;
 use std::time::Duration;
+use zerocopy::IntoBytes;
 
 #[cfg(target_os = "macos")]
 use std::time::SystemTime;
 
-use crate::{FileAttr, FileType};
+use crate::{FileAttr, FileType, KernelConfig};
 
 /// Generic reply callback to send data
 pub trait ReplySender: Send + Sync + Unpin + 'static {
@@ -112,6 +113,13 @@ impl ReplyHandler {
     /// Reply to a general request with data
     pub fn data(self, data: &[u8]) {
         self.send_ll(&ll::Response::new_slice(data));
+    }
+
+    /// Reply to an init request with available features
+    pub fn config(self, capabilities: u64, config: KernelConfig) {
+        let flags = capabilities & config.requested(); // use features requested by fs and reported as capable by kernel
+        let init_out = config.into_fuse_init_out(flags);
+        self.send_ll(&ll::Response::new_data(init_out.as_bytes()));
     }
 
     /// Reply to a request with a file entry
@@ -233,6 +241,11 @@ impl ReplyHandler {
     /// Reply to a request with a seeked offset
     pub fn offset(self, offset: i64) {
         self.send_ll(&ll::Response::new_lseek(offset));
+    }
+
+    /// Disable this replyhandler. No reply will be sent.
+    pub fn disable(mut self) {
+        self.sender = None;
     }
 }
 

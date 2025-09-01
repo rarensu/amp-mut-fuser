@@ -26,25 +26,12 @@ impl<'a> Request<'a> {
     /// request and sends back the returned reply to the kernel
     pub(crate) fn dispatch<FS: Filesystem>(&self, se: &mut Session<FS>) {
         debug!("{}", self.request);
-        let unique = self.request.unique();
-
-        let res = match self.dispatch_req(se) {
-            Ok(Some(resp)) => resp,
-            Ok(None) => return,
-            Err(errno) => self.request.reply_err(errno),
-        }
-        .with_iovec(unique, |iov| self.ch.send(iov));
-
-        if let Err(err) = res {
-            warn!("Request {:?}: Failed to send reply: {}", unique, err)
-        }
-    }
-
-    fn dispatch_req<FS: Filesystem>(
-        &self,
-        se: &mut Session<FS>,
-    ) -> Result<Option<Response<'_>>, Errno> {
-        let op = self.request.operation().map_err(|_| Errno::ENOSYS)?;
+        let op = if let Ok(op) = self.request.operation() {
+            op
+        } else {
+            self.reply.error(Errno::ENOSYS);
+            return;
+        };
         // Implement allow_root & access check for auto_unmount
         if (se.allowed == SessionACL::RootAndOwner
             && self.request.uid() != se.session_owner
@@ -68,7 +55,8 @@ impl<'a> Request<'a> {
                     | ll::Operation::Release(_)
                     | ll::Operation::ReleaseDir(_) => {}
                     _ => {
-                        return Err(Errno::EACCES);
+                        self.reply.error(Errno::EACCES);
+                        return;
                     }
                 }
             }
@@ -88,7 +76,8 @@ impl<'a> Request<'a> {
                     | ll::Operation::Release(_)
                     | ll::Operation::ReleaseDir(_) => {}
                     _ => {
-                        return Err(Errno::EACCES);
+                        self.reply.error(Errno::EACCES);
+                        return;
                     }
                 }
             }
@@ -100,52 +89,58 @@ impl<'a> Request<'a> {
                 let v = x.version();
                 if v < ll::Version(7, 6) {
                     error!("Unsupported FUSE ABI version {}", v);
-                    return Err(Errno::EPROTO);
+                    self.reply.error(Errno::EPROTO);
+                    return;
                 }
                 // Remember ABI version supported by kernel
                 se.proto_major = v.major();
                 se.proto_minor = v.minor();
 
                 let mut config = KernelConfig::new(x.capabilities(), x.max_readahead());
-                // Call filesystem init method and give it a chance to return an error
-                se.filesystem
-                    .init(self, &mut config)
-                    .map_err(Errno::from_i32)?;
-
-                // Reply with our desired version and settings. If the kernel supports a
-                // larger major version, it'll re-send a matching init message. If it
-                // supports only lower major versions, we replied with an error above.
-                debug!(
-                    "INIT response: ABI {}.{}, flags {:#x}, max readahead {}, max write {}",
-                    abi::FUSE_KERNEL_VERSION,
-                    abi::FUSE_KERNEL_MINOR_VERSION,
-                    x.capabilities() & config.requested,
-                    config.max_readahead,
-                    config.max_write
-                );
-                se.initialized = true;
-                return Ok(Some(x.reply(&config)));
+                // Call filesystem init method and give it a chance to
+                // propose a different config or return an error
+                match se.filesystem.init(self, &mut config) {
+                    Ok(()) => {
+                        // Reply with our desired version and settings. If the kernel supports a
+                        // larger major version, it'll re-send a matching init message. If it
+                        // supports only lower major versions, we replied with an error above.
+                        debug!(
+                            "INIT response: ABI {}.{}, flags {:#x}, max readahead {}, max write {}",
+                            ll::fuse_abi::FUSE_KERNEL_VERSION,
+                            ll::fuse_abi::FUSE_KERNEL_MINOR_VERSION,
+                            x.capabilities() & config.requested,
+                            config.max_readahead,
+                            config.max_write
+                        );
+                        se.initialized = true;
+                        self.reply.config(x.capabilities(), config);
+                    }
+                    Err(errno) => {
+                        // Filesystem refused the config.
+                        self.reply.error(Errno::from_i32(errno));
+                    }
+                }
             }
             // Any operation is invalid before initialization
             _ if !se.initialized => {
                 warn!("Ignoring FUSE operation before init: {}", self.request);
-                return Err(Errno::EIO);
+                self.reply.error(Errno::EIO);
             }
             // Filesystem destroyed
             ll::Operation::Destroy(x) => {
                 se.filesystem.destroy();
                 se.destroyed = true;
-                return Ok(Some(x.reply()));
+                self.reply.ok();
             }
             // Any operation is invalid after destroy
             _ if se.destroyed => {
                 warn!("Ignoring FUSE operation after destroy: {}", self.request);
-                return Err(Errno::EIO);
+                self.reply.error(Errno::EIO);
             }
 
             ll::Operation::Interrupt(_) => {
                 // TODO: handle FUSE_INTERRUPT
-                return Err(Errno::ENOSYS);
+                self.reply.error(Errno::ENOSYS);
             }
 
             ll::Operation::Lookup(x) => {
@@ -159,7 +154,8 @@ impl<'a> Request<'a> {
             }
             ll::Operation::Forget(x) => {
                 se.filesystem
-                    .forget(self, self.request.nodeid().into(), x.nlookup()); // no reply
+                    .forget(self, self.request.nodeid().into(), x.nlookup()); // no response
+                self.reply.disable(); // no reply
             }
             ll::Operation::GetAttr(_attr) => {
                 let reply = ReplyAttr::new(self.reply);
@@ -485,7 +481,7 @@ impl<'a> Request<'a> {
 
             ll::Operation::IoCtl(x) => {
                 if x.unrestricted() {
-                    return Err(Errno::ENOSYS);
+                    self.reply.error(Errno::ENOSYS);
                 } else {
                     let reply = ReplyIoctl::new(self.reply);
                     se.filesystem.ioctl(
@@ -515,10 +511,11 @@ impl<'a> Request<'a> {
             }
             ll::Operation::NotifyReply(_) => {
                 // TODO: handle FUSE_NOTIFY_REPLY
-                return Err(Errno::ENOSYS);
+                self.reply.error(Errno::ENOSYS);
             }
             ll::Operation::BatchForget(x) => {
-                se.filesystem.batch_forget(self, x.nodes()); // no reply
+                se.filesystem.batch_forget(self, x.nodes()); // no response
+                self.reply.disable(); // no reply
             }
             #[cfg(feature = "abi-7-19")]
             ll::Operation::FAllocate(x) => {
@@ -617,9 +614,8 @@ impl<'a> Request<'a> {
 
             ll::Operation::CuseInit(_) => {
                 // TODO: handle CUSE_INIT
-                return Err(Errno::ENOSYS);
+                self.reply.error(Errno::ENOSYS);
             }
         }
-        Ok(None)
     }
 }

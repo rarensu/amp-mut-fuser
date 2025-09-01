@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::ll::fuse_abi::consts::*;
+use crate::ll::fuse_abi::fuse_init_out;
 use crate::session::MAX_WRITE_SIZE;
 
 /* ------ FUSE configuration ------ */
@@ -44,21 +45,21 @@ const fn default_init_flags(#[allow(unused_variables)] capabilities: u64) -> u64
 /// Configuration of the fuse kernel module connection
 #[derive(Debug)]
 pub struct KernelConfig {
-    capabilities: u64,
-    requested: u64,
-    max_readahead: u32,
-    max_max_readahead: u32,
-    max_background: u16,
-    congestion_threshold: Option<u16>,
-    max_write: u32,
+    pub(crate) capabilities: u64,
+    pub(crate) requested: u64,
+    pub(crate) max_readahead: u32,
+    pub(crate) max_max_readahead: u32,
+    pub(crate) max_background: u16,
+    pub(crate) congestion_threshold: Option<u16>,
+    pub(crate) max_write: u32,
     #[cfg(feature = "abi-7-23")]
-    time_gran: Duration,
+    pub(crate) time_gran: Duration,
     #[cfg(feature = "abi-7-40")]
-    max_stack_depth: u32,
+    pub(crate) max_stack_depth: u32,
 }
 
 impl KernelConfig {
-    fn new(capabilities: u64, max_readahead: u32) -> Self {
+    pub(crate) fn new(capabilities: u64, max_readahead: u32) -> Self {
         Self {
             capabilities,
             requested: default_init_flags(capabilities),
@@ -205,6 +206,43 @@ impl KernelConfig {
     #[cfg(feature = "abi-7-28")]
     fn max_pages(&self) -> u16 {
         ((max(self.max_write, self.max_readahead) - 1) / page_size::get() as u32) as u16 + 1
+    }
+
+    pub(crate) fn requested(&self) -> u64 {
+        self.requested
+    }
+
+    pub(crate) fn into_fuse_init_out(self, flags: u64) -> fuse_init_out {
+        fuse_init_out {
+            major: crate::ll::fuse_abi::FUSE_KERNEL_VERSION,
+            minor: crate::ll::fuse_abi::FUSE_KERNEL_MINOR_VERSION,
+            max_readahead: self.max_readahead,
+            #[cfg(not(feature = "abi-7-36"))]
+            flags: flags as u32,
+            #[cfg(feature = "abi-7-36")]
+            flags: (flags | FUSE_INIT_EXT) as u32,
+            max_background: self.max_background,
+            congestion_threshold: self.congestion_threshold(),
+            max_write: self.max_write,
+            #[cfg(feature = "abi-7-23")]
+            time_gran: self.time_gran.as_nanos() as u32,
+            #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
+            reserved: [0; 9],
+            #[cfg(feature = "abi-7-28")]
+            max_pages: self.max_pages(),
+            #[cfg(feature = "abi-7-28")]
+            unused2: 0,
+            #[cfg(all(feature = "abi-7-28", not(feature = "abi-7-36")))]
+            reserved: [0; 8],
+            #[cfg(feature = "abi-7-36")]
+            flags2: (flags >> 32) as u32,
+            #[cfg(all(feature = "abi-7-36", not(feature = "abi-7-40")))]
+            reserved: [0; 7],
+            #[cfg(feature = "abi-7-40")]
+            max_stack_depth: self.max_stack_depth,
+            #[cfg(feature = "abi-7-40")]
+            reserved: [0; 6],
+        }
     }
 }
 

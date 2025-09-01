@@ -5,7 +5,7 @@
 
 use super::fuse_abi::{InvalidOpcodeError, fuse_in_header, fuse_opcode};
 
-use super::{Errno, Response, fuse_abi as abi};
+use super::fuse_abi as abi;
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom, fmt::Display, path::Path};
@@ -226,11 +226,6 @@ pub trait Request: Sized {
 
     /// Returns the PID of the process that triggered this request.
     fn pid(&self) -> u32;
-
-    /// Create an error response for this Request
-    fn reply_err(&self, errno: Errno) -> Response<'_> {
-        Response::new_error(errno)
-    }
 }
 
 macro_rules! impl_request {
@@ -265,8 +260,6 @@ macro_rules! impl_request {
 }
 
 mod op {
-    use crate::ll::Response;
-
     use super::{
         super::{TimeOrNow, argument::ArgumentIterator},
         FilenameInDir, Request,
@@ -282,7 +275,6 @@ mod op {
         path::Path,
         time::{Duration, SystemTime},
     };
-    use zerocopy::IntoBytes;
 
     /// Look up a directory entry by name and get its attributes.
     ///
@@ -336,7 +328,7 @@ mod op {
 
     impl GetAttr<'_> {
         pub fn file_handle(&self) -> Option<FileHandle> {
-            if self.arg.getattr_flags & crate::FUSE_GETATTR_FH != 0 {
+            if self.arg.getattr_flags & crate::consts::FUSE_GETATTR_FH != 0 {
                 Some(FileHandle(self.arg.fh))
             } else {
                 None
@@ -950,7 +942,7 @@ mod op {
         arg: &'a fuse_init_in,
     }
     impl_request!(Init<'a>);
-    impl<'a> Init<'a> {
+    impl Init<'_> {
         pub fn capabilities(&self) -> u64 {
             #[cfg(feature = "abi-7-36")]
             if self.arg.flags & (FUSE_INIT_EXT as u32) != 0 {
@@ -963,42 +955,6 @@ mod op {
         }
         pub fn version(&self) -> super::Version {
             super::Version(self.arg.major, self.arg.minor)
-        }
-
-        pub fn reply(&self, config: &crate::KernelConfig) -> Response<'a> {
-            let flags = self.capabilities() & config.requested; // use requested features and reported as capable
-
-            let init = fuse_init_out {
-                major: FUSE_KERNEL_VERSION,
-                minor: FUSE_KERNEL_MINOR_VERSION,
-                max_readahead: config.max_readahead,
-                #[cfg(not(feature = "abi-7-36"))]
-                flags: flags as u32,
-                #[cfg(feature = "abi-7-36")]
-                flags: (flags | FUSE_INIT_EXT) as u32,
-                max_background: config.max_background,
-                congestion_threshold: config.congestion_threshold(),
-                max_write: config.max_write,
-                #[cfg(feature = "abi-7-23")]
-                time_gran: config.time_gran.as_nanos() as u32,
-                #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
-                reserved: [0; 9],
-                #[cfg(feature = "abi-7-28")]
-                max_pages: config.max_pages(),
-                #[cfg(feature = "abi-7-28")]
-                unused2: 0,
-                #[cfg(all(feature = "abi-7-28", not(feature = "abi-7-36")))]
-                reserved: [0; 8],
-                #[cfg(feature = "abi-7-36")]
-                flags2: (flags >> 32) as u32,
-                #[cfg(all(feature = "abi-7-36", not(feature = "abi-7-40")))]
-                reserved: [0; 7],
-                #[cfg(feature = "abi-7-40")]
-                max_stack_depth: config.max_stack_depth,
-                #[cfg(feature = "abi-7-40")]
-                reserved: [0; 6],
-            };
-            Response::new_data(init.as_bytes())
         }
     }
 
@@ -1280,11 +1236,6 @@ mod op {
         header: &'a fuse_in_header,
     }
     impl_request!(Destroy<'a>);
-    impl<'a> Destroy<'a> {
-        pub fn reply(&self) -> Response<'a> {
-            Response::new_empty()
-        }
-    }
 
     /// Control device
     #[derive(Debug)]
