@@ -6,17 +6,6 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-pub use data::{FileAttr, FileType, KernelConfig};
-pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
-pub use crate::ll::{TimeOrNow, fuse_abi::consts};
-pub use mnt::mount_options::MountOption;
-pub use notify::{Notifier, PollHandle};
-#[cfg(feature = "abi-7-40")]
-pub use passthrough::BackingId;
-pub use reply::Reply;
-pub use request::Request;
-pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
-
 /* ------ Modules ------ */
 
 mod channel;
@@ -31,6 +20,18 @@ mod request;
 mod session;
 /// Legacy Filesystem trait with callbacks
 pub mod trait_legacy;
+
+/* ------ Public Exports ------ */
+
+pub use data::{FileAttr, FileType, KernelConfig};
+pub use ll::{TimeOrNow, fuse_abi::{consts, FUSE_ROOT_ID}};
+pub use mnt::mount_options::MountOption;
+pub use notify::{Notifier, PollHandle};
+#[cfg(feature = "abi-7-40")]
+pub use passthrough::BackingId;
+pub use reply::Reply;
+pub use request::Request;
+pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 
 // Default trait is the Legacy `Filesystem` trait with `Reply` callbacks
 pub use trait_legacy::{Filesystem, fuse_forget_one};
