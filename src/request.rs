@@ -12,19 +12,19 @@ use std::convert::TryInto;
 
 use crate::channel::ChannelSender;
 use crate::ll::Request as _;
-use crate::reply::ReplyRaw;
+use crate::reply::ReplyHandler;
 use crate::ll;
 
 /// Request data structure
 #[derive(Debug)]
 pub struct Request<'a> {
-    /// Channel sender for sending the reply
-    ch: ChannelSender,
     /// Request raw data
     #[allow(unused)]
     data: &'a [u8],
     /// Parsed request
     request: ll::AnyRequest<'a>,
+    /// Closure-like object to guarantee a response is sent
+    pub reply: ReplyHandler,
 }
 
 impl<'a> Request<'a> {
@@ -37,14 +37,10 @@ impl<'a> Request<'a> {
                 return None;
             }
         };
-
-        Some(Self { ch, data, request })
-    }
-
-    /// Create a reply object for this request that can be passed to the filesystem
-    /// implementation and makes sure that a request is replied exactly once
-    fn reply(&self) -> ReplyRaw {
-        ReplyRaw::new(self.request.unique().into(), self.ch.clone())
+        // Create a reply object for this request that can be passed to the filesystem
+        // implementation and makes sure that a request is replied exactly once
+        let reply = ReplyHandler::new(request.unique().into(), ch);
+        Some(Self { data, request, reply })
     }
 
     /// Returns the unique identifier of this request
