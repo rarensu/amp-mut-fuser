@@ -18,13 +18,13 @@ pub enum NotificationKind {
     /// A poll event notification (field: ph)
     Poll(u64),
     /// An invalid entry notification (fields: parent, name)
-    InvalEntry(u64, Bytes),
+    InvalEntry(u64, OsString),
     /// An invalid inode notification (fields: ino, offset, len)
     InvalInode(u64, i64, i64),
     /// An inode metadata update notification (fields: ino, offset, data)
     Store(u64, u64, Bytes),
     /// An inode deletion notification (fields: parent, ino, name)
-    Delete(u64, u64, Bytes),
+    Delete(u64, u64, OsString),
     /// A request to close a backing ID (field: id)
     #[cfg(feature = "abi-7-40")]
     CloseBacking(u32),
@@ -225,7 +225,7 @@ impl Notifier {
     }
 
     /// Invalidate the kernel cache for a given directory entry
-    pub fn inval_entry(&self, parent: u64, name: Bytes) {
+    pub fn inval_entry(&self, parent: u64, name: OsString) {
         self.queue.send(NotificationKind::InvalEntry(parent, name)).unwrap();
     }
 
@@ -242,7 +242,7 @@ impl Notifier {
 
     /// Invalidate the kernel cache for a given directory entry and inform
     /// inotify watchers of a file deletion.
-    pub fn delete(&self, parent: u64, child: u64, name: Bytes) {
+    pub fn delete(&self, parent: u64, child: u64, name: OsString) {
         self.queue.send(NotificationKind::Delete(parent, child, name)).unwrap();
     }
 

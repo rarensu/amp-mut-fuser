@@ -95,9 +95,9 @@ impl Filesystem for ClockFS {
                     // TODO: implement expiration method
                 } else {
                     // invalidate old_filename
-                    self.notifier.inval_entry(FUSE_ROOT_ID, old_filename.into_encoded_bytes().into());
+                    self.notifier.inval_entry(FUSE_ROOT_ID, old_filename);
                     // invalidate new filename
-                    self.notifier.inval_entry(FUSE_ROOT_ID, self.get_filename().into_encoded_bytes().into());
+                    self.notifier.inval_entry(FUSE_ROOT_ID, self.get_filename());
                     info!("Sent two InvalEntry notifications (old filename, new filename).");
                 }
             }
