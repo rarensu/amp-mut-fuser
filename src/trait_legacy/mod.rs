@@ -2,6 +2,8 @@ mod filesystem;
 pub use crate::ll::fuse_abi::fuse_forget_one;
 pub use filesystem::Filesystem;
 
+mod dispatch;
+
 mod mount;
 #[allow(deprecated)]
 pub use mount::{mount, mount2, spawn_mount, spawn_mount2};
