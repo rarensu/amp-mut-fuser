@@ -5,6 +5,8 @@ use log::{debug, error, info, warn};
 use std::cmp::max;
 use std::cmp::min;
 use std::time::{Duration, SystemTime};
+#[cfg(feature = "serializable")]
+use serde::{Deserialize, Serialize};
 
 use crate::Container;
 use crate::ll::fuse_abi;

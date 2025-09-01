@@ -2138,7 +2138,7 @@ impl<'a> TryFrom<&'a [u8]> for AnyRequest<'a> {
         // Parse a raw packet as sent by the kernel driver into typed data. Every request always
         // begins with a `fuse_in_header` struct followed by arguments depending on the opcode.
         let data_len = data.len();
-        let mut arg_iter = ArgumentIterator::new(&data);
+        let mut arg_iter = ArgumentIterator::new(data);
         // Parse header
         let header: &fuse_in_header = arg_iter
             .fetch()

@@ -131,7 +131,7 @@ impl NotificationHandler {
     }
 
     /// Invalidate the kernel cache for a given directory entry
-    pub fn inval_entry(&self, parent: u64, name: &[u8]) -> io::Result<()> {
+    pub fn inval_entry(&self, parent: u64, name: &OsStr) -> io::Result<()> {
         let notif = Notification::new_inval_entry(parent, name).map_err(too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_INVAL_ENTRY, &notif)
     }
@@ -153,7 +153,7 @@ impl NotificationHandler {
 
     /// Invalidate the kernel cache for a given directory entry and inform
     /// inotify watchers of a file deletion.
-    pub fn delete(&self, parent: u64, child: u64, name: &[u8]) -> io::Result<()> {
+    pub fn delete(&self, parent: u64, child: u64, name: &OsStr) -> io::Result<()> {
         let notif = Notification::new_delete(parent, child, name).map_err(too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif)
     }

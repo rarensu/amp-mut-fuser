@@ -7,8 +7,6 @@
 use bytes::Bytes;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
-#[cfg(feature = "serializable")]
-use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::IoSlice;
 use std::time::Duration;
