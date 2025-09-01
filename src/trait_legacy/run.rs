@@ -1,0 +1,50 @@
+use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
+use std::io;
+
+use crate::request::Request;
+use crate::session::Session;
+
+use super::Filesystem;
+
+impl<FS: Filesystem> Session<FS> {
+    /// Run the session loop that receives kernel requests and dispatches them to method
+    /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
+    /// having multiple buffers (which take up much memory), but the filesystem methods
+    /// may run concurrent by spawning threads.
+    pub fn run(&mut self) -> io::Result<()> {
+        // Buffer for receiving requests from the kernel. Only one is allocated and
+        // it is reused immediately after dispatching to conserve memory and allocations.
+        let mut buffer = vec![0; BUFFER_SIZE];
+        let buf = aligned_sub_buf(
+            buffer.deref_mut(),
+            std::mem::align_of::<abi::fuse_in_header>(),
+        );
+        loop {
+            // Read the next request from the given channel to kernel driver
+            // The kernel driver makes sure that we get exactly one request per read
+            match self.ch.receive(buf) {
+                Ok(size) => match Request::new(self.ch.sender(), &buf[..size]) {
+                    // Dispatch request
+                    Some(req) => req.dispatch(self),
+                    // Quit loop on illegal request
+                    None => break,
+                },
+                Err(err) => match err.raw_os_error() {
+                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
+                    Some(ENOENT) => continue,
+                    // Interrupted system call, retry
+                    Some(EINTR) => continue,
+                    // Explicitly try again
+                    Some(EAGAIN) => continue,
+                    // Filesystem was unmounted, quit the loop
+                    Some(ENODEV) => break,
+                    // Unhandled error
+                    _ => return Err(err),
+                },
+            }
+        }
+        Ok(())
+    }
+}
