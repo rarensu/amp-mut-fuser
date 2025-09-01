@@ -7,6 +7,17 @@ use crate::session::{SessionACL, Session};
 use crate::{KernelConfig, ll::Errno};
 
 use super::Filesystem;
+#[cfg(feature = "abi-7-21")]
+use super::ReplyDirectoryPlus;
+#[cfg(feature = "abi-7-24")]
+use super::ReplyLseek;
+#[cfg(target_os = "macos")]
+use super::ReplyXTimes;
+use super::{
+    ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyIoctl, ReplyLock, ReplyOpen,  ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
+};
+
 use super::PollHandle;
 
 impl<'a> Request<'a> {

@@ -2,6 +2,20 @@ mod filesystem;
 pub use crate::ll::fuse_abi::fuse_forget_one;
 pub use filesystem::Filesystem;
 
+mod callback;
+
+/* ------ Structs ------ */
+#[cfg(feature = "abi-7-21")]
+pub use callback::ReplyDirectoryPlus;
+#[cfg(feature = "abi-7-24")]
+pub use callback::ReplyLseek;
+#[cfg(target_os = "macos")]
+pub use callback::ReplyXTimes;
+pub use callback::{
+    ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
+};
+
 mod dispatch;
 
 mod run;

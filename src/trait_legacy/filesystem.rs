@@ -9,6 +9,16 @@ use std::time::SystemTime;
 use super::{KernelConfig, TimeOrNow};
 use super::fuse_forget_one;
 use super::PollHandle;
+#[cfg(feature = "abi-7-21")]
+use super::ReplyDirectoryPlus;
+#[cfg(feature = "abi-7-24")]
+use super::ReplyLseek;
+#[cfg(target_os = "macos")]
+use super::ReplyXTimes;
+use super::{
+    ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyIoctl, ReplyLock, ReplyOpen,  ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
+};
 
 /// Filesystem trait.
 ///

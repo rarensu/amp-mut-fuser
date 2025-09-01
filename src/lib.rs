@@ -21,15 +21,7 @@ pub use mnt::mount_options::MountOption;
 pub use notify::{Notifier, PollHandle};
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
-pub use reply::ReplyPoll;
-#[cfg(target_os = "macos")]
-pub use reply::ReplyXTimes;
-pub use reply::ReplyXattr;
-pub use reply::{Reply, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen};
-pub use reply::{
-    ReplyBmap, ReplyCreate, ReplyDirectory, ReplyDirectoryPlus, ReplyIoctl, ReplyLock, ReplyLseek,
-    ReplyStatfs, ReplyWrite,
-};
+pub use reply::Reply;
 pub use request::Request;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 #[cfg(feature = "abi-7-28")]
@@ -53,6 +45,16 @@ pub mod trait_legacy;
 pub use trait_legacy::{Filesystem, fuse_forget_one};
 #[allow(deprecated)]
 pub use trait_legacy::{mount, mount2, spawn_mount, spawn_mount2};
+#[cfg(feature = "abi-7-21")]
+pub use trait_legacy::ReplyDirectoryPlus;
+#[cfg(feature = "abi-7-24")]
+pub use trait_legacy::ReplyLseek;
+#[cfg(target_os = "macos")]
+pub use trait_legacy::ReplyXTimes;
+pub use trait_legacy::{
+    ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
+};
 
 /// We generally support async reads
 #[cfg(not(target_os = "macos"))]
