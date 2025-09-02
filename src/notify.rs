@@ -37,21 +37,21 @@ pub(crate) fn too_big_err(tfie: std::num::TryFromIntError) -> io::Error {
 
 #[derive(Debug)]
 /// An object which translates Notifications to a lower-level representation and sends them to the kernel
-pub struct NotificationHandler {
-    channel: Channel,
+pub struct NotificationHandler<S: NotificationSender> {
+    sender: S,
 }
-impl NotificationHandler {
+impl<S: NotificationSender> NotificationHandler<S> {
     /// Create a notification handler from a fuse channel
-    pub(crate) fn new(channel: Channel) -> NotificationHandler {
-        NotificationHandler { channel }
+    pub(crate) fn new(sender: S) -> NotificationHandler<S> {
+        NotificationHandler { sender }
     }
 }
 
-impl NotificationHandler {
+impl<S: NotificationSender> NotificationHandler<S> {
     /// Notify poll clients of I/O readiness
     pub fn poll(&self, ph: u64) -> io::Result<()> {
         let notif = Notification::new_poll(ph);
-        self.channel.notify(notify_code::FUSE_POLL, &notif)
+        self.sender.notify(notify_code::FUSE_POLL, &notif)
     }
 
     /// Invalidate the kernel cache for a given directory entry
@@ -84,7 +84,7 @@ impl NotificationHandler {
 
     #[allow(unused)]
     fn send_inval(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
-        match self.channel.notify(code, notification) {
+        match self.sender.notify(code, notification) {
             // ENOENT is harmless for an invalidation (the
             // kernel may have already dropped the cached
             // entry on its own anyway), so ignore it.
@@ -100,11 +100,11 @@ impl NotificationHandler {
 /// kernel when a poll is ready.
 pub struct PollHandle {
     handle: u64,
-    sender: NotificationHandler,
+    sender: NotificationHandler<Channel>,
 }
 
 impl PollHandle {
-    pub(crate) fn new(handler: NotificationHandler, ph: u64) -> Self {
+    pub(crate) fn new(handler: NotificationHandler<Channel>, ph: u64) -> Self {
         Self {
             handle: ph,
             sender: handler,

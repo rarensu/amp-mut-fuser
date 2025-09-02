@@ -18,29 +18,24 @@ use crate::ll::fuse_ioctl::{ioctl_close_backing, ioctl_open_backing};
 /// This is implemented as a safe wrapper around the backing_id field of the fuse_backing_map
 /// struct used by the ioctls involved in fd passthrough.  It is created by performing a
 /// FUSE_DEV_IOC_BACKING_OPEN ioctl on an fd and has a Drop trait impl which makes a matching
-/// FUSE_DEV_IOC_BACKING_CLOSE call.  It holds a reference on the fuse channel to allow it to
-/// make that call.
-pub struct BackingId {
-    /// The original file descriptor of the Backing File. Currently unused.
-    _fd: u32,
-    closer: crate::channel::Channel,
+/// FUSE_DEV_IOC_BACKING_CLOSE call.  It holds a weak reference on the fuse channel to allow it to
+/// make that call (if the channel hasn't already been closed).
+#[derive(Debug)]
+pub struct BackingId<S: BackingSender> {
+    sender: S,
     /// The backing_id field passed to and from the kernel
     pub id: u32,
-}
-impl fmt::Debug for BackingId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "BackingId({:?})", &self.id)
-    }
 }
 impl Drop for BackingId {
     fn drop(&mut self) {
         if self.id > 0 {
-            let _ = ioctl_close_backing(self.closer.raw_fd, self.id);
+            let _ = self.sender.close_backing(self.id);
         }
     }
 }
 
-pub trait BackingSender: Send + Sync + Unpin + 'static {
+/// Generic tool for managing backings
+pub trait BackingSender: Clone + Send + Sync + Unpin + 'static {
     fn open_backing(&self, fd: u32) -> io::Result<u32>;
     fn close_backing(&self, id: u32) -> io::Result<u32>;
 }
@@ -61,30 +56,27 @@ impl BackingSender for crate::channel::Channel {
 }
 
 #[derive(Debug)]
-/// `BackingHandler` allows the filesystem to open (and close) `BackingId`.
-pub struct BackingHandler {
+/// `BackingHandler` allows the filesystem to create (and destroy) `BackingId`.
+pub struct BackingHandler<S: BackingSender> {
     /// Closure to call for requesting a backing id
-    pub sender: crate::channel::Channel,
+    sender: S,
 }
 
-impl BackingHandler {
+impl<S: BackingSender> BackingHandler<S> {
     /// Create a handler for backing id operations
-    pub fn new(sender: crate::channel::Channel) -> BackingHandler {
+    pub fn new(sender: S) -> BackingHandler {
         BackingHandler { sender }
     }
-}
 
-impl BackingHandler {
-    /// This method builds a `BackingId` for the provided File.
-    /// You may use this during `open` or `opendir` or `heartbeat`.
+    /// This method creates a `BackingId` for the provided File.
+    /// You may use this during `open` or `opendir`.
     /// # Errors
     /// Reports errors with the underlying fuse connection.
     pub fn open_backing<F: AsRawFd>(&self, file: F) -> io::Result<BackingId> {
         let fd = file.as_raw_fd() as u32;
         let id = self.sender.open_backing(fd)?;
         Ok(BackingId {
-            _fd: fd,
-            closer: self.sender.clone(),
+            sender: self.sender.clone(),
             id,
         })
     }

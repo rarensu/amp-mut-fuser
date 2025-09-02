@@ -175,7 +175,7 @@ impl<FS: Filesystem> Session<FS> {
     }
 
     /// Returns an object that can be used to send notifications to the kernel
-    pub fn notifier(&self) -> NotificationHandler {
+    pub fn notifier(&self) -> NotificationHandler<Channel> {
         #[cfg(not(feature = "side-channel"))]
         let this_ch = self.ch_main.clone();
         #[cfg(feature = "side-channel")]
@@ -261,7 +261,7 @@ impl BackgroundSession {
     }
 
     /// Returns an object that can be used to send notifications to the kernel
-    pub fn notifier(&self) -> NotificationHandler {
+    pub fn notifier(&self) -> NotificationHandler<Channel> {
         NotificationHandler::new(self.sender.clone())
     }
 }

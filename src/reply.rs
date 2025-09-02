@@ -11,7 +11,6 @@ use crate::{Errno, FileAttr, KernelConfig};
 use log::{debug, error, info, warn};
 #[cfg(feature = "serializable")]
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::io::IoSlice;
 use std::time::Duration;
 use zerocopy::IntoBytes;
@@ -20,12 +19,6 @@ use zerocopy::IntoBytes;
 pub(crate) trait ReplySender: Send + Sync + Unpin + 'static {
     /// Send data.
     fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()>;
-}
-
-impl fmt::Debug for Box<dyn ReplySender> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Box<ReplySender>")
-    }
 }
 
 /// Primary ReplySender implementation for sending data to a Channel
@@ -37,26 +30,24 @@ impl ReplySender for crate::channel::Channel {
 }
 
 /// `ReplyHandler` is a struct which holds the unique identifiers needed to reply
-/// to a specific request. Replying methods consume `self` to guarantee at most one
-/// reply is sent per request.
+/// to a specific request. 
+/// Methods consume `self` to indicate at compile time that method
+/// should be used exactly once. 
+/// Methods take `sender` to guarantee at runtime that
+/// at most one reply is actually sent per request.
 #[derive(Debug)]
-pub(crate) struct ReplyHandler {
+pub(crate) struct ReplyHandler<S: ReplySender> {
     /// Unique id of the request to reply to
-    pub unique: ll::RequestId,
+    unique: ll::RequestId,
     /// Closure to call for sending the reply
-    pub sender: Option<Box<dyn ReplySender>>,
-    /// Option to disable attribute cacheing
-    pub attr_ttl_override: bool,
+    sender: Option<S>,
 }
 
-impl ReplyHandler {
-    /// Create a reply handler for a specific request identifier
-    pub(crate) fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyHandler {
-        let sender = Box::new(sender);
+impl<S: ReplySender> ReplyHandler<S> {
+    pub fn new(unique: u64, sender: S) -> ReplyHandler<S> {
         ReplyHandler {
             unique: ll::RequestId(unique),
             sender: Some(sender),
-            attr_ttl_override: false,
         }
     }
 
@@ -71,18 +62,12 @@ impl ReplyHandler {
             error!("Failed to send FUSE reply: {err}");
         }
     }
-    /// Reply to a request with a formatted reponse. May be called
-    /// only once (the `mut self` argument consumes `self`).
-    /// Use this variant for general replies.
-    pub(crate) fn send_ll(mut self, response: &ll::Response<'_>) {
-        self.send_ll_mut(response);
+    pub fn send_ll(mut self, response: &ll::Response<'_>) {
+        self.send_ll_mut(response)
     }
 }
 
-/// Drop is implemented on `ReplyHandler` so that if the program logic fails
-/// (for example, due to an interrupt or a panic),
-/// a reply will be sent when the Reply Handler falls out of scope.
-impl Drop for ReplyHandler {
+impl<S: ReplySender> Drop for ReplyHandler<S> {
     fn drop(&mut self) {
         if self.sender.is_some() {
             warn!(
@@ -94,11 +79,12 @@ impl Drop for ReplyHandler {
     }
 }
 
+
 //
 // Methods to reply to a request for each kind of data
 //
 
-impl ReplyHandler {
+impl<S: ReplySender> ReplyHandler<S> {
     /// Reply to a general request with an error code
     pub fn error(self, err: Errno) {
         self.send_ll(&ll::Response::new_error(err));
@@ -114,7 +100,7 @@ impl ReplyHandler {
         self.send_ll(&ll::Response::new_slice(data));
     }
 
-    // Reply to an init request with available features
+    /// Reply to an init request with available features
     pub fn config(self, capabilities: u64, config: KernelConfig) {
         let flags = capabilities & config.requested(); // use features requested by fs and reported as capable by kernel
         let init_out = config.into_fuse_init_out(flags);
@@ -123,7 +109,7 @@ impl ReplyHandler {
 
     /// Reply to a request with a file entry
     pub fn entry(self, entry: &Entry) {
-        let attr_ttl_override = self.attr_ttl_override;
+        let attr_ttl_override = false;
         self.send_ll(&ll::Response::new_entry(
             ll::INodeNo(entry.ino),
             ll::Generation(entry.generation.unwrap_or(1)),
@@ -135,9 +121,8 @@ impl ReplyHandler {
     }
 
     /// Reply to a request with file attributes
-    pub fn attr(self, attr: &FileAttr, ttl: &Duration) {
-        let attr_ttl_override = self.attr_ttl_override;
-        self.send_ll(&ll::Response::new_attr(ttl, attr, attr_ttl_override));
+    pub fn attr(self, ttl: &Duration, attr: &FileAttr) {
+        self.send_ll(&ll::Response::new_attr(ttl, attr, false));
     }
 
     #[cfg(target_os = "macos")]
@@ -176,7 +161,7 @@ impl ReplyHandler {
 
     /// Reply to a request with a newly created file entry and its newly open file handle
     pub fn created(self, entry: &Entry, open: &Open) {
-        let attr_ttl_override = self.attr_ttl_override;
+        let attr_ttl_override = false;
         self.send_ll(&ll::Response::new_create(
             &entry.file_ttl,
             &entry.attr.into(),
@@ -214,30 +199,18 @@ impl ReplyHandler {
     }
 
     /*
+    /// Reply to a request with a filled directory buffer
+    pub fn dir() {}
     // Note: trait_legacy has its own implementation of this function;
     // this one is for (future) Sync/Async traits
-    /// Reply to a request with a filled directory buffer
-    pub fn dir(
-        self,
-        entries_list: &DirentList,
-        min_offset: i64,
-        size: usize,
-        /* blank space */
-    ) {}
     */
 
     /*
     #[cfg(feature = "abi-7-21")]
+    /// Reply to a request with a filled directory plus buffer
+    pub fn dirplus() {}
     // Note: trait_legacy has its own implementation of this function
     // this one is for (future) Sync/Async traits
-    // Reply to a request with a filled directory plus buffer
-    pub fn dirplus(
-        self,
-        entries_plus_list: &DirentPlusList,
-        min_offset: i64,
-        size: usize,
-        /* blank space */
-    ) {}
     */
 
     /// Reply to a request with the size of an extended attribute
@@ -261,10 +234,7 @@ impl ReplyHandler {
         self.sender = None;
     }
 
-    /// Disable attribute cacheing.
-    pub fn attr_ttl_override(&mut self) {
-        self.attr_ttl_override = true;
-    }
+
 }
 
 pub mod test_utils {
@@ -339,8 +309,8 @@ mod test {
                 0x00, 0x00, 0x12, 0x34, 0x78, 0x56,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-        replyhandler.send_ll(&ll::Response::new_data(data.as_bytes()));
+        let reply = ReplyHandler::new(0xdeadbeef, sender);
+        reply.send_ll(&ll::Response::new_data(data.as_bytes()));
     }
 
     #[test]
@@ -351,7 +321,7 @@ mod test {
                 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.error(Errno::from_i32(66));
     }
 
@@ -363,7 +333,7 @@ mod test {
                 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.ok();
     }
 
@@ -375,7 +345,7 @@ mod test {
                 0x00, 0x00, 0xde, 0xad, 0xbe, 0xef,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.data(&[0xde, 0xad, 0xbe, 0xef]);
     }
 
@@ -480,7 +450,7 @@ mod test {
         // test reply will be compare with the expected message
         let sender = AssertSender { expected };
         // prepare the test reply
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = default_attr_struct!();
         // send the test reply
@@ -511,10 +481,10 @@ mod test {
         expected[0] = expected.len() as u8;
 
         let sender = AssertSender { expected };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = default_attr_struct!();
-        replyhandler.attr(&attr, &ttl);
+        replyhandler.attr(&ttl, &attr);
     }
 
     #[test]
@@ -584,7 +554,7 @@ mod test {
         expected.extend(&default_open_bytes!());
 
         let sender = AssertSender { expected };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.opened(&default_open_struct!());
     }
 
@@ -596,7 +566,7 @@ mod test {
                 0x00, 0x00, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.written(0x1122);
     }
 
@@ -613,7 +583,7 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.statfs(&Statfs {
             blocks: 0x11,
             bfree: 0x22,
@@ -655,7 +625,7 @@ mod test {
         expected[0] = (expected.len()) as u8;
 
         let sender = AssertSender { expected };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr = default_attr_struct!();
         let open = default_open_struct!();
@@ -680,7 +650,7 @@ mod test {
                 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x44, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.locked(&Lock {
             start: 0x11,
             end: 0x22,
@@ -697,7 +667,7 @@ mod test {
                 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.bmap(0x1234);
     }
 
@@ -716,7 +686,7 @@ mod test {
                 0x00, 0x00, 0x78, 0x56, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.xattr_size(0x12345678);
     }
 
@@ -728,7 +698,7 @@ mod test {
                 0x00, 0x00, 0x11, 0x22, 0x33, 0x44,
             ],
         };
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, sender);
         replyhandler.xattr_data(&Vec::from(&[0x11, 0x22, 0x33, 0x44]));
     }
 
@@ -742,7 +712,7 @@ mod test {
     #[test]
     fn threaded_reply() {
         let (tx, rx) = sync_channel::<()>(1);
-        let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, tx);
+        let replyhandler = ReplyHandler::new(0xdeadbeef, tx);
         thread::spawn(move || {
             replyhandler.ok();
         });

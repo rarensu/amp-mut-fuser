@@ -22,12 +22,12 @@ pub(crate) struct RequestHandler {
     /// Request metadata
     pub meta: RequestMeta,
     /// Closure-like object to guarantee a response is sent
-    pub replyhandler: ReplyHandler,
+    pub replyhandler: ReplyHandler<Channel>,
     #[cfg(feature = "abi-7-40")]
     /// Closure-like object to enable opening and closing of Backing Id.
     pub ch_main: Channel,
     /// Closure-like object to enable sending of notifications.
-    pub notificationhandler: NotificationHandler,
+    pub notificationhandler: NotificationHandler<Channel>,
 }
 
 /// Request metadata structure
