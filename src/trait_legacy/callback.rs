@@ -776,17 +776,17 @@ pub trait CallbackDirectoryPlus: CallbackErr {
 /// Legacy callback handler for ReplyDirectory
 #[derive(Debug)]
 #[cfg(feature = "abi-7-21")]
-pub(crate) struct DirectoryPlusHandler {
+pub(crate) struct DirectoryPlusHandler<S: ReplySender> {
     buf: Option<EntListBuf>,
     reply: Option<ReplyHandler<S>>,
     attr_ttl_override: bool,
 }
 #[cfg(feature = "abi-7-21")]
-impl DirectoryPlusHandler {
+impl<S: ReplySender> DirectoryPlusHandler<S> {
     pub fn new(max_size: usize, reply: ReplyHandler<S>) -> Self {
         DirectoryPlusHandler {
             buf: Some(EntListBuf::new(max_size)),
-            reply: Some(handler),
+            reply: Some(reply),
             attr_ttl_override: false,
         }
     }
@@ -796,7 +796,7 @@ impl DirectoryPlusHandler {
     }
 }
 #[cfg(feature = "abi-7-21")]
-impl<S: ReplySender + Debug> CallbackErr for DirectoryPlusHandler {
+impl<S: ReplySender + Debug> CallbackErr for DirectoryPlusHandler<S> {
     fn error(&mut self, err: c_int) {
         if let Some(handler) = self.reply.take() {
             handler.error(Errno::from_i32(err));
@@ -804,7 +804,7 @@ impl<S: ReplySender + Debug> CallbackErr for DirectoryPlusHandler {
     }
 }
 #[cfg(feature = "abi-7-21")]
-impl<S: ReplySender + Debug> CallbackDirectoryPlus for DirectoryPlusHandler {
+impl<S: ReplySender + Debug> CallbackDirectoryPlus for DirectoryPlusHandler<S> {
     fn add(
         &mut self,
         ino: u64,
