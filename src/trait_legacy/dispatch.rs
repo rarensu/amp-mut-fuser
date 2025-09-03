@@ -13,7 +13,7 @@ use crate::{KernelConfig, ll::Errno};
 use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
-use super::callback::{DirectoryHandler, OpenHandler};
+use super::callback::{DirectoryHandler};
 use super::{
     Filesystem, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyIoctl, ReplyLock, ReplyOpen,  ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
@@ -173,12 +173,12 @@ impl RequestHandler {
                 if se_meta.allowed == SessionACL::RootAndOwner {
                     self.replyhandler.attr_ttl_override();
                 }
-                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEntry::new(Some(self.replyhandler));
                 fs.lookup(
                     &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
@@ -190,12 +190,12 @@ impl RequestHandler {
                 if se_meta.allowed == SessionACL::RootAndOwner {
                     self.replyhandler.attr_ttl_override();
                 }
-                let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyAttr::new(Some(self.replyhandler));
                 fs.getattr(
                     &req,
                     self.request.nodeid().into(),
                     _attr.file_handle().map(Into::into),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
@@ -203,7 +203,7 @@ impl RequestHandler {
                 if se_meta.allowed == SessionACL::RootAndOwner {
                     self.replyhandler.attr_ttl_override();
                 }
-                let reply = ReplyAttr::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyAttr::new(Some(self.replyhandler));
                 fs.setattr(
                     &req,
                     self.request.nodeid().into(),
@@ -219,18 +219,18 @@ impl RequestHandler {
                     x.chgtime(),
                     x.bkuptime(),
                     x.flags(),
-                    reply,
+                    callback,
                 );
             }
             Operation::ReadLink(_) => {
-                let reply = ReplyData::new(Box::new(Some(self.replyhandler)));
-                fs.readlink(&req, self.request.nodeid().into(), reply);
+                let callback = ReplyData::new(Some(self.replyhandler));
+                fs.readlink(&req, self.request.nodeid().into(), callback);
             }
             Operation::MkNod(x) => {
                 if se_meta.allowed == SessionACL::RootAndOwner {
                     self.replyhandler.attr_ttl_override();
                 }
-                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEntry::new(Some(self.replyhandler));
                 fs.mknod(
                     &req,
                     self.request.nodeid().into(),
@@ -238,57 +238,57 @@ impl RequestHandler {
                     x.mode(),
                     x.umask(),
                     x.rdev(),
-                    reply,
+                    callback,
                 );
             }
             Operation::MkDir(x) => {
                 if se_meta.allowed == SessionACL::RootAndOwner {
                     self.replyhandler.attr_ttl_override();
                 }
-                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEntry::new(Some(self.replyhandler));
                 fs.mkdir(
                     &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
                     x.mode(),
                     x.umask(),
-                    reply,
+                    callback,
                 );
             }
             Operation::Unlink(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.unlink(
                     &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
             Operation::RmDir(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.rmdir(
                     &req,
                     self.request.nodeid().into(),
                     x.name().as_os_str(),
-                    reply,
+                    callback,
                 );
             }
             Operation::SymLink(x) => {
                 if se_meta.allowed == SessionACL::RootAndOwner {
                     self.replyhandler.attr_ttl_override();
                 }
-                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEntry::new(Some(self.replyhandler));
                 fs.symlink(
                     &req,
                     self.request.nodeid().into(),
                     x.link_name().as_os_str(),
                     x.target(),
-                    reply,
+                    callback,
                 );
             }
             Operation::Rename(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.rename(
                     &req,
                     self.request.nodeid().into(),
@@ -296,34 +296,34 @@ impl RequestHandler {
                     x.dest().dir.into(),
                     x.dest().name.as_os_str(),
                     0,
-                    reply,
+                    callback,
                 );
             }
             Operation::Link(x) => {
                 if se_meta.allowed == SessionACL::RootAndOwner {
                     self.replyhandler.attr_ttl_override();
                 }
-                let reply = ReplyEntry::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEntry::new(Some(self.replyhandler));
                 fs.link(
                     &req,
                     x.inode_no().into(),
                     self.request.nodeid().into(),
                     x.dest().name.as_os_str(),
-                    reply,
+                    callback,
                 );
             }
             Operation::Open(x) => {
                 #[cfg(feature = "abi-7-40")]
-                let backinghandler = get_backing_handler!(self);
-                #[cfg(feature = "abi-7-40")]
-                let callback = OpenHandler::new(self.replyhandler, backinghandler);
-                #[cfg(not(feature = "abi-7-40"))]
-                let callback = OpenHandler::new(self.replyhandler);
-                let reply = ReplyOpen::new(Box::new(callback));
-                fs.open(&req, self.request.nodeid().into(), x.flags(), reply);
+                let backer = get_backing_handler!(self);
+                let callback = ReplyOpen::new(
+                    Some(self.replyhandler),
+                    #[cfg(feature = "abi-7-40")]
+                    backer,
+                );
+                fs.open(&req, self.request.nodeid().into(), x.flags(), callback);
             }
             Operation::Read(x) => {
-                let reply = ReplyData::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyData::new(Some(self.replyhandler));
                 fs.read(
                     &req,
                     self.request.nodeid().into(),
@@ -332,11 +332,11 @@ impl RequestHandler {
                     x.size(),
                     x.flags(),
                     x.lock_owner().map(Into::into),
-                    reply,
+                    callback,
                 );
             }
             Operation::Write(x) => {
-                let reply = ReplyWrite::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyWrite::new(Some(self.replyhandler));
                 fs.write(
                     &req,
                     self.request.nodeid().into(),
@@ -346,21 +346,21 @@ impl RequestHandler {
                     x.write_flags(),
                     x.flags(),
                     x.lock_owner().map(Into::into),
-                    reply,
+                    callback,
                 );
             }
             Operation::Flush(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.flush(
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.lock_owner().into(),
-                    reply,
+                    callback,
                 );
             }
             Operation::Release(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.release(
                     &req,
                     self.request.nodeid().into(),
@@ -368,72 +368,72 @@ impl RequestHandler {
                     x.flags(),
                     x.lock_owner().map(Into::into),
                     x.flush(),
-                    reply,
+                    callback,
                 );
             }
             Operation::FSync(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.fsync(
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync(),
-                    reply,
+                    callback,
                 );
             }
             Operation::OpenDir(x) => {
                 #[cfg(feature = "abi-7-40")]
-                let backinghandler = get_backing_handler!(self);
-                #[cfg(feature = "abi-7-40")]
-                let callback = OpenHandler::new(self.replyhandler, backinghandler);
-                #[cfg(not(feature = "abi-7-40"))]
-                let callback = OpenHandler::new(self.replyhandler);
-                let reply = ReplyOpen::new(Box::new(callback));
+                let backer = get_backing_handler!(self);
+                let callback = ReplyOpen::new(
+                    Some(self.replyhandler),
+                    #[cfg(feature = "abi-7-40")]
+                    backer,
+                );
                 fs.opendir(
                     &req,
                     self.request.nodeid().into(),
                     x.flags(),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
             Operation::ReadDir(x) => {
-                let callback = DirectoryHandler::new(x.size() as usize, self.replyhandler);
-                let reply = ReplyDirectory::new(Box::new(callback));
+                let handler = DirectoryHandler::new(x.size() as usize, self.replyhandler);
+                let callback = ReplyDirectory::new(handler);
                 fs.readdir(
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    reply,
+                    callback,
                 );
             }
             Operation::ReleaseDir(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.releasedir(
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.flags(),
-                    reply,
+                    callback,
                 );
             }
             Operation::FSyncDir(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.fsyncdir(
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.fdatasync(),
-                    reply,
+                    callback,
                 );
             }
             Operation::StatFs(_) => {
-                let reply = ReplyStatfs::new(Box::new(Some(self.replyhandler)));
-                fs.statfs(&req, self.request.nodeid().into(), reply);
+                let callback = ReplyStatfs::new(Some(self.replyhandler));
+                fs.statfs(&req, self.request.nodeid().into(), callback);
             }
             Operation::SetXAttr(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.setxattr(
                     &req,
                     self.request.nodeid().into(),
@@ -441,51 +441,51 @@ impl RequestHandler {
                     x.value(),
                     x.flags(),
                     x.position(),
-                    reply,
+                    callback,
                 );
             }
             Operation::GetXAttr(x) => {
-                let reply = ReplyXattr::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyXattr::new(Some(self.replyhandler));
                 fs.getxattr(
                     &req,
                     self.request.nodeid().into(),
                     x.name(),
                     x.size_u32(),
-                    reply,
+                    callback,
                 );
             }
             Operation::ListXAttr(x) => {
-                let reply = ReplyXattr::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyXattr::new(Some(self.replyhandler));
                 fs.listxattr(
                     &req,
                     self.request.nodeid().into(),
                     x.size(),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
             Operation::RemoveXAttr(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.removexattr(
                     &req,
                     self.request.nodeid().into(),
                     x.name(),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
             Operation::Access(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.access(
                     &req,
                     self.request.nodeid().into(),
                     x.mask(),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
             Operation::Create(x) => {
-                let reply = ReplyCreate::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyCreate::new(Some(self.replyhandler));
                 fs.create(
                     &req,
                     self.request.nodeid().into(),
@@ -493,11 +493,11 @@ impl RequestHandler {
                     x.mode(),
                     x.umask(),
                     x.flags(),
-                    reply,
+                    callback,
                 );
             }
             Operation::GetLk(x) => {
-                let reply = ReplyLock::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyLock::new(Some(self.replyhandler));
                 fs.getlk(
                     &req,
                     self.request.nodeid().into(),
@@ -507,11 +507,11 @@ impl RequestHandler {
                     x.lock().range.1,
                     x.lock().typ,
                     x.lock().pid,
-                    reply,
+                    callback,
                 );
             }
             Operation::SetLk(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.setlk(
                     &req,
                     self.request.nodeid().into(),
@@ -522,11 +522,11 @@ impl RequestHandler {
                     x.lock().typ,
                     x.lock().pid,
                     false,
-                    reply,
+                    callback,
                 );
             }
             Operation::SetLkW(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.setlk(
                     &req,
                     self.request.nodeid().into(),
@@ -537,24 +537,24 @@ impl RequestHandler {
                     x.lock().typ,
                     x.lock().pid,
                     true,
-                    reply,
+                    callback,
                 );
             }
             Operation::BMap(x) => {
-                let reply = ReplyBmap::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyBmap::new(Some(self.replyhandler));
                 fs.bmap(
                     &req,
                     self.request.nodeid().into(),
                     x.block_size(),
                     x.block(),
-                    reply,
+                    callback,
                 );
             }
             Operation::IoCtl(x) => {
                 if x.unrestricted() {
                     self.replyhandler.error(Errno::ENOSYS);
                 } else {
-                    let reply = ReplyIoctl::new(Box::new(Some(self.replyhandler)));
+                    let callback = ReplyIoctl::new(Some(self.replyhandler));
                     fs.ioctl(
                         &req,
                         self.request.nodeid().into(),
@@ -563,12 +563,12 @@ impl RequestHandler {
                         x.command(),
                         x.in_data(),
                         x.out_size(),
-                        reply,
+                        callback,
                     );
                 }
             }
             Operation::Poll(x) => {
-                let reply = ReplyPoll::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyPoll::new(Some(self.replyhandler));
                 fs.poll(
                     &req,
                     self.request.nodeid().into(),
@@ -576,7 +576,7 @@ impl RequestHandler {
                     PollHandle::new(self.notificationhandler, x.kernel_handle()),
                     x.events(),
                     x.flags(),
-                    reply,
+                    callback,
                 );
             }
             Operation::NotifyReply(_) => {
@@ -589,7 +589,7 @@ impl RequestHandler {
             }
             #[cfg(feature = "abi-7-19")]
             Operation::FAllocate(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.fallocate(
                     &req,
                     self.request.nodeid().into(),
@@ -597,27 +597,27 @@ impl RequestHandler {
                     x.offset(),
                     x.len(),
                     x.mode(),
-                    reply,
+                    callback,
                 );
             }
             #[cfg(feature = "abi-7-21")]
             Operation::ReadDirPlus(x) => {
-                let mut callback = DirectoryPlusHandler::new(x.size() as usize, self.replyhandler);
+                let mut handler = DirectoryPlusHandler::new(x.size() as usize, self.replyhandler);
                 if se_meta.allowed == SessionACL::RootAndOwner {
-                    callback.attr_ttl_override();
+                    handler.attr_ttl_override();
                 }
-                let reply = ReplyDirectoryPlus::new(Box::new(callback));
+                let callback = ReplyDirectoryPlus::new(handler);
                 fs.readdirplus(
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
-                    reply,
+                    callback,
                 );
             }
             #[cfg(feature = "abi-7-23")]
             Operation::Rename2(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.rename(
                     &req,
                     x.from().dir.into(),
@@ -625,25 +625,25 @@ impl RequestHandler {
                     x.to().dir.into(),
                     x.to().name.as_os_str(),
                     x.flags(),
-                    reply,
+                    callback,
                 );
             }
             #[cfg(feature = "abi-7-24")]
             Operation::Lseek(x) => {
-                let reply = ReplyLseek::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyLseek::new(Some(self.replyhandler));
                 fs.lseek(
                     &req,
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.offset(),
                     x.whence(),
-                    reply,
+                    callback,
                 );
             }
             #[cfg(feature = "abi-7-28")]
             Operation::CopyFileRange(x) => {
                 let (i, o) = (x.src(), x.dest());
-                let reply = ReplyWrite::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyWrite::new(Some(self.replyhandler));
                 fs.copy_file_range(
                     &req,
                     i.inode.into(),
@@ -654,32 +654,32 @@ impl RequestHandler {
                     o.offset,
                     x.len(),
                     x.flags().try_into().unwrap(),
-                    reply,
+                    callback,
                 );
             }
             #[cfg(target_os = "macos")]
             Operation::SetVolName(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.setvolname(
                     &req,
                     x.name(),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
             #[cfg(target_os = "macos")]
             Operation::GetXTimes(x) => {
-                let reply = ReplyXTimes::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyXTimes::new(Some(self.replyhandler));
                 fs.getxtimes(
                     &req,
                     x.nodeid().into(),
-                    reply,
+                    callback,
                     /* blank space */
                 );
             }
             #[cfg(target_os = "macos")]
             Operation::Exchange(x) => {
-                let reply = ReplyEmpty::new(Box::new(Some(self.replyhandler)));
+                let callback = ReplyEmpty::new(Some(self.replyhandler));
                 fs.exchange(
                     &req,
                     x.from().dir.into(),
@@ -687,7 +687,7 @@ impl RequestHandler {
                     x.to().dir.into(),
                     x.to().name.as_os_str(),
                     x.options(),
-                    reply,
+                    callback,
                 );
             }
             Operation::CuseInit(_) => {

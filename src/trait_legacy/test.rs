@@ -12,9 +12,9 @@ fn reply_directory() {
         0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e, 0x72, 0x73,
     ];
     let sender = AssertSender { expected };
-    let replyhandler: ReplyHandler = ReplyHandler::new(0xdeadbeef, sender);
-    let callback = DirectoryHandler::new(4096, replyhandler);
-    let mut reply = ReplyDirectory::new(Box::new(callback));
+    let handler = ReplyHandler::new(0xdeadbeef, sender);
+    let callback = DirectoryHandler::new(4096, handler);
+    let mut reply = ReplyDirectory::new(callback);
     assert!(!reply.add(
         0xaabb,
         1,

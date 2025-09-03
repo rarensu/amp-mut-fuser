@@ -41,6 +41,8 @@ pub(crate) struct ReplyHandler<S: ReplySender> {
     unique: ll::RequestId,
     /// Closure to call for sending the reply
     sender: Option<S>,
+    /// Option to disable attribute cacheing
+    attr_ttl_override: bool,
 }
 
 impl<S: ReplySender> ReplyHandler<S> {
@@ -48,6 +50,7 @@ impl<S: ReplySender> ReplyHandler<S> {
         ReplyHandler {
             unique: ll::RequestId(unique),
             sender: Some(sender),
+            attr_ttl_override: false,
         }
     }
 
@@ -234,10 +237,15 @@ impl<S: ReplySender> ReplyHandler<S> {
         self.sender = None;
     }
 
-
+    /// Disable attribute cacheing.
+    pub fn attr_ttl_override(&mut self) {
+        self.attr_ttl_override = true;
+    }
 }
 
 pub mod test_utils {
+    #[derive(Debug)]
+    /// A variant of ReplySender that doesn't actually send anything.
     pub struct AssertSender {
         pub expected: Vec<u8>,
     }
