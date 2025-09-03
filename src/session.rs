@@ -21,7 +21,6 @@ use std::thread::{self, JoinHandle};
 
 use crate::Filesystem;
 use crate::MountOption;
-use crate::notify::NotificationHandler;
 use crate::{channel::Channel, mnt::Mount};
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
@@ -173,15 +172,6 @@ impl<FS: Filesystem> Session<FS> {
             mount: self.mount.clone(),
         }
     }
-
-    /// Returns an object that can be used to send notifications to the kernel
-    pub fn notifier(&self) -> NotificationHandler<Channel> {
-        #[cfg(not(feature = "side-channel"))]
-        let this_ch = self.ch_main.clone();
-        #[cfg(feature = "side-channel")]
-        let this_ch = self.ch_side.clone();
-        NotificationHandler::new(this_ch)
-    }
 }
 
 #[derive(Debug)]
@@ -223,7 +213,7 @@ pub struct BackgroundSession {
     /// Thread guard of the background session
     pub guard: JoinHandle<io::Result<()>>,
     /// Object for creating Notifiers for client use
-    sender: Channel,
+    pub(crate) sender: Channel,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
 }
@@ -258,11 +248,6 @@ impl BackgroundSession {
         } = self;
         drop(_mount);
         guard.join().unwrap().unwrap();
-    }
-
-    /// Returns an object that can be used to send notifications to the kernel
-    pub fn notifier(&self) -> NotificationHandler<Channel> {
-        NotificationHandler::new(self.sender.clone())
     }
 }
 

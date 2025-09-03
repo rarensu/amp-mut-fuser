@@ -27,7 +27,7 @@ pub use data::{FileAttr, FileType, KernelConfig};
 pub use ll::fuse_abi::FUSE_ROOT_ID;
 pub use ll::{Errno, TimeOrNow, fuse_abi::consts};
 pub use mnt::mount_options::MountOption;
-pub use notify::{PollHandle, NotificationHandler};
+pub use notify::PollHandle;
 #[cfg(feature = "abi-7-40")]
 pub use passthrough::BackingId;
 pub use request::RequestMeta;
@@ -47,3 +47,4 @@ pub use trait_legacy::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
+pub use trait_legacy::Notifier;

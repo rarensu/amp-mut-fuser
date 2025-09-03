@@ -2,13 +2,14 @@ use std::io;
 
 /// A handle to a pending poll() request. Can be saved and used to notify the
 /// kernel when a poll is ready.
+#[derive(Debug)]
 pub struct Notifier {
     inner: crate::notify::NotificationHandler<crate::channel::Channel>,
 }
 
 impl Notifier {
     /// Create a notification handler from a fuse channel
-    pub fn new(handler: crate::notify::NotificationHandler<crate::channel::Channel>) -> Self {
+    pub(crate) fn new(handler: crate::notify::NotificationHandler<crate::channel::Channel>) -> Self {
         Self { inner: handler }
     }
 
@@ -37,5 +38,22 @@ impl Notifier {
     /// inotify watchers of a file deletion.
     pub fn delete(&self, parent: u64, child: u64, name: &[u8]) -> io::Result<()> {
         self.inner.delete(parent, child, name)
+    }
+}
+
+impl<FS: super::Filesystem> crate::Session<FS> {
+    /// Returns an object that can be used to send notifications to the kernel
+    pub fn notifier(&self) -> crate::trait_legacy::Notifier {
+        #[cfg(not(feature = "side-channel"))]
+        let this_ch = self.ch_main.clone();
+        #[cfg(feature = "side-channel")]
+        let this_ch = self.ch_side.clone();
+        crate::trait_legacy::Notifier::new(crate::notify::NotificationHandler::new(this_ch))
+    }
+}
+impl crate::BackgroundSession {
+    /// Returns an object that can be used to send notifications to the kernel
+    pub fn notifier(&self) -> crate::trait_legacy::Notifier {
+        crate::trait_legacy::Notifier::new(crate::notify::NotificationHandler::new(self.sender.clone()))
     }
 }

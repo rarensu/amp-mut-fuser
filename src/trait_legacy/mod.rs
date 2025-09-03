@@ -1,5 +1,3 @@
-pub mod notify;
-
 mod filesystem;
 pub use crate::ll::fuse_abi::fuse_forget_one;
 pub use filesystem::Filesystem;
@@ -14,6 +12,9 @@ mod mount;
 pub use mount::{mount, mount2, spawn_mount, spawn_mount2};
 
 mod callback;
+
+mod notify;
+pub use notify::Notifier;
 
 #[cfg(test)]
 mod test;
