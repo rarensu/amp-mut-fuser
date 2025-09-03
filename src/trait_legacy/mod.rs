@@ -1,3 +1,5 @@
+pub mod notify;
+
 mod filesystem;
 pub use crate::ll::fuse_abi::fuse_forget_one;
 pub use filesystem::Filesystem;
