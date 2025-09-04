@@ -791,8 +791,8 @@ impl Filesystem for SimpleFS {
         };
 
         if parent_attrs.kind != FileKind::Directory {
-           reply.error(libc::ENOTDIR);
-           return;
+            reply.error(libc::ENOTDIR);
+            return;
         }
 
         if !check_access(
@@ -1865,18 +1865,18 @@ impl Filesystem for SimpleFS {
         let path = self.content_path(inode);
         match OpenOptions::new().write(true).open(path) {
             Ok(file) => {
-            unsafe {
-                libc::fallocate64(file.into_raw_fd(), mode, offset, length);
-            }
-            if mode & libc::FALLOC_FL_KEEP_SIZE == 0 {
-                let mut attrs = self.get_inode(inode).unwrap();
-                attrs.last_metadata_changed = time_now();
-                attrs.last_modified = time_now();
-                if (offset + length) as u64 > attrs.size {
-                    attrs.size = (offset + length) as u64;
+                unsafe {
+                    libc::fallocate64(file.into_raw_fd(), mode, offset, length);
                 }
-                self.write_inode(&attrs);
-            }
+                if mode & libc::FALLOC_FL_KEEP_SIZE == 0 {
+                    let mut attrs = self.get_inode(inode).unwrap();
+                    attrs.last_metadata_changed = time_now();
+                    attrs.last_modified = time_now();
+                    if (offset + length) as u64 > attrs.size {
+                        attrs.size = (offset + length) as u64;
+                    }
+                    self.write_inode(&attrs);
+                }
                 reply.ok();
             }
             _ => {

@@ -6,15 +6,10 @@
 //! data without cloning the data. A reply *must always* be used (by calling either ok() or
 //! error() exactly once).
 
-
-use crate::ll::{
-    self, // too many structs to list
-    reply::{DirEntList, DirEntOffset, DirEntry},
-};
+use crate::ll; // too many structs to list
+use crate::ll::reply::{DirEntList, DirEntOffset, DirEntry};
 #[cfg(feature = "abi-7-21")]
-use crate::ll::{
-    reply::{DirEntPlusList, DirEntryPlus},
-};
+use crate::ll::reply::{DirEntPlusList, DirEntryPlus};
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
 use libc::c_int;
@@ -960,22 +955,19 @@ mod test {
     macro_rules! default_open_tuple {
         (with_backing) => {{
             (
-                /* fh */ 0x1122, 
+                /* fh */ 0x1122,
                 /* flags */ 0x33,
                 /* backing_id*/ 0x44 as u32,
             )
         }};
         () => {{
-            (
-                /* fh */ 0x1122, 
-                /* flags */ 0x33,
-            )
+            (/* fh */ 0x1122, /* flags */ 0x33)
         }};
     }
 
     macro_rules! default_open_bytes {
         (with_backing) => {
-            default_open_bytes!(0x44, 0x33 | (1 << 7) )
+            default_open_bytes!(0x44, 0x33 | (1 << 7))
         };
         () => {
             default_open_bytes!(0x00, 0x33)
@@ -991,10 +983,7 @@ mod test {
             ]);
             expected.extend_from_slice(&[
                 // backing id
-                $id,
-                0x00,
-                0x00,
-                0x00,
+                $id, 0x00, 0x00, 0x00,
             ]);
             // return
             expected
@@ -1025,7 +1014,10 @@ mod test {
         let sender = AssertSender { expected };
         let reply: ReplyOpen = Reply::new(0xdeadbeef, sender);
         let (fh, flags, backing_id) = default_open_tuple!(with_backing);
-        let backing = BackingId { channel: std::sync::Weak::new(), backing_id };
+        let backing = BackingId {
+            channel: std::sync::Weak::new(),
+            backing_id,
+        };
         reply.opened_passthrough(fh, flags, &backing);
     }
     #[test]
@@ -1195,11 +1187,8 @@ mod test {
         expected[0] = (expected.len()) as u8;
         // test reply will be compared to expected
         let sender = AssertSender { expected };
-        let mut reply = ReplyDirectoryPlus::new(
-            0xdeadbeef,
-            sender,
-            std::mem::size_of::<u8>() * 4096
-        );
+        let mut reply =
+            ReplyDirectoryPlus::new(0xdeadbeef, sender, std::mem::size_of::<u8>() * 4096);
         let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
         let attr1 = FileAttr {
@@ -1223,22 +1212,8 @@ mod test {
         attr2.ino = 0xccdd;
         attr2.kind = FileType::RegularFile;
         let generation = 0xaa;
-        assert!(!reply.add(
-            0xaabb,
-            1,
-            "hello",
-            &ttl,
-            &attr1,
-            generation,
-        ));
-        assert!(!reply.add(
-            0xccdd,
-            2,
-            "world.rs",
-            &ttl,
-            &attr2,
-            generation,
-        ));
+        assert!(!reply.add(0xaabb, 1, "hello", &ttl, &attr1, generation,));
+        assert!(!reply.add(0xccdd, 2, "world.rs", &ttl, &attr2, generation,));
         reply.ok();
     }
 

@@ -15,7 +15,7 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-use clap::{crate_version, Arg, Command};
+use clap::{Arg, Command, crate_version};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -57,10 +57,16 @@ fn main() -> io::Result<()> {
     env_logger::init();
     let mountpoint = matches.get_one::<String>("MOUNT_POINT").unwrap();
     let dir = PathBuf::from(mountpoint);
-    assert!(dir.is_dir(), "MOUNT_POINT does not look like a valid directory");
+    assert!(
+        dir.is_dir(),
+        "MOUNT_POINT does not look like a valid directory"
+    );
     // Open the example file in the current directory mount
-    let f = OpenOptions::new().read(true).write(true).open(dir.join("fioc"))
-    .expect("File `fioc` not opened. (Are you sure Ioctl is mounted correctly?)");
+    let f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join("fioc"))
+        .expect("File `fioc` not opened. (Are you sure Ioctl is mounted correctly?)");
     let fd = f.as_raw_fd();
 
     // 1) Read current size
@@ -76,7 +82,7 @@ fn main() -> io::Result<()> {
     }
 
     // 2) Set size to 4096
-    if let Err(e) = set_size(fd,4096) {
+    if let Err(e) = set_size(fd, 4096) {
         eprintln!("FIOC_SET_SIZE(4096) failed: {e}");
         return Err(io::Error::new(
             io::ErrorKind::Other,
