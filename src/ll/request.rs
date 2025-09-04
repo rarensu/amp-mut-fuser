@@ -102,10 +102,10 @@ impl From<INodeNo> for u64 {
 /// mappings) in the client program.  Multiple file descriptors can point to
 /// the same [`FileHandle`], just as a single `INode` can have multiple
 /// [`FileHandle`]s open at one time.  Every time a single file-descriptor is
-/// closed a [`Flush``] request is made.  This gives filesystem implementations
+/// closed a [`Flush`] request is made.  This gives filesystem implementations
 /// an opportunity to return an error message from that `close()` call.  After
 /// all the file-descriptors are closed that own a given [`FileHandle`] the
-/// [`Release``]/[`ReleaseDir`] request will be made.  This is an opportunity for
+/// [`Release`]/[`ReleaseDir`] request will be made.  This is an opportunity for
 /// the filesystem implementation to free any internal per-FileHandle data
 /// structures it has allocated.
 ///
