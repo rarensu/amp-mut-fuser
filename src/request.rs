@@ -63,7 +63,7 @@ impl<'a> Request<'a> {
         .with_iovec(unique, |iov| self.ch.send(iov));
 
         if let Err(err) = res {
-            warn!("Request {unique:?}: Failed to send reply: {err}")
+            warn!("Request {unique:?}: Failed to send reply: {err}");
         }
     }
 
