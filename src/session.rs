@@ -161,13 +161,10 @@ impl<FS: Filesystem> Session<FS> {
                     None => break,
                 },
                 Err(err) => match err.raw_os_error() {
-                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                    Some(ENOENT) => continue,
-                    // Interrupted system call, retry
-                    Some(EINTR) => continue,
-                    // Explicitly try again
-                    Some(EAGAIN) => continue,
-                    // Filesystem was unmounted, quit the loop
+                    Some(ENOENT) // Operation interrupted. Accordingly to FUSE, this is safe to retry
+                    | Some(EINTR) // Interrupted system call, retry
+                    | Some(EAGAIN) // Explicitly instructed to try again
+                        => continue,
                     Some(ENODEV) => break,
                     // Unhandled error
                     _ => return Err(err),
@@ -245,7 +242,7 @@ pub struct BackgroundSession {
     /// Object for creating Notifiers for client use
     sender: ChannelSender,
     /// Ensures the filesystem is unmounted when the session ends
-    _mount: Option<Mount>,
+    mount: Option<Mount>,
 }
 
 impl BackgroundSession {
@@ -263,7 +260,7 @@ impl BackgroundSession {
         Ok(BackgroundSession {
             guard,
             sender,
-            _mount: mount,
+            mount,
         })
     }
     /// Unmount the filesystem and join the background thread.
@@ -271,10 +268,13 @@ impl BackgroundSession {
         let Self {
             guard,
             sender: _,
-            _mount,
+            mount,
         } = self;
-        drop(_mount);
-        guard.join().unwrap().unwrap();
+        drop(mount);
+        let res = guard.join()
+            .expect("Failed to join the background thread");
+        // An error is expected, since the thread was active when the unmount occured.
+        info!("Session loop end with result {res:?}.");
     }
 
     /// Returns an object that can be used to send notifications to the kernel
