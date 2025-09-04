@@ -77,7 +77,7 @@ impl RequestHandler {
 #[cfg(feature = "abi-7-40")]
 macro_rules! get_backing_handler {
     ($me:ident) => {
-        crate::passthrough::BackingHandler::new($me.ch_main)
+        crate::passthrough::BackingHandler::new($me.ch_main.clone(), $me.ch_main)
     };
 }
 #[cfg(feature = "abi-7-40")]

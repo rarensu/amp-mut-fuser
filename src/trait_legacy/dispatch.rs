@@ -3,6 +3,7 @@ use log::{debug, error, info, warn};
 use std::sync::atomic::Ordering::Relaxed;
 
 use crate::ll::{self, Operation, Request as AnyRequest};
+use crate::PollHandle;
 #[cfg(feature = "abi-7-40")]
 use crate::request::get_backing_handler;
 use crate::request::{RequestHandler, RequestMeta};
@@ -18,7 +19,6 @@ use super::{
     Filesystem, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyIoctl, ReplyLock, ReplyOpen,  ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
-use super::PollHandle;
 #[cfg(feature = "abi-7-21")]
 use super::{ReplyDirectoryPlus, callback::DirectoryPlusHandler};
 

@@ -20,7 +20,7 @@ use crate::{
 use std::time::SystemTime;
 
 #[cfg(feature = "abi-7-40")]
-use super::{BackingHandler, BackingId};
+use crate::passthrough::{BackingId, BackingHandler, BackingSender, BackingCloserFactory};
 #[cfg(feature = "abi-7-40")]
 use crate::consts::FOPEN_PASSTHROUGH;
 #[cfg(feature = "abi-7-40")]
@@ -277,7 +277,7 @@ impl<S: ReplySender + Debug> CallbackOpen for Option<ReplyHandler<S>> {
 
 /// Custom backing handler for ReplyOpen
 #[cfg(feature = "abi-7-40")]
-pub trait CallbackBacking {
+pub trait CallbackBacking: Debug {
     /// Registers a fd for passthrough, returning a `Backing`.  Once you have the backing ID,
     /// you can pass it as the 3rd parameter of `ReplyOpen::opened_passthrough()`.  This is done in
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
@@ -289,7 +289,8 @@ pub trait CallbackBacking {
 
 /// Legacy backing handler for ReplyOpen
 #[cfg(feature = "abi-7-40")]
-impl<S: BackingSender + Debug> CallbackBacking for BackingHandler<S> {
+impl<S: BackingSender + Debug, C: BackingCloserFactory + Debug> CallbackBacking for BackingHandler<S, C> 
+{
     fn open_backing(&self, fd: i32) -> io::Result<BackingId> {
         // Note: although BackingHandler supports generic `<F: AsRawFd>`,
         // CallbackOpen requires a fixed type for this call.

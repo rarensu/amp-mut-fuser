@@ -1,7 +1,7 @@
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 use super::fuse_forget_one;
-use crate::{KernelConfig, TimeOrNow};
+use crate::{KernelConfig, TimeOrNow, PollHandle};
 use libc::{ENOSYS, EPERM, c_int};
 use log::warn;
 use std::ffi::OsStr;
@@ -15,7 +15,6 @@ use super::ReplyLseek;
 #[cfg(target_os = "macos")]
 use super::ReplyXTimes;
 use super::Request;
-use super::PollHandle;
 use super::{
     ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,

@@ -42,10 +42,3 @@ pub use callback::{
     CallbackErr, CallbackIoctl, CallbackLock, CallbackOk, CallbackOpen, CallbackPoll,
     CallbackStatfs, CallbackWrite, CallbackXattr,
 };
-
-/* ------ Additional imports for convenience ------ */
-
-use crate::notify::PollHandle;
-
-#[cfg(feature = "abi-7-40")]
-use crate::passthrough::{BackingHandler, BackingId};

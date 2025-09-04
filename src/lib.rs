@@ -29,7 +29,7 @@ pub use ll::{Errno, TimeOrNow, fuse_abi::consts};
 pub use mnt::mount_options::MountOption;
 pub use notify::PollHandle;
 #[cfg(feature = "abi-7-40")]
-pub use passthrough::BackingId;
+pub use passthrough::{BackingHandler, BackingId};
 pub use request::RequestMeta;
 pub use session::{BackgroundSession, Session, SessionACL, SessionUnmounter};
 
@@ -48,3 +48,13 @@ pub use trait_legacy::{
     ReplyIoctl, ReplyLock, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr,
 };
 pub use trait_legacy::Notifier;
+
+/// Additional structs and traits for testing purposes
+pub mod devtools {
+    #[cfg(feature = "abi-7-40")]
+    pub mod passthrough {
+        pub use crate::passthrough::{BackingCloser, BackingCloserFactory, BackingSender}; 
+    }
+    #[cfg(test)]
+    pub use crate::reply::test_utils;
+}
