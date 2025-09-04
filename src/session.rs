@@ -13,7 +13,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::{io, ops::DerefMut};
+use std::io;
 
 use crate::Filesystem;
 use crate::MountOption;
@@ -147,7 +147,7 @@ impl<FS: Filesystem> Session<FS> {
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
         let buf = aligned_sub_buf(
-            buffer.deref_mut(),
+            &mut buffer,
             std::mem::align_of::<abi::fuse_in_header>(),
         );
         loop {
