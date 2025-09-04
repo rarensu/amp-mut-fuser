@@ -1,6 +1,6 @@
 // This example requires fuse 7.40 or later. Run with:
 //
-//   cargo run --example passthrough --features abi-7-40 /tmp/foobar
+//   cargo run --example passthrough --features abi-7-40 DIR
 
 use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::{
@@ -172,7 +172,7 @@ impl Filesystem for PassthroughFs {
         let (fh, id) = self
             .backing_cache
             .get_or(ino, || {
-                let file = File::open("/etc/os-release")?;
+                let file = File::open("/etc/profile")?;
                 reply.open_backing(file)
             })
             .unwrap();
@@ -195,6 +195,7 @@ impl Filesystem for PassthroughFs {
         reply.ok();
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn readdir(
         &mut self,
         _req: &Request,

@@ -172,7 +172,7 @@ fn now_string() -> String {
     format!("The current time is {}\n", d.as_secs())
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct Options {
     /// Mount demo filesystem at given path
     mount_point: String,
@@ -185,7 +185,7 @@ struct Options {
     #[clap(short, long)]
     no_notify: bool,
 
-    /// Use notify_store() instead of notify_inval_inode()
+    /// Use `notify_store()` instead of `notify_inval_inode()`
     #[clap(short = 's', long)]
     notify_store: bool,
 }

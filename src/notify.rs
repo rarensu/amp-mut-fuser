@@ -89,8 +89,6 @@ impl Notifier {
         let notif = Notification::new_delete(parent, child, name).map_err(Self::too_big_err)?;
         self.send_inval(notify_code::FUSE_NOTIFY_DELETE, &notif)
     }
-
-    #[allow(unused)]
     fn send_inval(&self, code: notify_code, notification: &Notification<'_>) -> io::Result<()> {
         match self.send(code, notification) {
             // ENOENT is harmless for an invalidation (the

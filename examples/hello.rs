@@ -8,6 +8,7 @@ use std::ffi::OsStr;
 use std::time::{Duration, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
+// NOTE: TTL of FileAttr is ignored when using 'allow-root'
 
 const HELLO_DIR_ATTR: FileAttr = FileAttr {
     ino: 1,
@@ -66,6 +67,7 @@ impl Filesystem for HelloFS {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn read(
         &mut self,
         _req: &Request,
@@ -84,6 +86,7 @@ impl Filesystem for HelloFS {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn readdir(
         &mut self,
         _req: &Request,

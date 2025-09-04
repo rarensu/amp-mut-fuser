@@ -188,6 +188,7 @@ impl<'a> Response<'a> {
     }
 
     // TODO: Can flags be more strongly typed?
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_create(
         ttl: &Duration,
         attr: &Attr,
@@ -228,7 +229,7 @@ impl<'a> Response<'a> {
             // these fields are only needed for unrestricted ioctls
             flags: 0,
             in_iovs: 1,
-            out_iovs: if !data.is_empty() { 1 } else { 0 },
+            out_iovs: if data.is_empty() { 0 } else { 1 },
         };
         // TODO: Don't copy this data
         let mut v: ResponseBuf = ResponseBuf::from_slice(r.as_bytes());
@@ -246,7 +247,7 @@ impl<'a> Response<'a> {
         Self::from_struct(&r)
     }
 
-    fn new_directory(list: EntListBuf) -> Self {
+    pub(crate) fn new_directory(list: EntListBuf) -> Self {
         assert!(list.buf.len() <= list.max_size);
         Self::Data(list.buf)
     }
@@ -256,12 +257,13 @@ impl<'a> Response<'a> {
         Self::from_struct(&r)
     }
 
+    #[cfg(feature = "abi-7-24")]
     pub(crate) fn new_lseek(offset: i64) -> Self {
         let r = abi::fuse_lseek_out { offset };
         Self::from_struct(&r)
     }
 
-    fn from_struct<T: IntoBytes + Immutable + ?Sized>(data: &T) -> Self {
+    pub(crate) fn from_struct<T: IntoBytes + Immutable + ?Sized>(data: &T) -> Self {
         Self::Data(SmallVec::from_slice(data.as_bytes()))
     }
 }
@@ -291,9 +293,9 @@ pub(crate) fn mode_from_kind_and_perm(kind: FileType, perm: u16) -> u32 {
         FileType::Symlink => libc::S_IFLNK,
         FileType::Socket => libc::S_IFSOCK,
     }) as u32
-        | perm as u32
+        | u32::from(perm)
 }
-/// Returns a fuse_attr from FileAttr
+/// Returns a `fuse_attr` from `FileAttr`
 pub(crate) fn fuse_attr_from_attr(attr: &crate::FileAttr) -> abi::fuse_attr {
     let (atime_secs, atime_nanos) = time_from_system_time(&attr.atime);
     let (mtime_secs, mtime_nanos) = time_from_system_time(&attr.mtime);
@@ -348,12 +350,13 @@ impl From<crate::FileAttr> for Attr {
 }
 
 #[derive(Debug)]
-struct EntListBuf {
+/// A generic data buffer
+pub(crate) struct EntListBuf {
     max_size: usize,
     buf: ResponseBuf,
 }
 impl EntListBuf {
-    fn new(max_size: usize) -> Self {
+    pub(crate) fn new(max_size: usize) -> Self {
         Self {
             max_size,
             buf: ResponseBuf::new(),
@@ -364,7 +367,7 @@ impl EntListBuf {
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
     #[must_use]
-    fn push(&mut self, ent: [&[u8]; 2]) -> bool {
+    pub(crate) fn push(&mut self, ent: [&[u8]; 2]) -> bool {
         let entlen = ent[0].len() + ent[1].len();
         let entsize = (entlen + size_of::<u64>() - 1) & !(size_of::<u64>() - 1); // 64bit align
         if self.buf.len() + entsize > self.max_size {
@@ -405,7 +408,7 @@ impl<T: AsRef<Path>> DirEntry<T> {
     }
 }
 
-/// Used to respond to [ReadDirPlus] requests.
+/// Data buffer used to respond to [`Readdir`] requests.
 #[derive(Debug)]
 pub struct DirEntList(EntListBuf);
 impl From<DirEntList> for Response<'_> {
@@ -435,6 +438,7 @@ impl DirEntList {
     }
 }
 
+#[cfg(feature = "abi-7-21")]
 #[derive(Debug)]
 pub struct DirEntryPlus<T: AsRef<Path>> {
     #[allow(unused)] // We use `attr.ino` instead
@@ -447,6 +451,7 @@ pub struct DirEntryPlus<T: AsRef<Path>> {
     attr_valid: Duration,
 }
 
+#[cfg(feature = "abi-7-21")]
 impl<T: AsRef<Path>> DirEntryPlus<T> {
     pub fn new(
         ino: INodeNo,
@@ -469,9 +474,12 @@ impl<T: AsRef<Path>> DirEntryPlus<T> {
     }
 }
 
-/// Used to respond to [ReadDir] requests.
+/// Data buffer used to respond to [`ReaddirPlus`] requests.
+#[cfg(feature = "abi-7-21")]
 #[derive(Debug)]
 pub struct DirEntPlusList(EntListBuf);
+
+#[cfg(feature = "abi-7-21")]
 impl From<DirEntPlusList> for Response<'_> {
     fn from(l: DirEntPlusList) -> Self {
         assert!(l.0.buf.len() <= l.0.max_size);
@@ -479,6 +487,7 @@ impl From<DirEntPlusList> for Response<'_> {
     }
 }
 
+#[cfg(feature = "abi-7-21")]
 impl DirEntPlusList {
     pub(crate) fn new(max_size: usize) -> Self {
         Self(EntListBuf::new(max_size))
@@ -511,10 +520,12 @@ impl DirEntPlusList {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_truncation)] // these byte literals are not in danger of being truncated
 mod test {
     use std::num::NonZeroI32;
 
     use super::super::test::ioslice_to_vec;
+    #[allow(clippy::wildcard_imports)]
     use super::*;
 
     #[test]

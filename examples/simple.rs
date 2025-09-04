@@ -1,22 +1,25 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::unnecessary_cast)] // libc::S_* are u16 or u32 depending on the platform
+#![allow(clippy::cast_possible_truncation)] // u32 -> u16 without error handling
+#![allow(clippy::cast_sign_loss)] // i64 -> u32 without error handling
 
 use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::consts::FOPEN_DIRECT_IO;
 #[cfg(feature = "abi-7-26")]
 use fuser::consts::FUSE_HANDLE_KILLPRIV;
-// #[cfg(feature = "abi-7-31")]
-// use fuser::consts::FUSE_WRITE_KILL_PRIV;
+/*
+// Note: see fn write().
+#[cfg(feature = "abi-7-31")]
+use fuser::consts::FUSE_WRITE_KILL_PRIV;
+*/
 use fuser::TimeOrNow::Now;
 use fuser::{
     FUSE_ROOT_ID, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
     ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
     Request, TimeOrNow,
 };
-#[cfg(feature = "abi-7-26")]
-use log::info;
-use log::{LevelFilter, error};
-use log::{debug, warn};
+#[allow(unused_imports)]
+use log::{LevelFilter, debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::BTreeMap;
@@ -33,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs, io};
 
-const BLOCK_SIZE: u64 = 512;
+const BLOCK_SIZE: u32 = 512;
 const MAX_NAME_LENGTH: u32 = 255;
 const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024 * 1024;
 
@@ -221,7 +224,7 @@ impl From<InodeAttributes> for fuser::FileAttr {
         fuser::FileAttr {
             ino: attrs.inode,
             size: attrs.size,
-            blocks: attrs.size.div_ceil(BLOCK_SIZE),
+            blocks: attrs.size.div_ceil(u64::from(BLOCK_SIZE)),
             atime: system_time_from_time(attrs.last_accessed.0, attrs.last_accessed.1),
             mtime: system_time_from_time(attrs.last_modified.0, attrs.last_modified.1),
             ctime: system_time_from_time(
@@ -235,7 +238,7 @@ impl From<InodeAttributes> for fuser::FileAttr {
             uid: attrs.uid,
             gid: attrs.gid,
             rdev: 0,
-            blksize: BLOCK_SIZE as u32,
+            blksize: BLOCK_SIZE,
             flags: 0,
         }
     }
@@ -277,10 +280,10 @@ impl SimpleFS {
     }
 
     fn creation_mode(&self, mode: u32) -> u16 {
-        if !self.suid_support {
-            (mode & !(libc::S_ISUID | libc::S_ISGID) as u32) as u16
-        } else {
+        if self.suid_support {
             mode as u16
+        } else {
+            (mode & !(libc::S_ISUID | libc::S_ISGID) as u32) as u16
         }
     }
 
@@ -432,9 +435,8 @@ impl SimpleFS {
         let entries = self.get_directory_content(parent)?;
         if let Some((inode, _)) = entries.get(name.as_bytes()) {
             return self.get_inode(*inode);
-        } else {
-            return Err(libc::ENOENT);
         }
+        return Err(libc::ENOENT);
     }
 
     fn insert_link(
@@ -788,6 +790,11 @@ impl Filesystem for SimpleFS {
             }
         };
 
+        if parent_attrs.kind != FileKind::Directory {
+           reply.error(libc::ENOTDIR);
+           return;
+        }
+
         if !check_access(
             parent_attrs.uid,
             parent_attrs.gid,
@@ -876,6 +883,11 @@ impl Filesystem for SimpleFS {
             }
         };
 
+        if parent_attrs.kind != FileKind::Directory {
+            reply.error(libc::ENOTDIR);
+            return;
+        }
+
         if !check_access(
             parent_attrs.uid,
             parent_attrs.gid,
@@ -902,7 +914,7 @@ impl Filesystem for SimpleFS {
         let attrs = InodeAttributes {
             inode,
             open_file_handles: 0,
-            size: BLOCK_SIZE,
+            size: u64::from(BLOCK_SIZE),
             last_accessed: time_now(),
             last_modified: time_now(),
             last_metadata_changed: time_now(),
@@ -1053,10 +1065,7 @@ impl Filesystem for SimpleFS {
         target: &Path,
         reply: ReplyEntry,
     ) {
-        debug!(
-            "symlink() called with {:?} {:?} {:?}",
-            parent, link_name, target
-        );
+        debug!("symlink() called with {parent:?} {link_name:?} {target:?}");
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
@@ -1064,6 +1073,11 @@ impl Filesystem for SimpleFS {
                 return;
             }
         };
+
+        if parent_attrs.kind != FileKind::Directory {
+            reply.error(libc::ENOTDIR);
+            return;
+        }
 
         if !check_access(
             parent_attrs.uid,
@@ -1174,6 +1188,11 @@ impl Filesystem for SimpleFS {
                 return;
             }
         };
+
+        if new_parent_attrs.kind != FileKind::Directory {
+            reply.error(libc::ENOTDIR);
+            return;
+        }
 
         if !check_access(
             new_parent_attrs.uid,
@@ -1334,10 +1353,7 @@ impl Filesystem for SimpleFS {
         new_name: &OsStr,
         reply: ReplyEntry,
     ) {
-        debug!(
-            "link() called for {}, {}, {:?}",
-            inode, new_parent, new_name
-        );
+        debug!("link() called for {inode}, {new_parent}, {new_name:?}");
         let mut attrs = match self.get_inode(inode) {
             Ok(attrs) => attrs,
             Err(error_code) => {
@@ -1356,7 +1372,7 @@ impl Filesystem for SimpleFS {
     }
 
     fn open(&mut self, req: &Request, inode: u64, flags: i32, reply: ReplyOpen) {
-        debug!("open() called for {:?}", inode);
+        debug!("open() called for {inode:?}");
         let (access_mask, read, write) = match flags & libc::O_ACCMODE {
             libc::O_RDONLY => {
                 // Behavior is undefined, but most filesystems return EACCES
@@ -1414,10 +1430,7 @@ impl Filesystem for SimpleFS {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        debug!(
-            "read() called on {:?} offset={:?} size={:?}",
-            inode, offset, size
-        );
+        debug!("read() called on {inode:?} offset={offset:?} size={size:?}");
         assert!(offset >= 0);
         if !self.check_file_handle_read(fh) {
             reply.error(libc::EACCES);
@@ -1449,7 +1462,7 @@ impl Filesystem for SimpleFS {
         offset: i64,
         data: &[u8],
         _write_flags: u32,
-        #[allow(unused_variables)] flags: i32,
+        _flags: i32,
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
@@ -1506,7 +1519,7 @@ impl Filesystem for SimpleFS {
     }
 
     fn opendir(&mut self, req: &Request, inode: u64, flags: i32, reply: ReplyOpen) {
-        debug!("opendir() called on {:?}", inode);
+        debug!("opendir() called on {inode:?}");
         let (access_mask, read, write) = match flags & libc::O_ACCMODE {
             libc::O_RDONLY => {
                 // Behavior is undefined, but most filesystems return EACCES
@@ -1607,9 +1620,9 @@ impl Filesystem for SimpleFS {
             10_000,
             1,
             10_000,
-            BLOCK_SIZE as u32,
+            BLOCK_SIZE,
             MAX_NAME_LENGTH,
-            BLOCK_SIZE as u32,
+            BLOCK_SIZE,
         );
     }
 
@@ -1737,7 +1750,7 @@ impl Filesystem for SimpleFS {
         flags: i32,
         reply: ReplyCreate,
     ) {
-        debug!("create() called with {:?} {:?}", parent, name);
+        debug!("create() called with {parent:?} {name:?}");
         if self.lookup_name(parent, name).is_ok() {
             reply.error(libc::EEXIST);
             return;
@@ -1761,6 +1774,11 @@ impl Filesystem for SimpleFS {
                 return;
             }
         };
+
+        if parent_attrs.kind != FileKind::Directory {
+            reply.error(libc::ENOTDIR);
+            return;
+        }
 
         if !check_access(
             parent_attrs.uid,
@@ -1847,18 +1865,18 @@ impl Filesystem for SimpleFS {
         let path = self.content_path(inode);
         match OpenOptions::new().write(true).open(path) {
             Ok(file) => {
-                unsafe {
-                    libc::fallocate64(file.into_raw_fd(), mode, offset, length);
+            unsafe {
+                libc::fallocate64(file.into_raw_fd(), mode, offset, length);
+            }
+            if mode & libc::FALLOC_FL_KEEP_SIZE == 0 {
+                let mut attrs = self.get_inode(inode).unwrap();
+                attrs.last_metadata_changed = time_now();
+                attrs.last_modified = time_now();
+                if (offset + length) as u64 > attrs.size {
+                    attrs.size = (offset + length) as u64;
                 }
-                if mode & libc::FALLOC_FL_KEEP_SIZE == 0 {
-                    let mut attrs = self.get_inode(inode).unwrap();
-                    attrs.last_metadata_changed = time_now();
-                    attrs.last_modified = time_now();
-                    if (offset + length) as u64 > attrs.size {
-                        attrs.size = (offset + length) as u64;
-                    }
-                    self.write_inode(&attrs);
-                }
+                self.write_inode(&attrs);
+            }
                 reply.ok();
             }
             _ => {
@@ -1881,8 +1899,7 @@ impl Filesystem for SimpleFS {
         reply: ReplyWrite,
     ) {
         debug!(
-            "copy_file_range() called with src ({}, {}, {}) dest ({}, {}, {}) size={}",
-            src_fh, src_inode, src_offset, dest_fh, dest_inode, dest_offset, size
+            "copy_file_range() called with src=({src_fh}, {src_inode}, {src_offset}) dest=({dest_fh}, {dest_inode}, {dest_offset}) size={size}"
         );
         if !self.check_file_handle_read(src_fh) {
             reply.error(libc::EACCES);
@@ -1931,6 +1948,7 @@ impl Filesystem for SimpleFS {
     }
 }
 
+#[must_use]
 pub fn check_access(
     file_uid: u32,
     file_gid: u32,
@@ -1975,9 +1993,8 @@ fn as_file_kind(mut mode: u32) -> FileKind {
         return FileKind::Symlink;
     } else if mode == libc::S_IFDIR as u32 {
         return FileKind::Directory;
-    } else {
-        unimplemented!("{}", mode);
     }
+    unimplemented!("{}", mode);
 }
 
 fn get_groups(pid: u32) -> Vec<u32> {
