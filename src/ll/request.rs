@@ -264,6 +264,8 @@ macro_rules! impl_request {
     };
 }
 
+#[allow(clippy::cast_possible_truncation)] // some builtin types have excess capacity
+#[allow(clippy::unused_self)] // many functions are feature-gated into trivial functions
 mod op {
     use crate::ll::Response;
 
