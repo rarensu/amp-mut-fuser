@@ -324,7 +324,7 @@ impl KernelConfig {
 /// implementations are provided here to get a mountable filesystem that does
 /// nothing.
 #[allow(clippy::too_many_arguments)]
-#[allow(unused_variables)] // This is the main API, so variables are named without the underscore even though the defaults may not use them.
+#[allow(unused_variables)] // This is the main API, so variables are named without the underscore for generality.
 #[allow(clippy::missing_errors_doc)] // These default implementations do not define the conditions under which errors could occur.
 pub trait Filesystem {
     /// Initialize filesystem.
@@ -340,9 +340,7 @@ pub trait Filesystem {
 
     /// Look up a directory entry by name and get its attributes.
     fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        warn!(
-            "[Not Implemented] lookup(parent: {parent:#x?}, name {name:?})"
-        );
+        warn!("[Not Implemented] lookup(parent: {parent:#x?}, name {name:?})");
         reply.error(ENOSYS);
     }
 
@@ -365,9 +363,7 @@ pub trait Filesystem {
 
     /// Get file attributes.
     fn getattr(&mut self, req: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
-        warn!(
-            "[Not Implemented] getattr(ino: {ino:#x?}, fh: {fh:#x?})"
-        );
+        warn!("[Not Implemented] getattr(ino: {ino:#x?}, fh: {fh:#x?})");
         reply.error(ENOSYS);
     }
 
@@ -440,17 +436,13 @@ pub trait Filesystem {
 
     /// Remove a file.
     fn unlink(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        warn!(
-            "[Not Implemented] unlink(parent: {parent:#x?}, name: {name:?})",
-        );
+        warn!("[Not Implemented] unlink(parent: {parent:#x?}, name: {name:?})",);
         reply.error(ENOSYS);
     }
 
     /// Remove a directory.
     fn rmdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        warn!(
-            "[Not Implemented] rmdir(parent: {parent:#x?}, name: {name:?})",
-        );
+        warn!("[Not Implemented] rmdir(parent: {parent:#x?}, name: {name:?})",);
         reply.error(ENOSYS);
     }
 
@@ -591,9 +583,7 @@ pub trait Filesystem {
     /// filesystem wants to return write errors. If the filesystem supports file locking
     /// operations (setlk, getlk) it should remove all locks belonging to '`lock_owner`'.
     fn flush(&mut self, req: &Request<'_>, ino: u64, fh: u64, lock_owner: u64, reply: ReplyEmpty) {
-        warn!(
-            "[Not Implemented] flush(ino: {ino:#x?}, fh: {fh}, lock_owner: {lock_owner:?})"
-        );
+        warn!("[Not Implemented] flush(ino: {ino:#x?}, fh: {fh}, lock_owner: {lock_owner:?})");
         reply.error(ENOSYS);
     }
 
@@ -622,9 +612,7 @@ pub trait Filesystem {
     /// If the datasync parameter is non-zero, then only the user data should be flushed,
     /// not the meta data.
     fn fsync(&mut self, req: &Request<'_>, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
-        warn!(
-            "[Not Implemented] fsync(ino: {ino:#x?}, fh: {fh}, datasync: {datasync})"
-        );
+        warn!("[Not Implemented] fsync(ino: {ino:#x?}, fh: {fh}, datasync: {datasync})");
         reply.error(ENOSYS);
     }
 
@@ -652,9 +640,7 @@ pub trait Filesystem {
         offset: i64,
         reply: ReplyDirectory,
     ) {
-        warn!(
-            "[Not Implemented] readdir(ino: {ino:#x?}, fh: {fh}, offset: {offset})"
-        );
+        warn!("[Not Implemented] readdir(ino: {ino:#x?}, fh: {fh}, offset: {offset})");
         reply.error(ENOSYS);
     }
 
@@ -672,9 +658,7 @@ pub trait Filesystem {
         offset: i64,
         reply: ReplyDirectoryPlus,
     ) {
-        warn!(
-            "[Not Implemented] readdirplus(ino: {ino:#x?}, fh: {fh}, offset: {offset})"
-        );
+        warn!("[Not Implemented] readdirplus(ino: {ino:#x?}, fh: {fh}, offset: {offset})");
         reply.error(ENOSYS);
     }
 
@@ -682,14 +666,7 @@ pub trait Filesystem {
     /// For every opendir call there will be exactly one releasedir call. fh will
     /// contain the value set by the opendir method, or will be undefined if the
     /// opendir method didn't set any value.
-    fn releasedir(
-        &mut self,
-        req: &Request<'_>,
-        ino: u64,
-        fh: u64,
-        flags: i32,
-        reply: ReplyEmpty,
-    ) {
+    fn releasedir(&mut self, req: &Request<'_>, ino: u64, fh: u64, flags: i32, reply: ReplyEmpty) {
         reply.ok();
     }
 
@@ -705,9 +682,7 @@ pub trait Filesystem {
         datasync: bool,
         reply: ReplyEmpty,
     ) {
-        warn!(
-            "[Not Implemented] fsyncdir(ino: {ino:#x?}, fh: {fh}, datasync: {datasync})"
-        );
+        warn!("[Not Implemented] fsyncdir(ino: {ino:#x?}, fh: {fh}, datasync: {datasync})");
         reply.error(ENOSYS);
     }
 
@@ -745,9 +720,7 @@ pub trait Filesystem {
         size: u32,
         reply: ReplyXattr,
     ) {
-        warn!(
-            "[Not Implemented] getxattr(ino: {ino:#x?}, name: {name:?}, size: {size})"
-        );
+        warn!("[Not Implemented] getxattr(ino: {ino:#x?}, name: {name:?}, size: {size})");
         reply.error(ENOSYS);
     }
 
@@ -756,17 +729,13 @@ pub trait Filesystem {
     /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
     /// `reply.error(ERANGE)` if it doesn't.
     fn listxattr(&mut self, req: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
-        warn!(
-            "[Not Implemented] listxattr(ino: {ino:#x?}, size: {size})"
-        );
+        warn!("[Not Implemented] listxattr(ino: {ino:#x?}, size: {size})");
         reply.error(ENOSYS);
     }
 
     /// Remove an extended attribute.
     fn removexattr(&mut self, req: &Request<'_>, ino: u64, name: &OsStr, reply: ReplyEmpty) {
-        warn!(
-            "[Not Implemented] removexattr(ino: {ino:#x?}, name: {name:?})"
-        );
+        warn!("[Not Implemented] removexattr(ino: {ino:#x?}, name: {name:?})");
         reply.error(ENOSYS);
     }
 
@@ -857,9 +826,7 @@ pub trait Filesystem {
     /// Note: This makes sense only for block device backed filesystems mounted
     /// with the 'blkdev' option
     fn bmap(&mut self, req: &Request<'_>, ino: u64, blocksize: u32, idx: u64, reply: ReplyBmap) {
-        warn!(
-            "[Not Implemented] bmap(ino: {ino:#x?}, blocksize: {blocksize}, idx: {idx})",
-        );
+        warn!("[Not Implemented] bmap(ino: {ino:#x?}, blocksize: {blocksize}, idx: {idx})",);
         reply.error(ENOSYS);
     }
 
@@ -1042,7 +1009,8 @@ pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
         .map(|x| Some(MountOption::from_str(x.to_str()?)))
         .collect();
     let options = options.ok_or(ErrorKind::InvalidData)?;
-    Session::new(filesystem, mountpoint.as_ref(), options.as_ref()).and_then(session::Session::spawn)
+    Session::new(filesystem, mountpoint.as_ref(), options.as_ref())
+        .and_then(session::Session::spawn)
 }
 
 /// Mount the given filesystem to the given mountpoint. This function spawns

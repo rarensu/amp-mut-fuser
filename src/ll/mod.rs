@@ -220,7 +220,7 @@ impl Errno {
     #[doc = no_xattr_doc!()]
     #[cfg(target_os = "linux")]
     pub const NO_XATTR: Errno = Self::ENODATA;
-    
+
     /// Attribute not found
     #[cfg(not(target_os = "linux"))]
     pub const ENOATTR: Errno = errno!(libc::ENOATTR);

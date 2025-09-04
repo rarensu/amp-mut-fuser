@@ -271,8 +271,7 @@ impl BackgroundSession {
             mount,
         } = self;
         drop(mount);
-        let res = guard.join()
-            .expect("Failed to join the background thread");
+        let res = guard.join().expect("Failed to join the background thread");
         // An error is expected, since the thread was active when the unmount occured.
         info!("Session loop end with result {res:?}.");
     }

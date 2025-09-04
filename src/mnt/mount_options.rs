@@ -103,12 +103,12 @@ pub fn check_option_conflicts(options: &[MountOption]) -> Result<(), io::Error> 
 
 fn conflicts_with(option: &MountOption) -> Vec<MountOption> {
     match option {
-        MountOption::FSName(_) |
-        MountOption::Subtype(_) |
-        MountOption::CUSTOM(_) |
-        MountOption::DirSync |
-        MountOption::AutoUnmount |
-        MountOption::DefaultPermissions => vec![],
+        MountOption::FSName(_)
+        | MountOption::Subtype(_)
+        | MountOption::CUSTOM(_)
+        | MountOption::DirSync
+        | MountOption::AutoUnmount
+        | MountOption::DefaultPermissions => vec![],
         MountOption::AllowOther => vec![MountOption::AllowRoot],
         MountOption::AllowRoot => vec![MountOption::AllowOther],
         MountOption::Dev => vec![MountOption::NoDev],
