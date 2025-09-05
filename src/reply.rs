@@ -286,9 +286,9 @@ impl ReplyOpen {
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
     /// # Errors
-    /// To-do
+    /// Propagates errors due to communicating with the fuse device.
     /// # Panics
-    /// To-do
+    /// Panics if this reply object has already been used.
     #[cfg(feature = "abi-7-40")]
     pub fn open_backing(&self, fd: impl std::os::fd::AsFd) -> std::io::Result<BackingId> {
         self.reply.sender.as_ref().unwrap().open_backing(fd.as_fd())

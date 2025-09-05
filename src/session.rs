@@ -76,7 +76,8 @@ impl<FS: Filesystem> AsFd for Session<FS> {
 impl<FS: Filesystem> Session<FS> {
     /// Create a new session by mounting the given filesystem to the given mountpoint
     /// # Errors
-    /// To-do
+    /// Returns an error if the options are incorrect, or if the fuse device can't be mounted.
+    /// Propagates errors due to communicating with the fuse device.
     pub fn new<P: AsRef<Path>>(
         filesystem: FS,
         mountpoint: P,
@@ -145,7 +146,8 @@ impl<FS: Filesystem> Session<FS> {
     /// having multiple buffers (which take up much memory), but the filesystem methods
     /// may run concurrent by spawning threads.
     /// # Errors
-    /// To-do
+    /// Returns any final error when the session comes to an end.
+    /// Propagates errors due to communicating with the fuse device.
     pub fn run(&mut self) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
@@ -178,7 +180,7 @@ impl<FS: Filesystem> Session<FS> {
 
     /// Unmount the filesystem
     /// # Panics
-    /// To-do
+    /// Panics if an unmount is already in progress.
     pub fn unmount(&mut self) {
         drop(std::mem::take(&mut *self.mount.lock().unwrap()));
     }
@@ -205,10 +207,11 @@ pub struct SessionUnmounter {
 impl SessionUnmounter {
     /// Unmount the filesystem
     /// # Errors
-    /// To-do
+    /// Does not error.
     /// # Panics
-    /// To-do
+    /// Panics if an unmount is already in progress.
     pub fn unmount(&mut self) -> io::Result<()> {
+        // TODO: error instead of panic
         drop(std::mem::take(&mut *self.mount.lock().unwrap()));
         Ok(())
     }
@@ -226,7 +229,9 @@ fn aligned_sub_buf(buf: &mut [u8], alignment: usize) -> &mut [u8] {
 impl<FS: 'static + Filesystem + Send> Session<FS> {
     /// Run the session loop in a background thread
     /// # Errors
-    /// To-do
+    /// Does not error.
+    /// # Panics
+    /// Panics if an unmount is already in progress.
     pub fn spawn(self) -> io::Result<BackgroundSession> {
         BackgroundSession::new(self)
     }
@@ -260,12 +265,13 @@ impl BackgroundSession {
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
     /// # Errors
-    /// To-do
+    /// Does not error.
     /// # Panics
-    /// To-do
+    /// Panics if an unmount is already in progress.
     pub fn new<FS: Filesystem + Send + 'static>(se: Session<FS>) -> io::Result<BackgroundSession> {
         let sender = se.ch.sender();
         // Take the fuse_session, so that we can unmount it
+        // TODO: error instead of panic.
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         let guard = thread::spawn(move || {
             let mut se = se;
@@ -278,8 +284,9 @@ impl BackgroundSession {
         })
     }
     /// Unmount the filesystem and join the background thread.
+    /// Logs any final error when the session ends.
     /// # Panics
-    /// To-do
+    /// Panics if the background thread can't be recovered.
     pub fn join(self) {
         let Self {
             guard,
