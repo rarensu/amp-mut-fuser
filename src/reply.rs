@@ -3,17 +3,13 @@
 //! A reply is passed to filesystem operation implementations and must be used to send back the
 //! result of an operation. The reply can optionally be sent to another thread to asynchronously
 //! work on an operation and provide the result later. Also it allows replying with a block of
-//! data without cloning the data. A reply *must always* be used (by calling either ok() or
-//! error() exactly once).
+//! data without cloning the data. A reply *must always* be used (by calling either `ok()` or
+//! `error()` exactly once).
 
-use crate::ll::{
-    self, Generation,
-    reply::{DirEntPlusList, DirEntryPlus},
-};
-use crate::ll::{
-    INodeNo,
-    reply::{DirEntList, DirEntOffset, DirEntry},
-};
+use crate::ll; // too many structs to list
+use crate::ll::reply::{DirEntList, DirEntOffset, DirEntry};
+#[cfg(feature = "abi-7-21")]
+use crate::ll::reply::{DirEntPlusList, DirEntryPlus};
 #[cfg(feature = "abi-7-40")]
 use crate::{consts::FOPEN_PASSTHROUGH, passthrough::BackingId};
 use libc::c_int;
@@ -81,11 +77,11 @@ impl ReplyRaw {
         let sender = self.sender.take().unwrap();
         let res = response.with_iovec(self.unique, |iov| sender.send(iov));
         if let Err(err) = res {
-            error!("Failed to send FUSE reply: {}", err);
+            error!("Failed to send FUSE reply: {err}");
         }
     }
     fn send_ll(mut self, response: &ll::Response<'_>) {
-        self.send_ll_mut(response)
+        self.send_ll_mut(response);
     }
 
     /// Reply to a request with the given error code
@@ -276,23 +272,29 @@ impl Reply for ReplyOpen {
 
 impl ReplyOpen {
     /// Reply to a request with the given open result
+    /// # Panics
+    /// When attempting to use kernel passthrough. Use `opened_passthrough()` instead.
     pub fn opened(self, fh: u64, flags: u32) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
         self.reply
-            .send_ll(&ll::Response::new_open(ll::FileHandle(fh), flags, 0))
+            .send_ll(&ll::Response::new_open(ll::FileHandle(fh), flags, 0));
     }
 
     /// Registers a fd for passthrough, returning a `BackingId`.  Once you have the backing ID,
     /// you can pass it as the 3rd parameter of `OpenReply::opened_passthrough()`.  This is done in
     /// two separate steps because it may make sense to reuse backing IDs (to avoid having to
     /// repeatedly reopen the underlying file or potentially keep thousands of fds open).
+    /// # Errors
+    /// To-do
+    /// # Panics
+    /// To-do
     #[cfg(feature = "abi-7-40")]
     pub fn open_backing(&self, fd: impl std::os::fd::AsFd) -> std::io::Result<BackingId> {
         self.reply.sender.as_ref().unwrap().open_backing(fd.as_fd())
     }
 
-    /// Reply to a request with an opened backing id.  Call ReplyOpen::open_backing() to get one of
+    /// Reply to a request with an opened backing id.  Call `ReplyOpen::open_backing()` to get one of
     /// these.
     #[cfg(feature = "abi-7-40")]
     pub fn opened_passthrough(self, fh: u64, flags: u32, backing_id: &BackingId) {
@@ -300,7 +302,7 @@ impl ReplyOpen {
             ll::FileHandle(fh),
             flags | FOPEN_PASSTHROUGH,
             backing_id.backing_id,
-        ))
+        ));
     }
 
     /// Reply to a request with the given error code
@@ -326,9 +328,9 @@ impl Reply for ReplyWrite {
 }
 
 impl ReplyWrite {
-    /// Reply to a request with the given open result
+    /// Reply to a request with the number of bytes written
     pub fn written(self, size: u32) {
-        self.reply.send_ll(&ll::Response::new_write(size))
+        self.reply.send_ll(&ll::Response::new_write(size));
     }
 
     /// Reply to a request with the given error code
@@ -354,7 +356,7 @@ impl Reply for ReplyStatfs {
 }
 
 impl ReplyStatfs {
-    /// Reply to a request with the given open result
+    /// Reply to a statfs request with filesystem information
     #[allow(clippy::too_many_arguments)]
     pub fn statfs(
         self,
@@ -369,7 +371,7 @@ impl ReplyStatfs {
     ) {
         self.reply.send_ll(&ll::Response::new_statfs(
             blocks, bfree, bavail, files, ffree, bsize, namelen, frsize,
-        ))
+        ));
     }
 
     /// Reply to a request with the given error code
@@ -395,7 +397,9 @@ impl Reply for ReplyCreate {
 }
 
 impl ReplyCreate {
-    /// Reply to a request with the given entry
+    /// Reply to a request with a newly created file entry and its newly open file handle
+    /// # Panics
+    /// When attempting to use kernel passthrough. Use `opened_passthrough()` instead.
     pub fn created(self, ttl: &Duration, attr: &FileAttr, generation: u64, fh: u64, flags: u32) {
         #[cfg(feature = "abi-7-40")]
         assert_eq!(flags & FOPEN_PASSTHROUGH, 0);
@@ -406,7 +410,7 @@ impl ReplyCreate {
             ll::FileHandle(fh),
             flags,
             0,
-        ))
+        ));
     }
 
     /// Reply to a request with the given error code
@@ -432,13 +436,13 @@ impl Reply for ReplyLock {
 }
 
 impl ReplyLock {
-    /// Reply to a request with the given open result
+    /// Reply to a request with a file lock
     pub fn locked(self, start: u64, end: u64, typ: i32, pid: u32) {
         self.reply.send_ll(&ll::Response::new_lock(&ll::Lock {
             range: (start, end),
             typ,
             pid,
-        }))
+        }));
     }
 
     /// Reply to a request with the given error code
@@ -464,9 +468,9 @@ impl Reply for ReplyBmap {
 }
 
 impl ReplyBmap {
-    /// Reply to a request with the given open result
+    /// Reply to a request with a bmap
     pub fn bmap(self, block: u64) {
-        self.reply.send_ll(&ll::Response::new_bmap(block))
+        self.reply.send_ll(&ll::Response::new_bmap(block));
     }
 
     /// Reply to a request with the given error code
@@ -492,7 +496,7 @@ impl Reply for ReplyIoctl {
 }
 
 impl ReplyIoctl {
-    /// Reply to a request with the given open result
+    /// Reply to a request with an ioctl
     pub fn ioctl(self, result: i32, data: &[u8]) {
         self.reply
             .send_ll(&ll::Response::new_ioctl(result, &[IoSlice::new(data)]));
@@ -521,9 +525,9 @@ impl Reply for ReplyPoll {
 }
 
 impl ReplyPoll {
-    /// Reply to a request with the given poll result
+    /// Reply to a request with ready poll events
     pub fn poll(self, revents: u32) {
-        self.reply.send_ll(&ll::Response::new_poll(revents))
+        self.reply.send_ll(&ll::Response::new_poll(revents));
     }
 
     /// Reply to a request with the given error code
@@ -542,7 +546,7 @@ pub struct ReplyDirectory {
 }
 
 impl ReplyDirectory {
-    /// Creates a new ReplyDirectory with a specified buffer size.
+    /// Creates a new `ReplyDirectory` with a specified buffer size.
     pub fn new<S: ReplySender>(unique: u64, sender: S, size: usize) -> ReplyDirectory {
         ReplyDirectory {
             reply: Reply::new(unique, sender),
@@ -557,7 +561,7 @@ impl ReplyDirectory {
     pub fn add<T: AsRef<OsStr>>(&mut self, ino: u64, offset: i64, kind: FileType, name: T) -> bool {
         let name = name.as_ref();
         self.data.push(&DirEntry::new(
-            INodeNo(ino),
+            ll::INodeNo(ino),
             DirEntOffset(offset),
             kind,
             name,
@@ -576,16 +580,18 @@ impl ReplyDirectory {
 }
 
 ///
-/// DirectoryPlus reply
+/// `DirectoryPlus` reply
 ///
+#[cfg(feature = "abi-7-21")]
 #[derive(Debug)]
 pub struct ReplyDirectoryPlus {
     reply: ReplyRaw,
     buf: DirEntPlusList,
 }
 
+#[cfg(feature = "abi-7-21")]
 impl ReplyDirectoryPlus {
-    /// Creates a new ReplyDirectory with a specified buffer size.
+    /// Creates a new `ReplyDirectory` with a specified buffer size.
     pub fn new<S: ReplySender>(unique: u64, sender: S, size: usize) -> ReplyDirectoryPlus {
         ReplyDirectoryPlus {
             reply: Reply::new(unique, sender),
@@ -607,8 +613,8 @@ impl ReplyDirectoryPlus {
     ) -> bool {
         let name = name.as_ref();
         self.buf.push(&DirEntryPlus::new(
-            INodeNo(ino),
-            Generation(generation),
+            ll::INodeNo(ino),
+            ll::Generation(generation),
             DirEntOffset(offset),
             name,
             *ttl,
@@ -645,14 +651,14 @@ impl Reply for ReplyXattr {
 }
 
 impl ReplyXattr {
-    /// Reply to a request with the size of the xattr.
+    /// Reply to a request with the size of an extended attribute
     pub fn size(self, size: u32) {
-        self.reply.send_ll(&ll::Response::new_xattr_size(size))
+        self.reply.send_ll(&ll::Response::new_xattr_size(size));
     }
 
-    /// Reply to a request with the data in the xattr.
+    /// Reply to a request with the data of an extended attribute
     pub fn data(self, data: &[u8]) {
-        self.reply.send_ll(&ll::Response::new_slice(data))
+        self.reply.send_ll(&ll::Response::new_slice(data));
     }
 
     /// Reply to a request with the given error code.
@@ -664,11 +670,13 @@ impl ReplyXattr {
 ///
 /// Lseek Reply
 ///
+#[cfg(feature = "abi-7-24")]
 #[derive(Debug)]
 pub struct ReplyLseek {
     reply: ReplyRaw,
 }
 
+#[cfg(feature = "abi-7-24")]
 impl Reply for ReplyLseek {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyLseek {
         ReplyLseek {
@@ -677,10 +685,11 @@ impl Reply for ReplyLseek {
     }
 }
 
+#[cfg(feature = "abi-7-24")]
 impl ReplyLseek {
     /// Reply to a request with seeked offset
     pub fn offset(self, offset: i64) {
-        self.reply.send_ll(&ll::Response::new_lseek(offset))
+        self.reply.send_ll(&ll::Response::new_lseek(offset));
     }
 
     /// Reply to a request with the given error code
@@ -690,7 +699,10 @@ impl ReplyLseek {
 }
 
 #[cfg(test)]
+#[allow(clippy::unreadable_literal)] // ugly hardcoded literals for testing
+#[allow(clippy::cast_possible_truncation)] // predetermined literals will not be truncated
 mod test {
+    #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::{FileAttr, FileType};
     use std::io::IoSlice;
@@ -736,7 +748,7 @@ mod test {
         fn send(&self, data: &[IoSlice<'_>]) -> std::io::Result<()> {
             let mut v = vec![];
             for x in data {
-                v.extend_from_slice(x)
+                v.extend_from_slice(x);
             }
             assert_eq!(self.expected, v);
             Ok(())
@@ -801,116 +813,135 @@ mod test {
         reply.data(&[0xde, 0xad, 0xbe, 0xef]);
     }
 
+    macro_rules! default_attr_struct {
+        () => {{
+            let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+            FileAttr {
+                ino: 0x11,
+                size: 0x22,
+                blocks: 0x33,
+                atime: time,
+                mtime: time,
+                ctime: time,
+                crtime: time,
+                kind: FileType::RegularFile,
+                perm: 0o644,
+                nlink: 0x55,
+                uid: 0x66,
+                gid: 0x77,
+                rdev: 0x88,
+                flags: 0x99,
+                blksize: 0xbb,
+            }
+        }};
+    }
+
+    macro_rules! default_attr_bytes {
+        () => {{
+            let mut expected = Vec::new();
+            expected.extend_from_slice(&[
+                // inode attributes
+                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ino */
+                0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
+                0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* blocks */
+            ]);
+            expected.extend_from_slice(&[
+                // timestamps (s)
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* atime */
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* mtime */
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ctime */
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[
+                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* crtime */
+            ]);
+            expected.extend_from_slice(&[
+                // timestamps (nanos)
+                0x78, 0x56, 0x00, 0x00, /* atime */
+                0x78, 0x56, 0x00, 0x00, /* mtime */
+                0x78, 0x56, 0x00, 0x00, /* ctime */
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[0x78, 0x56, 0x00, 0x00 /* crtime */]);
+            expected.extend_from_slice(&[
+                // access attributes
+                0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00, 0x77, 0x00,
+                0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
+            ]);
+            #[cfg(target_os = "macos")]
+            expected.extend_from_slice(&[
+                // macos flags
+                0x99, 0x00, 0x00, 0x00,
+            ]);
+            expected.extend_from_slice(&[
+                // block size
+                0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ]);
+            // return
+            expected
+        }};
+    }
+
     #[test]
     fn reply_entry() {
-        let mut expected = if cfg!(target_os = "macos") {
-            vec![
-                0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56,
-                0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
-                0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x99, 0x00, 0x00, 0x00,
-            ]
-        } else {
-            vec![
-                0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00,
-                0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
-            ]
-        };
-
-        expected.extend(vec![0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // prepare the expected message
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&[
+            // FUSE header
+            0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, /* request id */
+        ]);
+        expected.extend_from_slice(&[
+            // ino
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+            // generation
+            0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+            // file ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
+        ]);
+        expected.extend_from_slice(&[
+            // attr ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* whole seconds */
+            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, /* nanoseconds */
+        ]);
+        expected.extend(default_attr_bytes!().iter());
+        // correct the header using the actual length
         expected[0] = (expected.len()) as u8;
-
+        // test reply will be compare with the expected message
         let sender = AssertSender { expected };
+        // prepare the test reply
         let reply: ReplyEntry = Reply::new(0xdeadbeef, sender);
-        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
-        let attr = FileAttr {
-            ino: 0x11,
-            size: 0x22,
-            blocks: 0x33,
-            atime: time,
-            mtime: time,
-            ctime: time,
-            crtime: time,
-            kind: FileType::RegularFile,
-            perm: 0o644,
-            nlink: 0x55,
-            uid: 0x66,
-            gid: 0x77,
-            rdev: 0x88,
-            flags: 0x99,
-            blksize: 0xbb,
-        };
+        let attr = default_attr_struct!();
+        // send the test reply
         reply.entry(&ttl, &attr, 0xaa);
     }
 
     #[test]
     fn reply_attr() {
-        let mut expected = if cfg!(target_os = "macos") {
-            vec![
-                0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56,
-                0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00,
-                0x66, 0x00, 0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x99, 0x00,
-                0x00, 0x00,
-            ]
-        } else {
-            vec![
-                0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00,
-                0x00, 0x00, 0x66, 0x00, 0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00,
-            ]
-        };
+        let mut expected = vec![
+            // FUSE header
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* size */
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, /* request id */
+        ];
+        expected.extend_from_slice(&[
+            // ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
+            0x21, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* nanoseconds */
+        ]);
+        expected.extend(default_attr_bytes!().iter());
 
-        expected.extend_from_slice(&[0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // correct size field of header
         expected[0] = expected.len() as u8;
 
         let sender = AssertSender { expected };
         let reply: ReplyAttr = Reply::new(0xdeadbeef, sender);
-        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
-        let attr = FileAttr {
-            ino: 0x11,
-            size: 0x22,
-            blocks: 0x33,
-            atime: time,
-            mtime: time,
-            ctime: time,
-            crtime: time,
-            kind: FileType::RegularFile,
-            perm: 0o644,
-            nlink: 0x55,
-            uid: 0x66,
-            gid: 0x77,
-            rdev: 0x88,
-            flags: 0x99,
-            blksize: 0xbb,
-        };
+        let attr = default_attr_struct!();
         reply.attr(&ttl, &attr);
     }
 
@@ -929,19 +960,74 @@ mod test {
         reply.xtimes(time, time);
     }
 
-    #[test]
-    fn reply_open() {
-        let sender = AssertSender {
-            expected: vec![
-                0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ],
-        };
-        let reply: ReplyOpen = Reply::new(0xdeadbeef, sender);
-        reply.opened(0x1122, 0x33);
+    macro_rules! default_open_tuple {
+        (with_backing) => {{
+            (
+                /* fh */ 0x1122,
+                /* flags */ 0x33,
+                /* backing_id*/ 0x44 as u32,
+            )
+        }};
+        () => {{
+            (/* fh */ 0x1122, /* flags */ 0x33)
+        }};
     }
 
+    macro_rules! default_open_bytes {
+        (with_backing) => {
+            default_open_bytes!(0x44, 0x33 | (1 << 7))
+        };
+        () => {
+            default_open_bytes!(0x00, 0x33)
+        };
+        ($id:expr, $flag:expr) => {{
+            let mut expected = vec![
+                // file handle
+                0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ];
+            expected.extend_from_slice(&[
+                // flags
+                $flag, 0x00, 0x00, 0x00,
+            ]);
+            expected.extend_from_slice(&[
+                // backing id
+                $id, 0x00, 0x00, 0x00,
+            ]);
+            // return
+            expected
+        }};
+    }
+    #[test]
+    fn reply_open() {
+        let mut expected = vec![
+            // FUSE header
+            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // size
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // request id
+        ];
+        expected.extend(&default_open_bytes!());
+        let sender = AssertSender { expected };
+        let reply: ReplyOpen = Reply::new(0xdeadbeef, sender);
+        let (fh, flags) = default_open_tuple!();
+        reply.opened(fh, flags);
+    }
+    #[test]
+    #[cfg(feature = "abi-7-40")]
+    fn reply_open_passthrough() {
+        let mut expected = vec![
+            // FUSE header
+            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // size
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // request id
+        ];
+        expected.extend(&default_open_bytes!(with_backing));
+        let sender = AssertSender { expected };
+        let reply: ReplyOpen = Reply::new(0xdeadbeef, sender);
+        let (fh, flags, backing_id) = default_open_tuple!(with_backing);
+        let backing = BackingId {
+            channel: std::sync::Weak::new(),
+            backing_id,
+        };
+        reply.opened_passthrough(fh, flags, &backing);
+    }
     #[test]
     fn reply_write() {
         let sender = AssertSender {
@@ -973,66 +1059,38 @@ mod test {
 
     #[test]
     fn reply_create() {
-        let mut expected = if cfg!(target_os = "macos") {
-            vec![
-                0xa8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56,
-                0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00, 0x00,
-                0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x99, 0x00, 0x00, 0x00, 0xbb, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]
-        } else {
-            vec![
-                0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
-                0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
-                0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x12,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00, 0x78, 0x56, 0x00, 0x00,
-                0x78, 0x56, 0x00, 0x00, 0xa4, 0x81, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x66, 0x00,
-                0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0xbb, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]
-        };
-
-        let insert_at = expected.len() - 16;
-        expected.splice(
-            insert_at..insert_at,
-            vec![0xdd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-        );
+        let mut expected = vec![
+            // FUSE header
+            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // size
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // request id
+        ];
+        expected.extend_from_slice(&[
+            // ino
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+            // generation
+            0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        expected.extend_from_slice(&[
+            // file ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* seconds */
+        ]);
+        expected.extend_from_slice(&[
+            // attr ttl
+            0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* whole seconds */
+            0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, /* nanoseconds */
+        ]);
+        expected.extend(&default_attr_bytes!());
+        expected.extend(&default_open_bytes!());
         expected[0] = (expected.len()) as u8;
 
         let sender = AssertSender { expected };
         let reply: ReplyCreate = Reply::new(0xdeadbeef, sender);
-        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
         let ttl = Duration::new(0x8765, 0x4321);
-        let attr = FileAttr {
-            ino: 0x11,
-            size: 0x22,
-            blocks: 0x33,
-            atime: time,
-            mtime: time,
-            ctime: time,
-            crtime: time,
-            kind: FileType::RegularFile,
-            perm: 0o644,
-            nlink: 0x55,
-            uid: 0x66,
-            gid: 0x77,
-            rdev: 0x88,
-            flags: 0x99,
-            blksize: 0xdd,
-        };
-        reply.created(&ttl, &attr, 0xaa, 0xbb, 0xcc);
+        let attr = default_attr_struct!();
+        let (fh, flags) = default_open_tuple!();
+        reply.created(&ttl, &attr, 0xaa, fh, flags);
     }
 
     #[test]
@@ -1079,6 +1137,95 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "abi-7-21")]
+    fn reply_directory_plus() {
+        // prepare the expected file attribute portion of the message
+        // see test::reply_entry() for details
+        let mut entry_bytes = Vec::new();
+        entry_bytes.extend_from_slice(&[
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x87, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x21, 0x43, 0x00, 0x00,
+        ]);
+        let mut attr_bytes = default_attr_bytes!();
+
+        let mut expected = Vec::new();
+
+        expected.extend_from_slice(&[
+            // FUSE header
+            0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00,
+            0x00, 0x00,
+        ]);
+
+        /* ------ file 1 ------- */
+        // entry 1 and attr 1 get a specific ino value
+        entry_bytes[0] = 0xbb;
+        entry_bytes[1] = 0xaa;
+        attr_bytes[0] = 0xbb;
+        attr_bytes[1] = 0xaa;
+        // entry 1 and attr 1 have the directory type
+        let i = if cfg!(target_os = "macos") { 73 } else { 61 };
+        attr_bytes[i] = 0x41;
+        expected.extend_from_slice(&entry_bytes);
+        expected.extend_from_slice(&attr_bytes);
+        // dirent 1
+        // see test::reply_directory() for details
+        expected.extend_from_slice(&[
+            0xbb, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c,
+            0x6f, 0x00, 0x00, 0x00,
+        ]);
+
+        /* ------ file 2 ------- */
+        let mut attr_bytes = default_attr_bytes!();
+        // entry 2 and attr 2 get a specific ino value
+        entry_bytes[0] = 0xdd;
+        entry_bytes[1] = 0xcc;
+        attr_bytes[0] = 0xdd;
+        attr_bytes[1] = 0xcc;
+        expected.extend_from_slice(&entry_bytes);
+        expected.extend_from_slice(&attr_bytes);
+        // dirent 2
+        expected.extend_from_slice(&[
+            0xdd, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x77, 0x6f, 0x72, 0x6c,
+            0x64, 0x2e, 0x72, 0x73,
+        ]);
+        // correct the header
+        expected[0] = (expected.len()) as u8;
+        // test reply will be compared to expected
+        let sender = AssertSender { expected };
+        let mut reply =
+            ReplyDirectoryPlus::new(0xdeadbeef, sender, std::mem::size_of::<u8>() * 4096);
+        let time = UNIX_EPOCH + Duration::new(0x1234, 0x5678);
+        let ttl = Duration::new(0x8765, 0x4321);
+        let attr1 = FileAttr {
+            ino: 0xaabb,
+            size: 0x22,
+            blocks: 0x33,
+            atime: time,
+            mtime: time,
+            ctime: time,
+            crtime: time,
+            kind: FileType::Directory,
+            perm: 0o644,
+            nlink: 0x55,
+            uid: 0x66,
+            gid: 0x77,
+            rdev: 0x88,
+            flags: 0x99,
+            blksize: 0xbb,
+        };
+        let mut attr2 = attr1; //implicit copy
+        attr2.ino = 0xccdd;
+        attr2.kind = FileType::RegularFile;
+        let generation = 0xaa;
+        assert!(!reply.add(0xaabb, 1, "hello", &ttl, &attr1, generation,));
+        assert!(!reply.add(0xccdd, 2, "world.rs", &ttl, &attr2, generation,));
+        reply.ok();
+    }
+
+    #[test]
     fn reply_xattr_size() {
         let sender = AssertSender {
             expected: vec![
@@ -1115,7 +1262,7 @@ mod test {
     }
 
     #[test]
-    fn async_reply() {
+    fn threaded_reply() {
         let (tx, rx) = sync_channel::<()>(1);
         let reply: ReplyEmpty = Reply::new(0xdeadbeef, tx);
         thread::spawn(move || {

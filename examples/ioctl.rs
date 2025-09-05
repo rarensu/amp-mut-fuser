@@ -1,6 +1,6 @@
 // This example requires fuse 7.11 or later. Run with:
 //
-//   cargo run --example ioctl --features abi-7-11 /tmp/foobar
+//   cargo run --example ioctl DIR
 
 use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::{
@@ -13,6 +13,9 @@ use std::ffi::OsStr;
 use std::time::{Duration, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
+
+const FIOC_GET_SIZE: u64 = nix::request_code_read!('E', 0, std::mem::size_of::<usize>());
+const FIOC_SET_SIZE: u64 = nix::request_code_write!('E', 1, std::mem::size_of::<usize>());
 
 struct FiocFS {
     content: Vec<u8>,
@@ -86,6 +89,8 @@ impl Filesystem for FiocFS {
         }
     }
 
+    // Max read < max i64
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn read(
         &mut self,
         _req: &Request,
@@ -98,12 +103,18 @@ impl Filesystem for FiocFS {
         reply: ReplyData,
     ) {
         if ino == 2 {
-            reply.data(&self.content[offset as usize..])
+            reply.data(&self.content[offset as usize..]);
         } else {
             reply.error(ENOENT);
         }
     }
 
+    // the sign of an offset has no meaning
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
     fn readdir(
         &mut self,
         _req: &Request,
@@ -148,9 +159,6 @@ impl Filesystem for FiocFS {
             return;
         }
 
-        const FIOC_GET_SIZE: u64 = nix::request_code_read!('E', 0, std::mem::size_of::<usize>());
-        const FIOC_SET_SIZE: u64 = nix::request_code_write!('E', 1, std::mem::size_of::<usize>());
-
         match cmd.into() {
             FIOC_GET_SIZE => {
                 let size_bytes = self.content.len().to_ne_bytes();
@@ -162,7 +170,7 @@ impl Filesystem for FiocFS {
                 reply.ioctl(0, &[]);
             }
             _ => {
-                debug!("unknown ioctl: {}", cmd);
+                debug!("unknown ioctl: {cmd}");
                 reply.error(EINVAL);
             }
         }

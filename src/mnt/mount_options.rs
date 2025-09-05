@@ -91,25 +91,26 @@ pub fn check_option_conflicts(options: &[MountOption]) -> Result<(), io::Error> 
     options_set.extend(options.iter().cloned());
     let conflicting: HashSet<MountOption> = options.iter().flat_map(conflicts_with).collect();
     let intersection: Vec<MountOption> = conflicting.intersection(&options_set).cloned().collect();
-    if !intersection.is_empty() {
+    if intersection.is_empty() {
+        Ok(())
+    } else {
         Err(io::Error::new(
             ErrorKind::InvalidInput,
             format!("Conflicting mount options found: {intersection:?}"),
         ))
-    } else {
-        Ok(())
     }
 }
 
 fn conflicts_with(option: &MountOption) -> Vec<MountOption> {
     match option {
-        MountOption::FSName(_) => vec![],
-        MountOption::Subtype(_) => vec![],
-        MountOption::CUSTOM(_) => vec![],
+        MountOption::FSName(_)
+        | MountOption::Subtype(_)
+        | MountOption::CUSTOM(_)
+        | MountOption::DirSync
+        | MountOption::AutoUnmount
+        | MountOption::DefaultPermissions => vec![],
         MountOption::AllowOther => vec![MountOption::AllowRoot],
         MountOption::AllowRoot => vec![MountOption::AllowOther],
-        MountOption::AutoUnmount => vec![],
-        MountOption::DefaultPermissions => vec![],
         MountOption::Dev => vec![MountOption::NoDev],
         MountOption::NoDev => vec![MountOption::Dev],
         MountOption::Suid => vec![MountOption::NoSuid],
@@ -120,7 +121,6 @@ fn conflicts_with(option: &MountOption) -> Vec<MountOption> {
         MountOption::NoExec => vec![MountOption::Exec],
         MountOption::Atime => vec![MountOption::NoAtime],
         MountOption::NoAtime => vec![MountOption::Atime],
-        MountOption::DirSync => vec![],
         MountOption::Sync => vec![MountOption::Async],
         MountOption::Async => vec![MountOption::Sync],
     }
@@ -133,10 +133,10 @@ pub fn option_to_string(option: &MountOption) -> String {
         MountOption::Subtype(subtype) => format!("subtype={subtype}"),
         MountOption::CUSTOM(value) => value.to_string(),
         MountOption::AutoUnmount => "auto_unmount".to_string(),
-        MountOption::AllowOther => "allow_other".to_string(),
+        MountOption::AllowRoot |
         // AllowRoot is implemented by allowing everyone access and then restricting to
         // root + owner within fuser
-        MountOption::AllowRoot => "allow_other".to_string(),
+        MountOption::AllowOther => "allow_other".to_string(),
         MountOption::DefaultPermissions => "default_permissions".to_string(),
         MountOption::Dev => "dev".to_string(),
         MountOption::NoDev => "nodev".to_string(),
@@ -156,8 +156,9 @@ pub fn option_to_string(option: &MountOption) -> String {
 
 /// Parses mount command args.
 ///
-/// Input: ["-o", "suid", "-o", "ro,nodev,noexec", "-osync"]
-/// Output Ok([Suid, RO, NoDev, NoExec, Sync])
+/// Input: `"-o", "suid", "-o", "ro,nodev,noexec", "-osync"`
+/// Output Ok([`Suid`, `RO`, `NoDev`, `NoExec`, `Sync`])
+#[allow(clippy::similar_names)]
 pub(crate) fn parse_options_from_args(args: &[&OsStr]) -> io::Result<Vec<MountOption>> {
     let err = |x| io::Error::new(ErrorKind::InvalidInput, x);
     let args: Option<Vec<_>> = args.iter().map(|x| x.to_str()).collect();
@@ -174,7 +175,7 @@ pub(crate) fn parse_options_from_args(args: &[&OsStr]) -> io::Result<Vec<MountOp
             Some(x) => return Err(err(format!("Error parsing args: expected -o, got {x}"))),
         };
         for x in opt.split(',') {
-            out.push(MountOption::from_str(x))
+            out.push(MountOption::from_str(x));
         }
     }
     Ok(out)
@@ -194,7 +195,7 @@ mod test {
     #[test]
     fn option_round_trip() {
         use super::MountOption::*;
-        for x in [
+        for x in &[
             FSName("Blah".to_owned()),
             Subtype("Bloo".to_owned()),
             CUSTOM("bongos".to_owned()),
@@ -214,10 +215,8 @@ mod test {
             DirSync,
             Sync,
             Async,
-        ]
-        .iter()
-        {
-            assert_eq!(*x, MountOption::from_str(option_to_string(x).as_ref()))
+        ] {
+            assert_eq!(*x, MountOption::from_str(option_to_string(x).as_ref()));
         }
     }
 

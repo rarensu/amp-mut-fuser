@@ -40,7 +40,7 @@ impl<'a> Request<'a> {
         let request = match ll::AnyRequest::try_from(data) {
             Ok(request) => request,
             Err(err) => {
-                error!("{}", err);
+                error!("{err}");
                 return None;
             }
         };
@@ -63,10 +63,10 @@ impl<'a> Request<'a> {
         .with_iovec(unique, |iov| self.ch.send(iov));
 
         if let Err(err) = res {
-            warn!("Request {:?}: Failed to send reply: {}", unique, err)
+            warn!("Request {unique:?}: Failed to send reply: {err}");
         }
     }
-
+    #[allow(clippy::too_many_lines)] // Very long match statement
     fn dispatch_req<FS: Filesystem>(
         &self,
         se: &mut Session<FS>,
@@ -126,7 +126,7 @@ impl<'a> Request<'a> {
                 // We don't support ABI versions before 7.6
                 let v = x.version();
                 if v < ll::Version(7, 6) {
-                    error!("Unsupported FUSE ABI version {}", v);
+                    error!("Unsupported FUSE ABI version {v}");
                     return Err(Errno::EPROTO);
                 }
                 // Remember ABI version supported by kernel
@@ -187,11 +187,11 @@ impl<'a> Request<'a> {
                 se.filesystem
                     .forget(self, self.request.nodeid().into(), x.nlookup()); // no reply
             }
-            ll::Operation::GetAttr(_attr) => {
+            ll::Operation::GetAttr(x) => {
                 se.filesystem.getattr(
                     self,
                     self.request.nodeid().into(),
-                    _attr.file_handle().map(|fh| fh.into()),
+                    x.file_handle().map(std::convert::Into::into),
                     self.reply(),
                 );
             }
@@ -206,7 +206,7 @@ impl<'a> Request<'a> {
                     x.atime(),
                     x.mtime(),
                     x.ctime(),
-                    x.file_handle().map(|fh| fh.into()),
+                    x.file_handle().map(std::convert::Into::into),
                     x.crtime(),
                     x.chgtime(),
                     x.bkuptime(),
@@ -296,7 +296,7 @@ impl<'a> Request<'a> {
                     x.offset(),
                     x.size(),
                     x.flags(),
-                    x.lock_owner().map(|l| l.into()),
+                    x.lock_owner().map(std::convert::Into::into),
                     self.reply(),
                 );
             }
@@ -309,7 +309,7 @@ impl<'a> Request<'a> {
                     x.data(),
                     x.write_flags(),
                     x.flags(),
-                    x.lock_owner().map(|l| l.into()),
+                    x.lock_owner().map(std::convert::Into::into),
                     self.reply(),
                 );
             }
@@ -328,7 +328,7 @@ impl<'a> Request<'a> {
                     self.request.nodeid().into(),
                     x.file_handle().into(),
                     x.flags(),
-                    x.lock_owner().map(|x| x.into()),
+                    x.lock_owner().map(std::convert::Into::into),
                     x.flush(),
                     self.reply(),
                 );
@@ -482,18 +482,17 @@ impl<'a> Request<'a> {
             ll::Operation::IoCtl(x) => {
                 if x.unrestricted() {
                     return Err(Errno::ENOSYS);
-                } else {
-                    se.filesystem.ioctl(
-                        self,
-                        self.request.nodeid().into(),
-                        x.file_handle().into(),
-                        x.flags(),
-                        x.command(),
-                        x.in_data(),
-                        x.out_size(),
-                        self.reply(),
-                    );
                 }
+                se.filesystem.ioctl(
+                    self,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.flags(),
+                    x.command(),
+                    x.in_data(),
+                    x.out_size(),
+                    self.reply(),
+                );
             }
             ll::Operation::Poll(x) => {
                 let ph = PollHandle::new(se.ch.sender(), x.kernel_handle());
@@ -617,24 +616,28 @@ impl<'a> Request<'a> {
     }
 
     /// Returns the unique identifier of this request
+    #[must_use]
     #[inline]
     pub fn unique(&self) -> u64 {
         self.request.unique().into()
     }
 
     /// Returns the uid of this request
+    #[must_use]
     #[inline]
     pub fn uid(&self) -> u32 {
         self.request.uid()
     }
 
     /// Returns the gid of this request
+    #[must_use]
     #[inline]
     pub fn gid(&self) -> u32 {
         self.request.gid()
     }
 
     /// Returns the pid of this request
+    #[must_use]
     #[inline]
     pub fn pid(&self) -> u32 {
         self.request.pid()

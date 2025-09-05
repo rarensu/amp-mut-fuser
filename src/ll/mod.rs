@@ -4,14 +4,14 @@ mod argument;
 pub mod fuse_abi;
 pub(crate) mod notify;
 pub(crate) mod reply;
-mod request;
+pub(crate) mod request;
 
 use std::{convert::TryInto, num::NonZeroI32, time::SystemTime};
 
 pub use reply::Response;
 pub use request::{AnyRequest, FileHandle, INodeNo, Lock, Operation, Request, RequestId, Version};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
 /// Possible input arguments for atime & mtime, which can either be set to a specified time,
 /// or to the current time
 pub enum TimeOrNow {
@@ -35,8 +35,12 @@ macro_rules! errno {
     };
 }
 
+macro_rules! no_xattr_doc {
+    () => {"Use this as an error return from getxattr/removexattr to indicate that the xattr doesn't exist.  This resolves to the appropriate platform-specific error code."}
+}
+
 /// Represents an error code to be returned to the caller
-#[derive(Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Errno(pub NonZeroI32);
 impl Errno {
     /// Operation not permitted
@@ -213,19 +217,20 @@ impl Errno {
     /// No data available
     #[cfg(target_os = "linux")]
     pub const ENODATA: Errno = errno!(libc::ENODATA);
+    #[doc = no_xattr_doc!()]
+    #[cfg(target_os = "linux")]
+    pub const NO_XATTR: Errno = Self::ENODATA;
+
     /// Attribute not found
     #[cfg(not(target_os = "linux"))]
     pub const ENOATTR: Errno = errno!(libc::ENOATTR);
-
-    /// Use this as an error return from getxattr/removexattr to indicate that the xattr doesn't
-    /// exist.  This resolves to the appropriate platform specific error code.
-    #[cfg(target_os = "linux")]
-    pub const NO_XATTR: Errno = Self::ENODATA;
+    #[doc = no_xattr_doc!()]
     #[cfg(not(target_os = "linux"))]
     pub const NO_XATTR: Errno = Self::ENOATTR;
 
+    /// Convert libc-style error codes into `fuser::Errno`
     pub fn from_i32(err: i32) -> Errno {
-        err.try_into().ok().map(Errno).unwrap_or(Errno::EIO)
+        err.try_into().ok().map_or(Errno::EIO, Errno)
     }
 }
 impl From<std::io::Error> for Errno {
@@ -262,7 +267,7 @@ impl From<Errno> for i32 {
 /// mount time). So if the file system reuses an inode after it has been
 /// deleted, it must assign a new, previously unused generation number to the
 /// inode at the same time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct Generation(pub u64);
 impl From<Generation> for u64 {
     fn from(fh: Generation) -> Self {

@@ -126,7 +126,7 @@ impl Filesystem for ClockFS<'_> {
         } else if flags & libc::O_ACCMODE != libc::O_RDONLY {
             reply.error(EACCES);
         } else if ino != Self::FILE_INO {
-            eprintln!("Got open for nonexistent inode {}", ino);
+            eprintln!("Got open for nonexistent inode {ino}");
             reply.error(ENOENT);
         } else {
             reply.opened(ino, consts::FOPEN_KEEP_CACHE);
@@ -156,7 +156,7 @@ impl Filesystem for ClockFS<'_> {
             reply.error(EINVAL);
             return;
         };
-        let Ok(end) = (offset + size as i64).min(dlen).try_into() else {
+        let Ok(end) = (offset + i64::from(size)).min(dlen).try_into() else {
             reply.error(EINVAL);
             return;
         };
@@ -172,7 +172,7 @@ fn now_string() -> String {
     format!("The current time is {}\n", d.as_secs())
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct Options {
     /// Mount demo filesystem at given path
     mount_point: String,
@@ -185,7 +185,7 @@ struct Options {
     #[clap(short, long)]
     no_notify: bool,
 
-    /// Use notify_store() instead of notify_inval_inode()
+    /// Use `notify_store()` instead of `notify_inval_inode()`
     #[clap(short = 's', long)]
     notify_store: bool,
 }
@@ -213,12 +213,12 @@ fn main() {
                 if let Err(e) =
                     notifier.store(ClockFS::FILE_INO, 0, fdata.lock().unwrap().as_bytes())
                 {
-                    eprintln!("Warning: failed to update kernel cache: {}", e);
+                    eprintln!("Warning: failed to update kernel cache: {e}");
                 }
             } else if let Err(e) =
                 notifier.inval_inode(ClockFS::FILE_INO, 0, olddata.len().try_into().unwrap())
             {
-                eprintln!("Warning: failed to invalidate inode: {}", e);
+                eprintln!("Warning: failed to invalidate inode: {e}");
             }
         }
         thread::sleep(Duration::from_secs_f32(opts.update_interval));
