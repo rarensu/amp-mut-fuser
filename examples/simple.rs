@@ -500,7 +500,7 @@ impl Filesystem for SimpleFS {
                 hardlinks: 2,
                 uid: 0,
                 gid: 0,
-                xattrs: Default::default(),
+                xattrs: BTreeMap::default(),
             };
             self.write_inode(&root);
             let mut entries = BTreeMap::new();
@@ -839,7 +839,7 @@ impl Filesystem for SimpleFS {
             hardlinks: 1,
             uid: req.uid(),
             gid: creation_gid(&parent_attrs, req.gid()),
-            xattrs: Default::default(),
+            xattrs: BTreeMap::default(),
         };
         self.write_inode(&attrs);
         File::create(self.content_path(inode)).unwrap();
@@ -922,7 +922,7 @@ impl Filesystem for SimpleFS {
             hardlinks: 2, // Directories start with link count of 2, since they have a self link
             uid: req.uid(),
             gid: creation_gid(&parent_attrs, req.gid()),
-            xattrs: Default::default(),
+            xattrs: BTreeMap::default(),
         };
         self.write_inode(&attrs);
 
@@ -1106,7 +1106,7 @@ impl Filesystem for SimpleFS {
             hardlinks: 1,
             uid: req.uid(),
             gid: creation_gid(&parent_attrs, req.gid()),
-            xattrs: Default::default(),
+            xattrs: BTreeMap::default(),
         };
 
         if let Err(error_code) = self.insert_link(req, parent, link_name, inode, FileKind::Symlink)
@@ -1824,7 +1824,7 @@ impl Filesystem for SimpleFS {
             hardlinks: 1,
             uid: req.uid(),
             gid: creation_gid(&parent_attrs, req.gid()),
-            xattrs: Default::default(),
+            xattrs: BTreeMap::default(),
         };
         self.write_inode(&attrs);
         File::create(self.content_path(inode)).unwrap();
