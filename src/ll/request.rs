@@ -971,7 +971,7 @@ mod op {
 
         pub fn reply(&self, config: &crate::KernelConfig) -> Response<'a> {
             // use requested features and reported as capable
-            let flags = self.capabilities() & config.requested; 
+            let flags = self.capabilities() & config.requested;
 
             let init = fuse_init_out {
                 major: FUSE_KERNEL_VERSION,

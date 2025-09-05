@@ -42,7 +42,7 @@ impl Channel {
                 buffer.len() as size_t,
             )
         };
-        #[allow(clippy::cast_sign_loss)] // explicitly handle negative values 
+        #[allow(clippy::cast_sign_loss)] // explicitly handle negative values
         if rc < 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -73,7 +73,7 @@ impl ReplySender for ChannelSender {
                 bufs.len() as c_int,
             )
         };
-        #[allow(clippy::cast_sign_loss)] // explicitly handle negative values 
+        #[allow(clippy::cast_sign_loss)] // explicitly handle negative values
         if rc < 0 {
             Err(io::Error::last_os_error())
         } else {

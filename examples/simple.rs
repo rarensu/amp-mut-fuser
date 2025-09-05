@@ -2,6 +2,7 @@
 #![allow(clippy::unnecessary_cast)] // libc::S_* are u16 or u32 depending on the platform
 #![allow(clippy::cast_possible_truncation)] // u32 -> u16 without error handling
 #![allow(clippy::cast_sign_loss)] // i64 -> u32 without error handling
+#![allow(clippy::cast_possible_wrap)] // i64 -> usize without error handling
 
 use clap::{Arg, ArgAction, Command, crate_version};
 use fuser::consts::FOPEN_DIRECT_IO;
@@ -1559,9 +1560,8 @@ impl Filesystem for SimpleFS {
             Err(error_code) => reply.error(error_code),
         }
     }
-    
+
     // the sign of an offset has no meaning
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
     fn readdir(
         &mut self,
         _req: &Request,
