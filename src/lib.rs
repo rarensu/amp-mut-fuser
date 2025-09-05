@@ -244,7 +244,7 @@ impl KernelConfig {
 
     /// Set the maximum write size for a single request
     ///
-    /// On success returns the previous value. 
+    /// On success returns the previous value.
     /// # Errors
     /// If the argument is too large, returns the nearest value which will succeed.
     pub fn set_max_write(&mut self, value: u32) -> Result<u32, u32> {
@@ -290,7 +290,7 @@ impl KernelConfig {
 
     /// Set the maximum number of pending background requests. Such as readahead requests.
     ///
-    /// On success returns the previous value. 
+    /// On success returns the previous value.
     /// # Errors
     /// If the argument is too small, returns the nearest value which will succeed.
     pub fn set_max_background(&mut self, value: u16) -> Result<u16, u16> {
