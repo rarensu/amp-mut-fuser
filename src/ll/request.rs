@@ -1617,6 +1617,7 @@ mod op {
     }
     impl_request!(CuseInit<'a>);
 
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)] // See abi::fuse_attr
     fn system_time_from_time(secs: i64, nsecs: u32) -> SystemTime {
         if secs >= 0 {
             SystemTime::UNIX_EPOCH + Duration::new(secs as u64, nsecs)
@@ -1624,6 +1625,7 @@ mod op {
             SystemTime::UNIX_EPOCH - Duration::new((-secs) as u64, nsecs)
         }
     }
+    #[allow(clippy::too_many_lines)] // Very long match statement
     pub(crate) fn parse<'a>(
         header: &'a fuse_in_header,
         opcode: &fuse_opcode,
@@ -1930,7 +1932,7 @@ pub enum Operation<'a> {
     #[allow(dead_code)]
     CuseInit(CuseInit<'a>),
 }
-
+#[allow(clippy::too_many_lines)] // Very long match statement
 impl fmt::Display for Operation<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

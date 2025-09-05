@@ -20,6 +20,7 @@ use std::time::SystemTime;
 use std::{convert::AsRef, io::ErrorKind};
 
 pub use crate::ll::fuse_abi::FUSE_ROOT_ID;
+#[allow(clippy::wildcard_imports)] // to avoid many feature gates
 use crate::ll::fuse_abi::consts::*;
 pub use crate::ll::{TimeOrNow, fuse_abi::consts};
 use crate::mnt::mount_options::check_option_conflicts;
@@ -197,6 +198,8 @@ impl KernelConfig {
     /// The kernel currently has a hard maximum value of 2.  Anything higher won't work.
     ///
     /// On success, returns the previous value.  On error, returns the nearest value which will succeed.
+    /// # Errors
+    /// To-do
     #[cfg(feature = "abi-7-40")]
     pub fn set_max_stack_depth(&mut self, value: u32) -> Result<u32, u32> {
         // https://lore.kernel.org/linux-fsdevel/CAOYeF9V_n93OEF_uf0Gwtd=+da0ReX8N2aaT6RfEJ9DPvs8O2w@mail.gmail.com/
@@ -216,6 +219,8 @@ impl KernelConfig {
     /// Must be a power of 10 nanoseconds. i.e. 1s, 0.1s, 0.01s, 1ms, 0.1ms...etc
     ///
     /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// To-do
     #[cfg(feature = "abi-7-23")]
     pub fn set_time_granularity(&mut self, value: Duration) -> Result<Duration, Duration> {
         if value.as_nanos() == 0 {
@@ -240,6 +245,8 @@ impl KernelConfig {
     /// Set the maximum write size for a single request
     ///
     /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// To-do
     pub fn set_max_write(&mut self, value: u32) -> Result<u32, u32> {
         if value == 0 {
             return Err(1);
@@ -255,6 +262,8 @@ impl KernelConfig {
     /// Set the maximum readahead size
     ///
     /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// To-do
     pub fn set_max_readahead(&mut self, value: u32) -> Result<u32, u32> {
         if value == 0 {
             return Err(1);
@@ -270,6 +279,8 @@ impl KernelConfig {
     /// Add a set of capabilities.
     ///
     /// On success returns Ok, else return bits of capabilities not supported when capabilities you provided are not all supported by kernel.
+    /// # Errors
+    /// To-do
     pub fn add_capabilities(&mut self, capabilities_to_add: u64) -> Result<(), u64> {
         if capabilities_to_add & self.capabilities != capabilities_to_add {
             return Err(capabilities_to_add - (capabilities_to_add & self.capabilities));
@@ -281,6 +292,8 @@ impl KernelConfig {
     /// Set the maximum number of pending background requests. Such as readahead requests.
     ///
     /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// To-do
     pub fn set_max_background(&mut self, value: u16) -> Result<u16, u16> {
         if value == 0 {
             return Err(1);
@@ -294,6 +307,8 @@ impl KernelConfig {
     /// request queue congested. (it may then switch to sleeping instead of spin-waiting, for example)
     ///
     /// On success returns the previous value. On error returns the nearest value which will succeed
+    /// # Errors
+    /// To-do
     pub fn set_congestion_threshold(&mut self, value: u16) -> Result<u16, u16> {
         if value == 0 {
             return Err(1);
@@ -306,7 +321,7 @@ impl KernelConfig {
     fn congestion_threshold(&self) -> u16 {
         match self.congestion_threshold {
             // Default to a threshold of 3/4 of the max background threads
-            None => (self.max_background as u32 * 3 / 4) as u16,
+            None => (u32::from(self.max_background) * 3 / 4) as u16,
             Some(value) => min(value, self.max_background),
         }
     }
@@ -970,6 +985,8 @@ pub trait Filesystem {
 /// not return until the filesystem is unmounted.
 ///
 /// Note that you need to lead each option with a separate `"-o"` string.
+/// # Errors
+/// To-do
 #[deprecated(note = "use mount2() instead")]
 pub fn mount<FS: Filesystem, P: AsRef<Path>>(
     filesystem: FS,
@@ -984,6 +1001,8 @@ pub fn mount<FS: Filesystem, P: AsRef<Path>>(
 /// not return until the filesystem is unmounted.
 ///
 /// NOTE: This will eventually replace `mount()`, once the API is stable
+/// # Errors
+/// To-do
 pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,
@@ -998,6 +1017,8 @@ pub fn mount2<FS: Filesystem, P: AsRef<Path>>(
 /// and therefore returns immediately. The returned handle should be stored
 /// to reference the mounted filesystem. If it's dropped, the filesystem will
 /// be unmounted.
+/// # Errors
+/// To-do
 #[deprecated(note = "use spawn_mount2() instead")]
 pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     filesystem: FS,
@@ -1020,6 +1041,8 @@ pub fn spawn_mount<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
 /// be unmounted.
 ///
 /// NOTE: This is the corresponding function to mount2.
+/// # Errors
+/// To-do
 pub fn spawn_mount2<'a, FS: Filesystem + Send + 'static + 'a, P: AsRef<Path>>(
     filesystem: FS,
     mountpoint: P,

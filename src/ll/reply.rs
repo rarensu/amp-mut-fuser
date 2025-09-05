@@ -229,7 +229,8 @@ impl<'a> Response<'a> {
             // these fields are only needed for unrestricted ioctls
             flags: 0,
             in_iovs: 1,
-            out_iovs: if data.is_empty() { 0 } else { 1 },
+            // boolean to integer
+            out_iovs: u32::from(!data.is_empty()),
         };
         // TODO: Don't copy this data
         let mut v: ResponseBuf = ResponseBuf::from_slice(r.as_bytes());
@@ -268,6 +269,7 @@ impl<'a> Response<'a> {
     }
 }
 
+#[allow(clippy::cast_possible_wrap)] // See abi::fuse_attr
 pub(crate) fn time_from_system_time(system_time: &SystemTime) -> (i64, u32) {
     // Convert to signed 64-bit time with epoch at 0
     match system_time.duration_since(UNIX_EPOCH) {
@@ -521,6 +523,7 @@ impl DirEntPlusList {
 
 #[cfg(test)]
 #[allow(clippy::cast_possible_truncation)] // these byte literals are not in danger of being truncated
+#[allow(clippy::unreadable_literal)] // test literals don't need to be beautiful
 mod test {
     use std::num::NonZeroI32;
 

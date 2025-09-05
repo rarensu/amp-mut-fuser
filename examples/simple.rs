@@ -190,7 +190,7 @@ fn system_time_from_time(secs: i64, nsecs: u32) -> SystemTime {
         UNIX_EPOCH - Duration::new((-secs) as u64, nsecs)
     }
 }
-
+#[allow(clippy::cast_possible_wrap)] // See fuse_abi::fuse_attr
 fn time_from_system_time(system_time: &SystemTime) -> (i64, u32) {
     // Convert to signed 64-bit time with epoch at 0
     match system_time.duration_since(UNIX_EPOCH) {
@@ -319,11 +319,11 @@ impl SimpleFS {
         fh
     }
 
-    fn check_file_handle_read(&self, file_handle: u64) -> bool {
+    fn check_file_handle_read(file_handle: u64) -> bool {
         (file_handle & FILE_HANDLE_READ_BIT) != 0
     }
 
-    fn check_file_handle_write(&self, file_handle: u64) -> bool {
+    fn check_file_handle_write(file_handle: u64) -> bool {
         (file_handle & FILE_HANDLE_WRITE_BIT) != 0
     }
 
@@ -343,7 +343,7 @@ impl SimpleFS {
         }
     }
 
-    fn write_directory_content(&self, inode: Inode, entries: DirectoryDescriptor) {
+    fn write_directory_content(&self, inode: Inode, entries: &DirectoryDescriptor) {
         let path = Path::new(&self.data_dir)
             .join("contents")
             .join(inode.to_string());
@@ -469,7 +469,7 @@ impl SimpleFS {
 
         let mut entries = self.get_directory_content(parent).unwrap();
         entries.insert(name.as_bytes().to_vec(), (inode, kind));
-        self.write_directory_content(parent, entries);
+        self.write_directory_content(parent, &entries);
 
         Ok(())
     }
@@ -505,7 +505,7 @@ impl Filesystem for SimpleFS {
             self.write_inode(&root);
             let mut entries = BTreeMap::new();
             entries.insert(b".".to_vec(), (FUSE_ROOT_ID, FileKind::Directory));
-            self.write_directory_content(FUSE_ROOT_ID, entries);
+            self.write_directory_content(FUSE_ROOT_ID, &entries);
         }
         Ok(())
     }
@@ -542,7 +542,7 @@ impl Filesystem for SimpleFS {
             Err(error_code) => reply.error(error_code),
         }
     }
-
+    #[allow(clippy::too_many_lines)] // To-do: refactor very long function
     fn setattr(
         &mut self,
         req: &Request,
@@ -656,7 +656,7 @@ impl Filesystem for SimpleFS {
                 // This is important as it preserves the semantic that a file handle opened
                 // with W_OK will never fail to truncate, even if the file has been subsequently
                 // chmod'ed
-                if self.check_file_handle_write(handle) {
+                if Self::check_file_handle_write(handle) {
                     if let Err(error_code) = self.truncate(inode, size, 0, 0) {
                         reply.error(error_code);
                         return;
@@ -848,12 +848,12 @@ impl Filesystem for SimpleFS {
             let mut entries = BTreeMap::new();
             entries.insert(b".".to_vec(), (inode, FileKind::Directory));
             entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
-            self.write_directory_content(inode, entries);
+            self.write_directory_content(inode, &entries);
         }
 
         let mut entries = self.get_directory_content(parent).unwrap();
         entries.insert(name.as_bytes().to_vec(), (inode, attrs.kind));
-        self.write_directory_content(parent, entries);
+        self.write_directory_content(parent, &entries);
 
         // TODO: implement flags
         reply.entry(&Duration::new(0, 0), &attrs.into(), 0);
@@ -929,11 +929,11 @@ impl Filesystem for SimpleFS {
         let mut entries = BTreeMap::new();
         entries.insert(b".".to_vec(), (inode, FileKind::Directory));
         entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
-        self.write_directory_content(inode, entries);
+        self.write_directory_content(inode, &entries);
 
         let mut entries = self.get_directory_content(parent).unwrap();
         entries.insert(name.as_bytes().to_vec(), (inode, FileKind::Directory));
-        self.write_directory_content(parent, entries);
+        self.write_directory_content(parent, &entries);
 
         reply.entry(&Duration::new(0, 0), &attrs.into(), 0);
     }
@@ -990,7 +990,7 @@ impl Filesystem for SimpleFS {
 
         let mut entries = self.get_directory_content(parent).unwrap();
         entries.remove(name.as_bytes());
-        self.write_directory_content(parent, entries);
+        self.write_directory_content(parent, &entries);
 
         reply.ok();
     }
@@ -1051,7 +1051,7 @@ impl Filesystem for SimpleFS {
 
         let mut entries = self.get_directory_content(parent).unwrap();
         entries.remove(name.as_bytes());
-        self.write_directory_content(parent, entries);
+        self.write_directory_content(parent, &entries);
 
         reply.ok();
     }
@@ -1127,7 +1127,7 @@ impl Filesystem for SimpleFS {
 
         reply.entry(&Duration::new(0, 0), &attrs.into(), 0);
     }
-
+    #[allow(clippy::too_many_lines)] // To-do: refactor very long function
     fn rename(
         &mut self,
         req: &Request,
@@ -1233,14 +1233,14 @@ impl Filesystem for SimpleFS {
                 new_name.as_bytes().to_vec(),
                 (inode_attrs.inode, inode_attrs.kind),
             );
-            self.write_directory_content(new_parent, entries);
+            self.write_directory_content(new_parent, &entries);
 
             let mut entries = self.get_directory_content(parent).unwrap();
             entries.insert(
                 name.as_bytes().to_vec(),
                 (new_inode_attrs.inode, new_inode_attrs.kind),
             );
-            self.write_directory_content(parent, entries);
+            self.write_directory_content(parent, &entries);
 
             parent_attrs.last_metadata_changed = time_now();
             parent_attrs.last_modified = time_now();
@@ -1256,12 +1256,12 @@ impl Filesystem for SimpleFS {
             if inode_attrs.kind == FileKind::Directory {
                 let mut entries = self.get_directory_content(inode_attrs.inode).unwrap();
                 entries.insert(b"..".to_vec(), (new_parent, FileKind::Directory));
-                self.write_directory_content(inode_attrs.inode, entries);
+                self.write_directory_content(inode_attrs.inode, &entries);
             }
             if new_inode_attrs.kind == FileKind::Directory {
                 let mut entries = self.get_directory_content(new_inode_attrs.inode).unwrap();
                 entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
-                self.write_directory_content(new_inode_attrs.inode, entries);
+                self.write_directory_content(new_inode_attrs.inode, &entries);
             }
 
             reply.ok();
@@ -1303,7 +1303,7 @@ impl Filesystem for SimpleFS {
         if let Ok(mut existing_inode_attrs) = self.lookup_name(new_parent, new_name) {
             let mut entries = self.get_directory_content(new_parent).unwrap();
             entries.remove(new_name.as_bytes());
-            self.write_directory_content(new_parent, entries);
+            self.write_directory_content(new_parent, &entries);
 
             if existing_inode_attrs.kind == FileKind::Directory {
                 existing_inode_attrs.hardlinks = 0;
@@ -1317,14 +1317,14 @@ impl Filesystem for SimpleFS {
 
         let mut entries = self.get_directory_content(parent).unwrap();
         entries.remove(name.as_bytes());
-        self.write_directory_content(parent, entries);
+        self.write_directory_content(parent, &entries);
 
         let mut entries = self.get_directory_content(new_parent).unwrap();
         entries.insert(
             new_name.as_bytes().to_vec(),
             (inode_attrs.inode, inode_attrs.kind),
         );
-        self.write_directory_content(new_parent, entries);
+        self.write_directory_content(new_parent, &entries);
 
         parent_attrs.last_metadata_changed = time_now();
         parent_attrs.last_modified = time_now();
@@ -1338,7 +1338,7 @@ impl Filesystem for SimpleFS {
         if inode_attrs.kind == FileKind::Directory {
             let mut entries = self.get_directory_content(inode_attrs.inode).unwrap();
             entries.insert(b"..".to_vec(), (new_parent, FileKind::Directory));
-            self.write_directory_content(inode_attrs.inode, entries);
+            self.write_directory_content(inode_attrs.inode, &entries);
         }
 
         reply.ok();
@@ -1431,7 +1431,7 @@ impl Filesystem for SimpleFS {
     ) {
         debug!("read() called on {inode:?} offset={offset:?} size={size:?}");
         assert!(offset >= 0);
-        if !self.check_file_handle_read(fh) {
+        if !Self::check_file_handle_read(fh) {
             reply.error(libc::EACCES);
             return;
         }
@@ -1467,7 +1467,7 @@ impl Filesystem for SimpleFS {
     ) {
         debug!("write() called with {:?} size={:?}", inode, data.len());
         assert!(offset >= 0);
-        if !self.check_file_handle_write(fh) {
+        if !Self::check_file_handle_write(fh) {
             reply.error(libc::EACCES);
             return;
         }
@@ -1559,7 +1559,9 @@ impl Filesystem for SimpleFS {
             Err(error_code) => reply.error(error_code),
         }
     }
-
+    
+    // the sign of an offset has no meaning
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
     fn readdir(
         &mut self,
         _req: &Request,
@@ -1833,12 +1835,12 @@ impl Filesystem for SimpleFS {
             let mut entries = BTreeMap::new();
             entries.insert(b".".to_vec(), (inode, FileKind::Directory));
             entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
-            self.write_directory_content(inode, entries);
+            self.write_directory_content(inode, &entries);
         }
 
         let mut entries = self.get_directory_content(parent).unwrap();
         entries.insert(name.as_bytes().to_vec(), (inode, attrs.kind));
-        self.write_directory_content(parent, entries);
+        self.write_directory_content(parent, &entries);
 
         // TODO: implement flags
         reply.created(
@@ -1900,11 +1902,11 @@ impl Filesystem for SimpleFS {
         debug!(
             "copy_file_range() called with src=({src_fh}, {src_inode}, {src_offset}) dest=({dest_fh}, {dest_inode}, {dest_offset}) size={size}"
         );
-        if !self.check_file_handle_read(src_fh) {
+        if !Self::check_file_handle_read(src_fh) {
             reply.error(libc::EACCES);
             return;
         }
-        if !self.check_file_handle_write(dest_fh) {
+        if !Self::check_file_handle_write(dest_fh) {
             reply.error(libc::EACCES);
             return;
         }
@@ -1948,6 +1950,7 @@ impl Filesystem for SimpleFS {
 }
 
 #[must_use]
+#[allow(clippy::similar_names)]
 pub fn check_access(
     file_uid: u32,
     file_gid: u32,

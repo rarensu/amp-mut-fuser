@@ -112,7 +112,7 @@ impl PassthroughFs {
 
         let passthrough_file_attr = FileAttr {
             ino: 2,
-            size: 123456,
+            size: 123_456,
             blocks: 1,
             atime: UNIX_EPOCH, // 1970-01-01 00:00:00
             mtime: UNIX_EPOCH,
@@ -195,7 +195,8 @@ impl Filesystem for PassthroughFs {
         reply.ok();
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // the sign of an offset has no meaning
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap)]
     fn readdir(
         &mut self,
         _req: &Request,

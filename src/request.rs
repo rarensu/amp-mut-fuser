@@ -66,7 +66,7 @@ impl<'a> Request<'a> {
             warn!("Request {unique:?}: Failed to send reply: {err}");
         }
     }
-
+    #[allow(clippy::too_many_lines)] // Very long match statement
     fn dispatch_req<FS: Filesystem>(
         &self,
         se: &mut Session<FS>,
@@ -482,18 +482,17 @@ impl<'a> Request<'a> {
             ll::Operation::IoCtl(x) => {
                 if x.unrestricted() {
                     return Err(Errno::ENOSYS);
-                } else {
-                    se.filesystem.ioctl(
-                        self,
-                        self.request.nodeid().into(),
-                        x.file_handle().into(),
-                        x.flags(),
-                        x.command(),
-                        x.in_data(),
-                        x.out_size(),
-                        self.reply(),
-                    );
                 }
+                se.filesystem.ioctl(
+                    self,
+                    self.request.nodeid().into(),
+                    x.file_handle().into(),
+                    x.flags(),
+                    x.command(),
+                    x.in_data(),
+                    x.out_size(),
+                    self.reply(),
+                );
             }
             ll::Operation::Poll(x) => {
                 let ph = PollHandle::new(se.ch.sender(), x.kernel_handle());
@@ -617,24 +616,28 @@ impl<'a> Request<'a> {
     }
 
     /// Returns the unique identifier of this request
+    #[must_use]
     #[inline]
     pub fn unique(&self) -> u64 {
         self.request.unique().into()
     }
 
     /// Returns the uid of this request
+    #[must_use]
     #[inline]
     pub fn uid(&self) -> u32 {
         self.request.uid()
     }
 
     /// Returns the gid of this request
+    #[must_use]
     #[inline]
     pub fn gid(&self) -> u32 {
         self.request.gid()
     }
 
     /// Returns the pid of this request
+    #[must_use]
     #[inline]
     pub fn pid(&self) -> u32 {
         self.request.pid()

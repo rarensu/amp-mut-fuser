@@ -29,7 +29,7 @@ nix::ioctl_write_ptr!(ioctl_set_size, 'E', 1, usize);
 fn get_size(fd: i32) -> nix::Result<usize> {
     let mut out: usize = 0;
     unsafe {
-        ioctl_get_size(fd, &mut out as *mut usize)?;
+        ioctl_get_size(fd, &raw mut out)?;
     }
     Ok(out)
 }
@@ -38,7 +38,7 @@ fn get_size(fd: i32) -> nix::Result<usize> {
 fn set_size(fd: i32, sz: usize) -> nix::Result<()> {
     let mut val = sz;
     unsafe {
-        ioctl_set_size(fd, &mut val as *mut usize)?;
+        ioctl_set_size(fd, &raw mut val)?;
     }
     Ok(())
 }
@@ -88,9 +88,8 @@ fn main() -> io::Result<()> {
             io::ErrorKind::Other,
             format!("ioctl set failed: {e}"),
         ));
-    } else {
-        println!("Set size to 4096 bytes");
     }
+    println!("Set size to 4096 bytes");
 
     // 3) Get size and expect 4096
     match get_size(fd) {
@@ -120,9 +119,8 @@ fn main() -> io::Result<()> {
             io::ErrorKind::Other,
             format!("ioctl set failed: {e}"),
         ));
-    } else {
-        println!("Set size to 0 bytes");
     }
+    println!("Set size to 0 bytes");
 
     // 5) Get size and expect 0
     match get_size(fd) {
