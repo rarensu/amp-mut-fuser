@@ -89,6 +89,8 @@ impl Filesystem for FiocFS {
         }
     }
 
+    // Max read < max i64
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn read(
         &mut self,
         _req: &Request,
@@ -107,6 +109,12 @@ impl Filesystem for FiocFS {
         }
     }
 
+    // the sign of an offset has no meaning
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
     fn readdir(
         &mut self,
         _req: &Request,
