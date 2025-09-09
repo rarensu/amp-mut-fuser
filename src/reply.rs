@@ -958,12 +958,22 @@ mod test {
     }
 
     macro_rules! default_open_tuple {
+        (with_backing) => {{
+            (
+                /* fh */ 0x1122,
+                /* flags */ 0x33,
+                /* backing_id*/ 0x44 as u32,
+            )
+        }};
         () => {{
             (/* fh */ 0x1122, /* flags */ 0x33)
         }};
     }
 
     macro_rules! default_open_bytes {
+        (with_backing) => {
+            default_open_bytes!(0x44, 0x33 | (1 << 7))
+        };
         () => {
             default_open_bytes!(0x00, 0x33)
         };
@@ -996,6 +1006,24 @@ mod test {
         let reply: ReplyOpen = Reply::new(0xdeadbeef, sender);
         let (fh, flags) = default_open_tuple!();
         reply.opened(fh, flags);
+    }
+    #[test]
+    #[cfg(feature = "abi-7-40")]
+    fn reply_open_passthrough() {
+        let mut expected = vec![
+            // FUSE header
+            0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // size
+            0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // request id
+        ];
+        expected.extend(&default_open_bytes!(with_backing));
+        let sender = AssertSender { expected };
+        let reply: ReplyOpen = Reply::new(0xdeadbeef, sender);
+        let (fh, flags, backing_id) = default_open_tuple!(with_backing);
+        let backing = BackingId {
+            channel: std::sync::Weak::new(),
+            backing_id,
+        };
+        reply.opened_passthrough(fh, flags, &backing);
     }
     #[test]
     fn reply_write() {
